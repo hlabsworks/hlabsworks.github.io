@@ -1,0 +1,39 @@
+baseURL = "https://hlabsworks.com/"
+languageCode = "ja"
+title = "HLabsWorks"
+theme = "PaperMod"
+timeZone = "Asia/Tokyo"
+hasCJKLanguage = true
+enableRobotsTXT = true
+
+pagination.pagerSize = 10
+
+[params]
+  description = "太陽光×蓄電池×ポータブル電源で「買電量実質ゼロ」を目指す実測記録"
+  defaultTheme = "auto"
+  ShowReadingTime = true
+  ShowShareButtons = false
+  ShowPostNavLinks = true
+  ShowBreadCrumbs = true
+  ShowCodeCopyButtons = true
+  ShowToc = true
+  dateFormat = "2006-01-02"
+
+  [params.homeInfoParams]
+    Title = "HLabsWorks"
+    Content = "太陽光発電の余剰電力を蓄電池とポータブル電源に自動で振り分けて「買電量実質ゼロ」を目指す、実測データ主体の記録です。蓄電池もポタ電も実運用している家が、想像ではなく測定値で書きます。"
+
+[menu]
+  [[menu.main]]
+    identifier = "posts"
+    name = "記事"
+    url = "/posts/"
+    weight = 10
+  [[menu.main]]
+    identifier = "about"
+    name = "このサイトについて"
+    url = "/about/"
+    weight = 20
+
+[markup.goldmark.renderer]
+  unsafe = true

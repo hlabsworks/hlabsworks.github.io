@@ -34,6 +34,16 @@ pagination.pagerSize = 10
     name = "このサイトについて"
     url = "/about/"
     weight = 20
+  [[menu.main]]
+    identifier = "contact"
+    name = "お問い合わせ"
+    url = "/contact/"
+    weight = 30
+  [[menu.main]]
+    identifier = "privacy"
+    name = "プライバシーポリシー"
+    url = "/privacy-policy/"
+    weight = 40
 
 [markup.goldmark.renderer]
   unsafe = true

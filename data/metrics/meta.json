@@ -1,1 +1,10 @@
-{"generated_at":"2026-09-05 11:37:11","buy_price_yen_per_kwh":30,"sell_price_yen_per_kwh":10,"ecoflow_data_since":"2026-08-28","nichicon_data_since":"2026-07-27","power_history_since":"2026-03-07"}
+{
+  "generated_at": "2026-09-05 13:07:29",
+  "buy_price_yen_per_kwh": 39.1,
+  "sell_price_yen_per_kwh": 16.0,
+  "buy_sell_price_effective_month": "2026-09",
+  "buy_sell_price_source": "tariff.json（Japan電力 くらしプランS・中部、従量第1段階+燃料費調整+再エネ賦課金の簡易合算。容量拠出金は未含・厳密な請求額再現は bills.json を参照）",
+  "ecoflow_data_since": "2026-08-28",
+  "nichicon_data_since": "2026-07-27",
+  "power_history_since": "2026-03-07"
+}

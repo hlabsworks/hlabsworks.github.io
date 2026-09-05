@@ -40,10 +40,7 @@ SSH_HOST="ht1003@solarchgctl.local"
 LOCAL_MODE=false
 OUT_DIR="${REPO_ROOT}/data/metrics"
 
-# 電気料金の単価。実際の契約プランに合わせて要調整（ここでは依頼時の指定値をそのまま採用）。
-# 節約額試算 = 自家消費分(=太陽光発電-売電) × 買電単価 + 売電分 × 売電単価
-BUY_PRICE_YEN_PER_KWH=30
-SELL_PRICE_YEN_PER_KWH=10
+TARIFF_JSON="${SCRIPT_DIR}/tariff.json"
 
 usage() {
     grep -E '^#( |$)' "${BASH_SOURCE[0]}" | sed -E 's/^# ?//'
@@ -60,6 +57,43 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown option: $1" >&2; usage 1 ;;
     esac
 done
+
+# 電気料金の単価。tariff.json（公開単価データ）の最新月から自動導出する。
+# 節約額試算(daily.json/monthly.json の簡易値) = 自家消費分(=太陽光発電-売電) × 買電単価 + 売電分 × 売電単価
+#   買電単価 = 従量料金 第1段階単価 + 燃料費等調整単価(最新月, applied) + 再エネ賦課金(最新月)
+#     （容量拠出金は円/kW・月の定額であり従量単価に馴染まないため、この簡易値には含めない。
+#       契約容量確定後の正確な請求額再現は bill_model.py が生成する bills.json を参照）
+#   売電単価 = FIT実態単価（自宅は FIT 期間中）。卒FIT換算値は bills.json 側で別途算出する。
+# 出典・単価定義は tariff.json 本体を参照（curl 等での再取得はしない。値の手動更新は tariff.json を直接編集）。
+read -r BUY_PRICE_YEN_PER_KWH SELL_PRICE_YEN_PER_KWH BUY_PRICE_EFFECTIVE_MONTH < <(python3 - "${TARIFF_JSON}" <<'PYEOF'
+import json, sys
+tariff = json.load(open(sys.argv[1], encoding="utf-8"))
+fuel_adj_months = [k for k in tariff["fuel_cost_adjustment_yen_per_kwh"] if not k.startswith("_")]
+latest_month = max(fuel_adj_months)
+tier1_rate = tariff["energy_tiers_yen_per_kwh"][0]["yen_per_kwh"]
+fuel_adj = tariff["fuel_cost_adjustment_yen_per_kwh"][latest_month]["applied"]
+
+def parse_ym(s):
+    y, m = s.split("-")
+    return int(y) * 12 + int(m)
+
+target = parse_ym(latest_month)
+levy = None
+for rng, rate in tariff["renewable_levy_yen_per_kwh"].items():
+    if ".." not in rng:
+        continue
+    lo, hi = rng.split("..")
+    if parse_ym(lo) <= target <= parse_ym(hi):
+        levy = rate
+        break
+if levy is None:
+    raise SystemExit(f"renewable_levy_yen_per_kwh に {latest_month} を含む期間が見つかりません")
+
+buy_price = round(tier1_rate + fuel_adj + levy, 2)
+sell_price = tariff["sell_price_yen_per_kwh"]["fit"]
+print(buy_price, sell_price, latest_month)
+PYEOF
+)
 
 run_sql() {
     # 標準入力の SQL を READ-ONLY で実行し、結果を stdout に流す。
@@ -80,18 +114,22 @@ SQL=$(cat <<SQL
 -- power_history: 実時間差(dt)で積分し kWh 化。欠測ギャップは 120 秒で cap（10秒間隔想定の12倍）。
 CREATE TEMP TABLE ph_daily AS
 WITH ph AS (
-  SELECT date(recorded_at) AS d, solar_w, buy_w, sell_w, surplus_w,
+  SELECT date(recorded_at) AS d, solar_w, consumption_w, buy_w, sell_w, surplus_w,
     (julianday(recorded_at) - julianday(LAG(recorded_at) OVER (ORDER BY recorded_at))) * 86400 AS dt
   FROM power_history
 )
 SELECT d,
   MAX(ROUND(SUM(solar_w * MIN(dt,120)) / 3600000.0, 3), 0) AS solar_kwh,
+  MAX(ROUND(SUM(consumption_w * MIN(dt,120)) / 3600000.0, 3), 0) AS consumption_kwh,
   MAX(ROUND(SUM(buy_w * MIN(dt,120)) / 3600000.0, 3), 0) AS buy_kwh,
   MAX(ROUND(SUM(sell_w * MIN(dt,120)) / 3600000.0, 3), 0) AS sell_kwh,
   ROUND(SUM(MAX(surplus_w,0) * MIN(dt,120)) / 3600000.0, 3) AS surplus_kwh
 FROM ph WHERE dt IS NOT NULL GROUP BY d;
 -- 注: 2026-03-07/08（計測開始直後2日間）はセンサー較正過渡で buy_w が瞬間的に負値を
 -- 記録しており、そのまま積分すると buy_kwh が負になる。物理的にあり得ないため 0 に floor する。
+-- consumption_w（家全体消費電力、schema: power_history.sql）も同じ較正過渡の影響を受けうるため同様に floor する。
+-- 用途: 太陽光が無かった場合の反実仮想請求額（L0）試算で「消費電力 = 買電量」とみなすための実測値
+-- （bill_model.py 参照）。
 
 -- nichicon_battery_history: 既に時間帯別 kWh が入っているので日付ごとに SUM するだけ。
 CREATE TEMP TABLE nb_daily AS
@@ -117,7 +155,7 @@ FROM ef WHERE dt IS NOT NULL GROUP BY date(recorded_at);
 CREATE TEMP TABLE daily_all AS
 SELECT
   p.d AS date,
-  p.solar_kwh, p.buy_kwh, p.sell_kwh, p.surplus_kwh,
+  p.solar_kwh, p.consumption_kwh, p.buy_kwh, p.sell_kwh, p.surplus_kwh,
   n.nichicon_charge_kwh, e.ecoflow_charge_kwh,
   CASE WHEN n.nichicon_charge_kwh IS NULL AND e.ecoflow_charge_kwh IS NULL THEN NULL
        ELSE ROUND(COALESCE(n.nichicon_charge_kwh,0) + COALESCE(e.ecoflow_charge_kwh,0), 3)
@@ -130,6 +168,7 @@ LEFT JOIN ef_daily e ON e.d = p.d;
 SELECT json_group_array(json_object(
   'date', date,
   'solar_kwh', solar_kwh,
+  'consumption_kwh', consumption_kwh,
   'buy_kwh', buy_kwh,
   'sell_kwh', sell_kwh,
   'surplus_kwh', surplus_kwh,
@@ -143,6 +182,7 @@ FROM (SELECT * FROM daily_all ORDER BY date);
 SELECT json_group_array(json_object(
   'month', month,
   'solar_kwh', solar_kwh,
+  'consumption_kwh', consumption_kwh,
   'buy_kwh', buy_kwh,
   'sell_kwh', sell_kwh,
   'surplus_kwh', surplus_kwh,
@@ -154,6 +194,7 @@ SELECT json_group_array(json_object(
 FROM (
   SELECT strftime('%Y-%m', date) AS month,
     ROUND(SUM(solar_kwh), 3) AS solar_kwh,
+    ROUND(SUM(consumption_kwh), 3) AS consumption_kwh,
     ROUND(SUM(buy_kwh), 3) AS buy_kwh,
     ROUND(SUM(sell_kwh), 3) AS sell_kwh,
     ROUND(SUM(surplus_kwh), 3) AS surplus_kwh,
@@ -170,6 +211,8 @@ SELECT json_object(
   'generated_at', datetime('now','localtime'),
   'buy_price_yen_per_kwh', ${BUY_PRICE_YEN_PER_KWH},
   'sell_price_yen_per_kwh', ${SELL_PRICE_YEN_PER_KWH},
+  'buy_sell_price_effective_month', '${BUY_PRICE_EFFECTIVE_MONTH}',
+  'buy_sell_price_source', 'tariff.json（Japan電力 くらしプランS・中部、従量第1段階+燃料費調整+再エネ賦課金の簡易合算。容量拠出金は未含・厳密な請求額再現は bills.json を参照）',
   'ecoflow_data_since', (SELECT MIN(date(recorded_at)) FROM ecoflow_power_history),
   'nichicon_data_since', (SELECT MIN(date) FROM nichicon_battery_history),
   'power_history_since', (SELECT MIN(date(recorded_at)) FROM power_history)
@@ -188,11 +231,11 @@ if [[ -z "${DAILY_JSON}" || -z "${MONTHLY_JSON}" || -z "${META_JSON}" ]]; then
     exit 1
 fi
 
-printf '%s\n' "${DAILY_JSON}" | python3 -m json.tool --indent 2 --sort-keys=false > "${OUT_DIR}/daily.json" 2>/dev/null \
+printf '%s\n' "${DAILY_JSON}" | python3 -m json.tool --indent 2 > "${OUT_DIR}/daily.json" 2>/dev/null \
     || printf '%s' "${DAILY_JSON}" > "${OUT_DIR}/daily.json"
-printf '%s\n' "${MONTHLY_JSON}" | python3 -m json.tool --indent 2 --sort-keys=false > "${OUT_DIR}/monthly.json" 2>/dev/null \
+printf '%s\n' "${MONTHLY_JSON}" | python3 -m json.tool --indent 2 > "${OUT_DIR}/monthly.json" 2>/dev/null \
     || printf '%s' "${MONTHLY_JSON}" > "${OUT_DIR}/monthly.json"
-printf '%s\n' "${META_JSON}" | python3 -m json.tool --indent 2 --sort-keys=false > "${OUT_DIR}/meta.json" 2>/dev/null \
+printf '%s\n' "${META_JSON}" | python3 -m json.tool --indent 2 --no-ensure-ascii > "${OUT_DIR}/meta.json" 2>/dev/null \
     || printf '%s' "${META_JSON}" > "${OUT_DIR}/meta.json"
 
 echo "wrote:"

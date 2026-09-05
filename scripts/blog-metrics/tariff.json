@@ -1,0 +1,54 @@
+{
+  "_comment": "Japan電力 くらしプランS（中部電力エリア・低圧）の料金体系。全て税込。出典URLと取得日を各項目に明記。請求期間は毎月2日〜翌月1日（マイページ実データ）。'YYYY-MM' キーは『使用分の月』（例: 2026-08 = 2026/07/02〜08/01 使用分の請求、マイページ zip 名の YYYYMM と同じ）。",
+  "retailer": "Japan電力",
+  "plan": "くらしプランS",
+  "area": "中部",
+  "source_plan": "https://japaden.jp/electricity/plans/low/ (fetched 2026-09-05)",
+  "basic_fee_yen_per_month": 0,
+  "energy_tiers_yen_per_kwh": [
+    {"up_to_kwh": 400, "yen_per_kwh": 27.00},
+    {"up_to_kwh": null, "yen_per_kwh": 26.00}
+  ],
+  "renewable_levy_yen_per_kwh": {
+    "_comment": "再生可能エネルギー発電促進賦課金（全国一律）。出典: https://www.japaden.jp/plancalculation/ (2026-05検針分〜2027-04検針分)。2025年度(2025-05〜2026-04)の値は要確認（経産省告示 3.98 円/kWh を暫定）",
+    "2025-05..2026-04": 3.98,
+    "2026-05..2027-04": 4.18,
+    "_2025_value_status": "ASSUMED - 請求PDFで突合して確定すること"
+  },
+  "capacity_contribution_yen_per_kw_month": {
+    "_comment": "容量拠出金反映額 = 単価(円/kW・月) × 契約電力(kW)。低圧の契約電力 = 契約容量(A)×100V/1000（例 60A=6kW）。契約容量Aは請求PDFで確定。出典: https://japaden.jp/wp/wp-content/uploads/capacity/capacity_YYYYMM.pdf（中部・低圧 ③反映額単価）。キーは『起算月』",
+    "2025-07": 57, "2025-08": 69, "2025-09": 65, "2025-10": 78, "2025-11": 84, "2025-12": 79,
+    "2026-01": 79, "2026-02": 69, "2026-03": 0, "2026-04": 47, "2026-05": 109, "2026-06": 112,
+    "2026-07": 71, "2026-08": 159, "2026-09": 128,
+    "contract_capacity_amp": null,
+    "_contract_capacity_status": "TODO - 請求PDF/契約書で確定"
+  },
+  "fuel_cost_adjustment_yen_per_kwh": {
+    "_comment": "燃料費等調整単価（中部・低圧、請求に適用される『軽減措置後』の値）。出典: https://japaden.jp/wp/wp-content/uploads/fuel_s/fuel_s_YYYYMM.pdf（2026-08 以降は新書式で『燃料費調整単価①＋政府値引き②』）。政府の電気料金軽減措置が含まれる月は base/relief を併記。",
+    "2025-07": {"applied": 0.00,  "base": 0.00,  "relief": 0.00},
+    "2025-08": {"applied": -0.73, "base": 1.27,  "relief": -2.00},
+    "2025-09": {"applied": 2.86,  "base": 5.26,  "relief": -2.40},
+    "2025-10": {"applied": 1.51,  "base": 3.51,  "relief": -2.00},
+    "2025-11": {"applied": 2.59,  "base": 2.59,  "relief": 0.00},
+    "2025-12": {"applied": 2.30,  "base": 2.30,  "relief": 0.00},
+    "2026-01": {"applied": 1.52,  "base": 1.52,  "relief": 0.00},
+    "2026-02": {"applied": -3.93, "base": 0.57,  "relief": -4.50},
+    "2026-03": {"applied": -2.33, "base": 2.17,  "relief": -4.50},
+    "2026-04": {"applied": -0.63, "base": 0.87,  "relief": -1.50},
+    "2026-05": {"applied": 3.50,  "base": 3.50,  "relief": 0.00},
+    "2026-06": {"applied": 11.00, "base": 11.00, "relief": 0.00},
+    "2026-07": {"applied": 8.69,  "base": 8.69,  "relief": 0.00},
+    "2026-08": {"applied": 7.61,  "base": 11.11, "relief": -3.50},
+    "2026-09": {"applied": 7.92,  "base": 12.42, "relief": -4.50}
+  },
+  "sell_price_yen_per_kwh": {
+    "_comment": "FIT 売電単価（オーナー確認 2026-09-05）。太陽光は 2023-10 運転開始、FIT 10年（〜2033-10頃）。読者向けの卒FIT換算は 8 円/kWh を仮定",
+    "fit": 16.0,
+    "post_fit_assumed_for_readers": 8.0
+  },
+  "meter_read_day": 2,
+  "_verification": {
+    "_comment": "実請求額との突合は energy-archive の請求PDFで行う。突合誤差が±2%を超えたら単価・段階・賦課金のどれかが違う",
+    "reconciled_months": []
+  }
+}

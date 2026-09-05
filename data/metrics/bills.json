@@ -26,7 +26,11 @@
         "total_yen": 473
       },
       "bill_l0_no_solar": null,
-      "l0_unavailable_reason": "usage period 2026-04-02..2026-05-01 に復元負荷(load_kwh) 欠測 30/30 日",
+      "l0_unavailable_reason": {
+        "reason_code": "period_incomplete",
+        "reason_label": "計測データ欠測（30日）",
+        "reason_detail": "usage period 2026-04-02..2026-05-01 に復元負荷(load_kwh) 欠測 30/30 日"
+      },
       "sell_revenue_fit_yen": 11072,
       "sell_revenue_post_fit_yen": 5533,
       "saving_yen_fit": null,
@@ -58,7 +62,11 @@
         "total_yen": 461
       },
       "bill_l0_no_solar": null,
-      "l0_unavailable_reason": "usage period 2026-05-02..2026-06-01 に復元負荷(load_kwh) 欠測 31/31 日",
+      "l0_unavailable_reason": {
+        "reason_code": "period_incomplete",
+        "reason_label": "計測データ欠測（31日）",
+        "reason_detail": "usage period 2026-05-02..2026-06-01 に復元負荷(load_kwh) 欠測 31/31 日"
+      },
       "sell_revenue_fit_yen": 16160,
       "sell_revenue_post_fit_yen": 8081,
       "saving_yen_fit": null,
@@ -90,7 +98,11 @@
         "total_yen": 3661
       },
       "bill_l0_no_solar": null,
-      "l0_unavailable_reason": "usage period 2026-07-02..2026-08-01 に復元負荷(load_kwh) 欠測 31/31 日",
+      "l0_unavailable_reason": {
+        "reason_code": "period_incomplete",
+        "reason_label": "計測データ欠測（31日）",
+        "reason_detail": "usage period 2026-07-02..2026-08-01 に復元負荷(load_kwh) 欠測 31/31 日"
+      },
       "sell_revenue_fit_yen": 6528,
       "sell_revenue_post_fit_yen": 3265,
       "saving_yen_fit": null,
@@ -100,27 +112,37 @@
   "excluded_months": [
     {
       "billing_month": "2026-03",
-      "reason": "usage period 2026-02-02..2026-03-01 に daily.json 欠測 28/28 日"
+      "reason_code": "daily_missing",
+      "reason_label": "計測データ欠測（28日）",
+      "reason_detail": "usage period 2026-02-02..2026-03-01 に daily.json 欠測 28/28 日"
     },
     {
       "billing_month": "2026-04",
-      "reason": "usage period 2026-03-02..2026-04-01 に daily.json 欠測 5/31 日"
+      "reason_code": "daily_missing",
+      "reason_label": "計測データ欠測（5日）",
+      "reason_detail": "usage period 2026-03-02..2026-04-01 に daily.json 欠測 5/31 日"
     },
     {
       "billing_month": "2026-07",
-      "reason": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 2/30 日"
+      "reason_code": "daily_missing",
+      "reason_label": "計測データ欠測（2日）",
+      "reason_detail": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 2/30 日"
     },
     {
       "billing_month": "2026-09",
-      "reason": "tariff.json の fuel_cost_adjustment_yen_per_kwh に 2026-09 が未収載"
+      "reason_code": "tariff_missing",
+      "reason_label": "燃料費調整単価が未確定（請求書未着）",
+      "reason_detail": "tariff.json の fuel_cost_adjustment_yen_per_kwh に 2026-09 が未収載"
     },
     {
       "billing_month": "2026-10",
-      "reason": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
+      "reason_code": "daily_missing",
+      "reason_label": "計測データ欠測（26日）",
+      "reason_detail": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
     }
   ],
   "_note": "内訳(energy_charge_yen等)は表示用に円未満切り捨て。合計(total_yen)は内訳の単純和ではなく、燃料費等調整額の厳密値（丸め前）を含めた計算式全体を円未満切り捨てするため、内訳の単純和とtotal_yenが端数の関係で最大数円ずれることがある（表示専用の丸め。詳細は bill_model.py のcompute_bill() docstring 参照）。",
-  "generated_at": "2026-09-06 07:15:52",
+  "generated_at": "2026-09-06 07:31:10",
   "tariff_source": {
     "retailer": "Japan電力",
     "plan": "くらしプランS",

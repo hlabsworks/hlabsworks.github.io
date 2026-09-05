@@ -595,7 +595,27 @@ class BuildMonthLayersTest(unittest.TestCase):
         self.assertFalse(record["layers"]["L1"]["available"])
         self.assertFalse(record["layers"]["L2"]["available"])
         # QA #2: 部分月の一律コード生成理由ではなく、欠測日/期間の具体的な文言が出ること。
-        self.assertIn("5分プロファイル欠測", record["layers"]["L0"]["unavailable_reason"])
+        # 読者向けQAレビュー対応: reason_code/reason_label/reason_detailの3点セットを持つ。
+        l0_reason = record["layers"]["L0"]["unavailable_reason"]
+        self.assertEqual(l0_reason["reason_code"], "profile_missing")
+        self.assertEqual(l0_reason["reason_label"], "5分プロファイル未取得")
+        self.assertIn("5分プロファイル欠測", l0_reason["reason_detail"])
+
+    def test_l3_unavailable_via_unexpected_keyerror_gets_tariff_missing_reason(self):
+        # bill_model.build_month_record が明示チェックしていない設定不備（renewable_levy の
+        # 対象期間が無い等）はKeyErrorとして伝播する。build_month_layers はこれを
+        # tariff_missing の reason_code/reason_label/reason_detail に変換して捕捉する
+        # （読者向けQAレビュー対応: 内部の例外メッセージをそのまま出さない）。
+        tariff = make_tariff(renewable_levy_yen_per_kwh={"2099-01..2099-02": 3.98})
+        daily = _full_month_daily("2026-09")
+        record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date={})
+        l3 = record["layers"]["L3"]
+        self.assertFalse(l3["available"])
+        l3_reason = l3["unavailable_reason"]
+        self.assertEqual(l3_reason["reason_code"], "tariff_missing")
+        self.assertEqual(l3_reason["reason_label"], "料金表の設定が不足しています")
+        self.assertIn("renewable_levy_yen_per_kwh", l3_reason["reason_detail"])
+        self.assertNotIn("renewable_levy_yen_per_kwh", l3_reason["reason_label"])
 
     def test_l3_only_month_still_exposes_disclosure_keys(self):
         # 追加テストc: L3のみavailableな月でも、ダッシュボードの開示表
@@ -739,6 +759,24 @@ class BuildCumulativeTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # E. 品質ゲート（DDR §5-E）
 # ---------------------------------------------------------------------------
+class MissingDaysReasonTest(unittest.TestCase):
+    """読者向けQAレビュー対応（2026-09-06）: _missing_days_reason が全日欠測と一部欠測を
+    reason_code で区別し、reason_label に内部識別子（日付範囲・件数比）を出さないことを確認する。"""
+
+    def test_all_days_missing_is_profile_missing(self):
+        r = lm._missing_days_reason(["2026-08-02", "2026-08-03"], total_days=2)
+        self.assertEqual(r["reason_code"], "profile_missing")
+        self.assertEqual(r["reason_label"], "5分プロファイル未取得")
+        self.assertIn("5分プロファイル欠測", r["reason_detail"])
+
+    def test_partial_days_missing_is_period_incomplete(self):
+        r = lm._missing_days_reason(["2026-08-02"], total_days=31)
+        self.assertEqual(r["reason_code"], "period_incomplete")
+        self.assertEqual(r["reason_label"], "計測データ欠測（1日）")
+        self.assertIn("2026-08-02", r["reason_detail"])
+        self.assertNotIn("2026-08-02", r["reason_label"])
+
+
 class QualityGateTest(unittest.TestCase):
     def test_day_with_missing_bucket_is_unusable(self):
         buckets = [make_bucket(f"2026-09-01 {h:02d}:00") for h in range(23)]  # 288に足りない
@@ -786,9 +824,15 @@ class QualityGateTest(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertTrue(record["layers"]["L3"]["available"])
         self.assertFalse(record["layers"]["L0"]["available"])
-        self.assertIn("5分プロファイル欠測", record["layers"]["L0"]["unavailable_reason"])
-        self.assertIn("1/31", record["layers"]["L0"]["unavailable_reason"])
-        self.assertIn("2026-08-31", record["layers"]["L0"]["unavailable_reason"])
+        l0_reason = record["layers"]["L0"]["unavailable_reason"]
+        # 1日だけ欠測(31日中)なので profile_missing ではなく period_incomplete。
+        self.assertEqual(l0_reason["reason_code"], "period_incomplete")
+        self.assertEqual(l0_reason["reason_label"], "計測データ欠測（1日）")
+        self.assertIn("5分プロファイル欠測", l0_reason["reason_detail"])
+        self.assertIn("1/31", l0_reason["reason_detail"])
+        self.assertIn("2026-08-31", l0_reason["reason_detail"])
+        # reason_labelには内部識別子（日付・件数比の生文言）を出さない。
+        self.assertNotIn("2026-08-31", l0_reason["reason_label"])
 
     def test_full_month_available_when_all_days_usable(self):
         # coverage==1.0（全日usable）ならL0〜L2はavailableになる。

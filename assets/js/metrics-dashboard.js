@@ -53,18 +53,56 @@
     return kwh(r.sell_kwh) + "（センサー計測・公式突合未取得）";
   }
 
-  // 反実仮想(L0)は復元負荷(load_true)が請求期間全日そろう月のみ表示する。
-  // それ以外は「計測項目不足のため推定不可」と表示し、値を捏造しない
-  // （docs/design/20260905_layer-model-ddr.md §0、bill_model.py の l0_unavailable_reason）。
-  function l0Text(r) {
-    if (r.bill_l0_no_solar) return yen(r.bill_l0_no_solar.total_yen);
-    return r.l0_unavailable_reason || "計測項目不足のため推定不可";
+  // 読者向けQAレビュー対応（2026-09-06）: 理由は {reason_code, reason_label, reason_detail}
+  // の3点セット（bill_model.py/layer_model.py が付与）。表示は reason_label のみを使い、
+  // 内部ファイル名・キー名を含みうる reason_detail は title 属性（ホバー時のみ表示）に限定する。
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
   }
 
-  // QA #9a: 節約額(saving_yen_*)がnullの月は「―」ではなくl0と同じ理由を表示する。
-  function savingText(r, field) {
+  function reasonLabel(reasonObj) {
+    return (reasonObj && reasonObj.reason_label) || "推定不可";
+  }
+
+  function reasonDetail(reasonObj) {
+    return (reasonObj && reasonObj.reason_detail) || "";
+  }
+
+  function reasonSpan(text, detail) {
+    return "<span title=\"" + escapeHtml(detail) + "\">" + escapeHtml(text) + "</span>";
+  }
+
+  // 反実仮想(L0)は復元負荷(load_true)が請求期間全日そろう月のみ表示する。サマリー行では
+  // 理由を1回だけ「推定不可（理由ラベル）」の形で示す（同一行での理由文の重複を避ける）。
+  function l0SummaryText(r) {
+    if (r.bill_l0_no_solar) return yen(r.bill_l0_no_solar.total_yen);
+    return "推定不可（" + escapeHtml(reasonLabel(r.l0_unavailable_reason)) + "）";
+  }
+
+  // 請求額再現表の「反実仮想」セル。本文は「推定不可」の一語のみにし、機械理由
+  // (reason_detail、内部ファイル名等を含みうる)はtitle属性でホバー表示に限定する。
+  function l0CellHtml(r) {
+    if (r.bill_l0_no_solar) return "<td>" + yen(r.bill_l0_no_solar.total_yen) + "</td>";
+    return "<td title=\"" + escapeHtml(reasonDetail(r.l0_unavailable_reason)) + "\">推定不可</td>";
+  }
+
+  // 節約額(saving_yen_*)セル。L0起因でnullの場合、反実仮想セルと同じ理由を繰り返さず
+  // 「―」+titleのみにする（1行に同じ内部文言が複数回並ぶのを防ぐ）。
+  function savingCellHtml(r, field) {
     if (r[field] === null || r[field] === undefined) {
-      return r.l0_unavailable_reason || "計測項目不足のため推定不可";
+      return "<td title=\"" + escapeHtml(reasonDetail(r.l0_unavailable_reason)) + "\">―</td>";
+    }
+    return "<td>" + yen(r[field]) + "</td>";
+  }
+
+  // サマリー行の節約額。反実仮想の行で既に理由ラベルを示しているため、こちらは
+  // 「―」+title（ホバーで機械理由）のみにする。
+  function savingSummaryHtml(r, field) {
+    if (r[field] === null || r[field] === undefined) {
+      return reasonSpan("―", reasonDetail(r.l0_unavailable_reason));
     }
     return yen(r[field]);
   }
@@ -85,10 +123,10 @@
       html +=
         "<li>直近の請求期間換算（" + latestBill.billing_month + "、" + latestBill.usage_period.start + "〜" + latestBill.usage_period.end + "）: " +
         "推定請求額 " + yen(latestBill.bill_actual.total_yen) +
-        "（太陽光が無い場合の反実仮想: " + l0Text(latestBill) + "）</li>" +
+        "（太陽光が無い場合の反実仮想: " + l0SummaryText(latestBill) + "）</li>" +
         "<li>売電量: " + sellSummaryText(latestBill) + "</li>" +
-        "<li>節約額（請求実績単価ベース・FIT実態）: " + savingText(latestBill, "saving_yen_fit") +
-        " / 節約額（卒FIT換算）: " + savingText(latestBill, "saving_yen_post_fit") + "</li>";
+        "<li>節約額（請求実績単価ベース・FIT実態）: " + savingSummaryHtml(latestBill, "saving_yen_fit") +
+        " / 節約額（卒FIT換算）: " + savingSummaryHtml(latestBill, "saving_yen_post_fit") + "</li>";
     }
     html += "</ul>";
     el.innerHTML = html;
@@ -211,16 +249,20 @@
         "<td>" + kwh(r.bill_actual.buy_kwh) + "</td>" +
         "<td>" + sellSummaryText(r) + "</td>" +
         "<td>" + yen(r.bill_actual.total_yen) + "</td>" +
-        "<td>" + l0Text(r) + "</td>" +
-        "<td>" + savingText(r, "saving_yen_fit") + "</td>" +
-        "<td>" + savingText(r, "saving_yen_post_fit") + "</td>" +
+        l0CellHtml(r) +
+        savingCellHtml(r, "saving_yen_fit") +
+        savingCellHtml(r, "saving_yen_post_fit") +
         "</tr>";
     }).join("");
     var excludedNote = "";
     if (bills.excluded_months && bills.excluded_months.length > 0) {
+      // 読者向けQAレビュー対応: reason_label（読者向け短文）のみ本文に出し、
+      // reason_detail（daily.json・tariff.json等の内部名を含みうる）はtitleに限定する。
       excludedNote =
         "<p class=\"metrics-notes\">除外された請求月: " +
-        bills.excluded_months.map(function (m) { return m.billing_month + "（" + m.reason + "）"; }).join(" / ") +
+        bills.excluded_months.map(function (m) {
+          return m.billing_month + "（" + reasonSpan(m.reason_label, m.reason_detail) + "）";
+        }).join(" / ") +
         "</p>";
     }
     el.innerHTML =

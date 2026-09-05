@@ -99,6 +99,22 @@ def _floor_yen(value: float) -> int:
     return math.floor(value)
 
 
+# 値を算出できない理由の3点セット。読者向けQAレビュー対応（2026-09-06）:
+# - reason_code: 機械可読な分類（テスト・将来のUI分岐で使う）
+# - reason_label: 読者向け短文（ダッシュボードの表・サマリーはこれだけを表示する）
+# - reason_detail: 内部ファイル名・キー名を含みうる開発者向け詳細文（title属性等でホバー表示のみ。
+#   本文には出さない — 「daily.json」「tariff.json」「load_kwh」等の内部名を読者に見せないため）
+REASON_CODE_PROFILE_MISSING = "profile_missing"
+REASON_CODE_PERIOD_INCOMPLETE = "period_incomplete"
+REASON_CODE_DAILY_MISSING = "daily_missing"
+REASON_CODE_TARIFF_MISSING = "tariff_missing"
+
+
+def reason(code: str, label: str, detail: str) -> dict:
+    """layer_model.py とも共用する理由オブジェクトを作る（二重実装しない）。"""
+    return {"reason_code": code, "reason_label": label, "reason_detail": detail}
+
+
 def _parse_ym(ym: str) -> int:
     """'YYYY-MM' を年*12+月 の通し月数に変換する（範囲比較用）。"""
     y, m = ym.split("-")
@@ -355,21 +371,33 @@ def build_month_record(
         return {
             "billing_month": billing_month,
             "excluded": True,
-            "reason": f"usage period {start.isoformat()}..{end.isoformat()} に daily.json 欠測 {buy_missing}/{total_days} 日",
+            **reason(
+                REASON_CODE_DAILY_MISSING,
+                f"計測データ欠測（{buy_missing}日）",
+                f"usage period {start.isoformat()}..{end.isoformat()} に daily.json 欠測 {buy_missing}/{total_days} 日",
+            ),
         }
 
     if billing_month not in tariff["fuel_cost_adjustment_yen_per_kwh"]:
         return {
             "billing_month": billing_month,
             "excluded": True,
-            "reason": f"tariff.json の fuel_cost_adjustment_yen_per_kwh に {billing_month} が未収載",
+            **reason(
+                REASON_CODE_TARIFF_MISSING,
+                "燃料費調整単価が未確定（請求書未着）",
+                f"tariff.json の fuel_cost_adjustment_yen_per_kwh に {billing_month} が未収載",
+            ),
         }
 
     if billing_month not in tariff["capacity_contribution_yen_per_month"]:
         return {
             "billing_month": billing_month,
             "excluded": True,
-            "reason": f"tariff.json の capacity_contribution_yen_per_month に {billing_month} が未収載",
+            **reason(
+                REASON_CODE_TARIFF_MISSING,
+                "容量拠出金が未確定（請求書未着）",
+                f"tariff.json の capacity_contribution_yen_per_month に {billing_month} が未収載",
+            ),
         }
 
     solar_kwh, _, _ = sum_period(daily_by_date, start, end, "solar_kwh")
@@ -399,13 +427,17 @@ def build_month_record(
     load_kwh, _, load_missing = sum_period(daily_load_by_date or {}, start, end, "load_kwh")
     if daily_load_by_date is None or len(daily_load_by_date) == 0:
         bill_l0 = None
-        l0_unavailable_reason = (
-            f"{DEFAULT_DAILY_LOAD_PATH.relative_to(REPO_ROOT)} が無いため復元負荷を算出できません"
+        l0_unavailable_reason = reason(
+            REASON_CODE_PROFILE_MISSING,
+            "5分プロファイル未取得",
+            f"{DEFAULT_DAILY_LOAD_PATH.relative_to(REPO_ROOT)} が無いため復元負荷を算出できません",
         )
     elif load_missing > 0:
         bill_l0 = None
-        l0_unavailable_reason = (
-            f"usage period {start.isoformat()}..{end.isoformat()} に復元負荷(load_kwh) 欠測 {load_missing}/{total_days} 日"
+        l0_unavailable_reason = reason(
+            REASON_CODE_PERIOD_INCOMPLETE,
+            f"計測データ欠測（{load_missing}日）",
+            f"usage period {start.isoformat()}..{end.isoformat()} に復元負荷(load_kwh) 欠測 {load_missing}/{total_days} 日",
         )
     else:
         bill_l0 = compute_bill(tariff, load_kwh, billing_month)
@@ -485,7 +517,12 @@ def build_bills(
             tariff, daily_by_date, billing_month, official_sell_by_month, official_buy_by_month, daily_load_by_date
         )
         if record["excluded"]:
-            excluded.append({"billing_month": record["billing_month"], "reason": record["reason"]})
+            excluded.append({
+                "billing_month": record["billing_month"],
+                "reason_code": record["reason_code"],
+                "reason_label": record["reason_label"],
+                "reason_detail": record["reason_detail"],
+            })
         else:
             months.append(record)
     return {"months": months, "excluded_months": excluded, "_note": BILLS_ROUNDING_NOTE}

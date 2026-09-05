@@ -23,17 +23,29 @@
         "L0": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          }
         },
         "L1": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          }
         },
         "L2": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 30/30日（2026-04-02〜2026-05-01）"
+          }
         },
         "L3": {
           "kind": "measured",
@@ -71,17 +83,29 @@
         "L0": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          }
         },
         "L1": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          }
         },
         "L2": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-05-02〜2026-06-01）"
+          }
         },
         "L3": {
           "kind": "measured",
@@ -119,17 +143,29 @@
         "L0": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          }
         },
         "L1": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          }
         },
         "L2": {
           "kind": "estimated",
           "available": false,
-          "unavailable_reason": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          "unavailable_reason": {
+            "reason_code": "profile_missing",
+            "reason_label": "5分プロファイル未取得",
+            "reason_detail": "5分プロファイル欠測 31/31日（2026-07-02〜2026-08-01）"
+          }
         },
         "L3": {
           "kind": "measured",
@@ -160,46 +196,126 @@
     {
       "billing_month": "2026-03",
       "layer_reasons": {
-        "L0": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）",
-        "L1": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）",
-        "L2": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）",
-        "L3": "usage period 2026-02-02..2026-03-01 に daily.json 欠測 28/28 日"
+        "L0": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）"
+        },
+        "L1": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）"
+        },
+        "L2": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 28/28日（2026-02-02〜2026-03-01）"
+        },
+        "L3": {
+          "reason_code": "daily_missing",
+          "reason_label": "計測データ欠測（28日）",
+          "reason_detail": "usage period 2026-02-02..2026-03-01 に daily.json 欠測 28/28 日"
+        }
       }
     },
     {
       "billing_month": "2026-04",
       "layer_reasons": {
-        "L0": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）",
-        "L1": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）",
-        "L2": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）",
-        "L3": "usage period 2026-03-02..2026-04-01 に daily.json 欠測 5/31 日"
+        "L0": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）"
+        },
+        "L1": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）"
+        },
+        "L2": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 31/31日（2026-03-02〜2026-04-01）"
+        },
+        "L3": {
+          "reason_code": "daily_missing",
+          "reason_label": "計測データ欠測（5日）",
+          "reason_detail": "usage period 2026-03-02..2026-04-01 に daily.json 欠測 5/31 日"
+        }
       }
     },
     {
       "billing_month": "2026-07",
       "layer_reasons": {
-        "L0": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）",
-        "L1": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）",
-        "L2": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）",
-        "L3": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 2/30 日"
+        "L0": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
+        },
+        "L1": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
+        },
+        "L2": {
+          "reason_code": "profile_missing",
+          "reason_label": "5分プロファイル未取得",
+          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
+        },
+        "L3": {
+          "reason_code": "daily_missing",
+          "reason_label": "計測データ欠測（2日）",
+          "reason_detail": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 2/30 日"
+        }
       }
     },
     {
       "billing_month": "2026-09",
       "layer_reasons": {
-        "L0": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）",
-        "L1": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）",
-        "L2": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）",
-        "L3": "tariff.json の fuel_cost_adjustment_yen_per_kwh に 2026-09 が未収載"
+        "L0": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（30日）",
+          "reason_detail": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）"
+        },
+        "L1": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（30日）",
+          "reason_detail": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）"
+        },
+        "L2": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（30日）",
+          "reason_detail": "5分プロファイル欠測 30/31日（2026-08-02〜2026-08-31）"
+        },
+        "L3": {
+          "reason_code": "tariff_missing",
+          "reason_label": "燃料費調整単価が未確定（請求書未着）",
+          "reason_detail": "tariff.json の fuel_cost_adjustment_yen_per_kwh に 2026-09 が未収載"
+        }
       }
     },
     {
       "billing_month": "2026-10",
       "layer_reasons": {
-        "L0": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）",
-        "L1": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）",
-        "L2": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）",
-        "L3": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
+        "L0": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（28日）",
+          "reason_detail": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）"
+        },
+        "L1": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（28日）",
+          "reason_detail": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）"
+        },
+        "L2": {
+          "reason_code": "period_incomplete",
+          "reason_label": "計測データ欠測（28日）",
+          "reason_detail": "5分プロファイル欠測 28/30日（2026-09-03、2026-09-05〜2026-10-01）"
+        },
+        "L3": {
+          "reason_code": "daily_missing",
+          "reason_label": "計測データ欠測（26日）",
+          "reason_detail": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
+        }
       }
     }
   ],
@@ -207,5 +323,5 @@
     "months_included": 0,
     "available": false
   },
-  "generated_at": "2026-09-06 07:15:52"
+  "generated_at": "2026-09-06 07:31:10"
 }

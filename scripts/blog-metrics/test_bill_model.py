@@ -43,6 +43,26 @@ def make_tariff(**overrides) -> dict:
     return tariff
 
 
+class ReasonHelperTest(unittest.TestCase):
+    """読者向けQAレビュー対応（2026-09-06）: reason() が3点セット
+    {reason_code, reason_label, reason_detail} を返すことを確認する。"""
+
+    def test_reason_returns_three_keys(self):
+        r = bill_model.reason("profile_missing", "5分プロファイル未取得", "内部ファイルXが無い")
+        self.assertEqual(
+            r, {"reason_code": "profile_missing", "reason_label": "5分プロファイル未取得", "reason_detail": "内部ファイルXが無い"}
+        )
+
+    def test_reason_codes_are_distinct_constants(self):
+        codes = {
+            bill_model.REASON_CODE_PROFILE_MISSING,
+            bill_model.REASON_CODE_PERIOD_INCOMPLETE,
+            bill_model.REASON_CODE_DAILY_MISSING,
+            bill_model.REASON_CODE_TARIFF_MISSING,
+        }
+        self.assertEqual(len(codes), 4)
+
+
 class TieredEnergyChargeTest(unittest.TestCase):
     def test_below_first_tier_uses_single_rate(self):
         tiers = [{"up_to_kwh": 400, "yen_per_kwh": 27.0}, {"up_to_kwh": None, "yen_per_kwh": 26.0}]
@@ -197,7 +217,12 @@ class BuildMonthRecordTest(unittest.TestCase):
             d += timedelta(days=1)
         record = bill_model.build_month_record(tariff, daily, "2026-08")
         self.assertTrue(record["excluded"])
-        self.assertIn("欠測", record["reason"])
+        self.assertEqual(record["reason_code"], bill_model.REASON_CODE_DAILY_MISSING)
+        self.assertIn("欠測", record["reason_label"])
+        self.assertIn("欠測", record["reason_detail"])
+        # reason_detail には内部ファイル名(daily.json)が残るが、reason_labelには出さない
+        # （読者向けQAレビュー対応。表示側はreason_labelのみ使う）。
+        self.assertNotIn("daily.json", record["reason_label"])
 
     def test_month_without_fuel_rate_is_excluded(self):
         # fuel_cost_adjustment_yen_per_kwh に billing_month が未収載（請求PDF未取得）の場合、
@@ -213,7 +238,29 @@ class BuildMonthRecordTest(unittest.TestCase):
             d += timedelta(days=1)
         record = bill_model.build_month_record(tariff, daily, "2026-09")
         self.assertTrue(record["excluded"])
-        self.assertIn("未収載", record["reason"])
+        self.assertEqual(record["reason_code"], bill_model.REASON_CODE_TARIFF_MISSING)
+        self.assertIn("未確定", record["reason_label"])
+        self.assertIn("未収載", record["reason_detail"])
+        self.assertNotIn("fuel_cost_adjustment_yen_per_kwh", record["reason_label"])
+
+    def test_month_without_capacity_contribution_is_excluded_with_distinct_label(self):
+        # 容量拠出金未収載は燃料費調整単価未収載と同じreason_codeだが、読者向けlabelは
+        # 別文言にする（「燃料費調整単価」と「容量拠出金」を混同させない）。
+        tariff = make_tariff()
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-10"] = 1.0  # fuelは収載済みにしておく
+        start, end = bill_model.billing_period("2026-10", meter_read_day=2)
+        daily = {}
+        d = start
+        while d <= end:
+            daily[d.isoformat()] = self._daily_row(d.isoformat())
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        record = bill_model.build_month_record(tariff, daily, "2026-10")
+        self.assertTrue(record["excluded"])
+        self.assertEqual(record["reason_code"], bill_model.REASON_CODE_TARIFF_MISSING)
+        self.assertIn("容量拠出金", record["reason_label"])
+        self.assertNotIn("capacity_contribution_yen_per_month", record["reason_label"])
 
     def _full_month_daily(self, billing_month: str) -> dict:
         start, end = bill_model.billing_period(billing_month, meter_read_day=2)
@@ -280,11 +327,17 @@ class BuildMonthRecordTest(unittest.TestCase):
 
     def test_l0_is_null_when_daily_load_absent(self):
         # daily_load.json が無ければ捏造せず null（旧仕様の consumption_kwh フォールバックは廃止）。
+        # 読者向けQAレビュー対応: l0_unavailable_reason は {reason_code, reason_label,
+        # reason_detail} を持ち、reason_labelには内部ファイル名を出さない。
         tariff = make_tariff()
         daily = self._full_month_daily("2026-08")
         record = bill_model.build_month_record(tariff, daily, "2026-08")
         self.assertIsNone(record["bill_l0_no_solar"])
-        self.assertIn("daily_load.json", record["l0_unavailable_reason"])
+        l0_reason = record["l0_unavailable_reason"]
+        self.assertEqual(l0_reason["reason_code"], bill_model.REASON_CODE_PROFILE_MISSING)
+        self.assertEqual(l0_reason["reason_label"], "5分プロファイル未取得")
+        self.assertIn("daily_load.json", l0_reason["reason_detail"])
+        self.assertNotIn("daily_load.json", l0_reason["reason_label"])
         self.assertIsNone(record["saving_yen_fit"])
         self.assertIsNone(record["saving_yen_post_fit"])
 
@@ -302,7 +355,12 @@ class BuildMonthRecordTest(unittest.TestCase):
             d += timedelta(days=1)
         record = bill_model.build_month_record(tariff, daily, "2026-08", daily_load_by_date=daily_load)
         self.assertIsNone(record["bill_l0_no_solar"])
-        self.assertIn("欠測", record["l0_unavailable_reason"])
+        l0_reason = record["l0_unavailable_reason"]
+        self.assertEqual(l0_reason["reason_code"], bill_model.REASON_CODE_PERIOD_INCOMPLETE)
+        self.assertIn("計測データ欠測", l0_reason["reason_label"])
+        self.assertIn("欠測", l0_reason["reason_detail"])
+        self.assertNotIn("load_kwh", l0_reason["reason_label"])
+        self.assertNotIn("usage period", l0_reason["reason_label"])
 
     def test_l0_computed_from_restored_load_when_complete(self):
         tariff = make_tariff()
@@ -379,6 +437,22 @@ class BuildBillsTest(unittest.TestCase):
         self.assertEqual(result["months"], [])
         self.assertEqual(result["excluded_months"], [])
         self.assertIn("_note", result)
+
+    def test_excluded_months_expose_reason_triple_not_internal_names(self):
+        # 読者向けQAレビュー対応: excluded_months は reason_code/reason_label/reason_detail
+        # の3点セットを持ち、reason_label には内部ファイル名・キー名を出さない
+        # （旧仕様の単一"reason"文字列は廃止）。
+        tariff = make_tariff()
+        daily = {"2026-08-15": {"date": "2026-08-15", "buy_kwh": 1.0, "solar_kwh": 10.0, "sell_kwh": 5.0}}
+        result = bill_model.build_bills(tariff, daily)
+        self.assertGreater(len(result["excluded_months"]), 0)
+        for m in result["excluded_months"]:
+            self.assertIn("reason_code", m)
+            self.assertIn("reason_label", m)
+            self.assertIn("reason_detail", m)
+            self.assertNotIn("reason", m)
+            for internal_name in ("daily.json", "tariff.json", "fuel_cost_adjustment_yen_per_kwh", "capacity_contribution_yen_per_month"):
+                self.assertNotIn(internal_name, m["reason_label"])
 
 
 class LoadOfficialSellTest(unittest.TestCase):

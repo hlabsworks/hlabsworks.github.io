@@ -393,9 +393,14 @@ def eco_balance_warning(buckets: list[Bucket]) -> str | None:
     return None
 
 
-def unavailable_layer(kind: str, reason: str | None, extra: dict | None = None) -> dict:
+def unavailable_layer(kind: str, reason: dict | None, extra: dict | None = None) -> dict:
     """QA #7: 「available:false の層は金額キーを持たない」形を1箇所に固定する。
-    L0〜L3すべての unavailable 構築箇所はこの関数を経由する。"""
+    L0〜L3すべての unavailable 構築箇所はこの関数を経由する。
+
+    reason は bill_model.reason() と同型の {reason_code, reason_label, reason_detail}
+    （読者向けQAレビュー対応、2026-09-06）。reason_detail は内部ファイル名・キー名を含み
+    うるため、UI側は reason_label のみを表示し reason_detail は title 属性等に限定する。
+    """
     d = {"kind": kind, "available": False, "unavailable_reason": reason}
     if extra:
         d.update(extra)
@@ -436,7 +441,7 @@ def layer_dict(
     billing_month: str,
     sell_price_yen_per_kwh: float,
     sell_post_fit_price: float,
-    unavailable_reason: str | None = None,
+    unavailable_reason: dict | None = None,
     extra: dict | None = None,
 ) -> dict:
     """L0/L1/L2 用の薄いラッパー: compute_bill を呼んで available_layer/unavailable_layer を
@@ -471,8 +476,19 @@ def _format_missing_ranges(missing_days: list[str]) -> str:
     return "、".join(parts)
 
 
-def _missing_days_reason(missing_days: list[str], total_days: int) -> str:
+def _missing_days_detail(missing_days: list[str], total_days: int) -> str:
     return f"5分プロファイル欠測 {len(missing_days)}/{total_days}日（{_format_missing_ranges(missing_days)}）"
+
+
+def _missing_days_reason(missing_days: list[str], total_days: int) -> dict:
+    """QA読者向け対応（2026-09-06）: 全日欠測（プロファイル自体が無い）と一部欠測を
+    reason_code で区別する（profile_missing vs period_incomplete）。"""
+    detail = _missing_days_detail(missing_days, total_days)
+    if len(missing_days) >= total_days:
+        return bill_model.reason(bill_model.REASON_CODE_PROFILE_MISSING, "5分プロファイル未取得", detail)
+    return bill_model.reason(
+        bill_model.REASON_CODE_PERIOD_INCOMPLETE, f"計測データ欠測（{len(missing_days)}日）", detail
+    )
 
 
 def build_month_layers(
@@ -500,10 +516,17 @@ def build_month_layers(
             tariff, daily_by_date, billing_month, official_sell_by_month, official_buy_by_month, daily_load_by_date=None
         )
     except KeyError as exc:
-        l3_record = {"billing_month": billing_month, "excluded": True, "reason": str(exc)}
+        l3_record = {
+            "billing_month": billing_month,
+            "excluded": True,
+            **bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc)),
+        }
 
     if l3_record["excluded"]:
-        l3_layer = unavailable_layer("measured", l3_record["reason"])
+        l3_layer = unavailable_layer(
+            "measured",
+            bill_model.reason(l3_record["reason_code"], l3_record["reason_label"], l3_record["reason_detail"]),
+        )
     else:
         bill_actual = l3_record["bill_actual"]
         l3_layer = available_layer(
@@ -647,6 +670,7 @@ def build_layers(
             months.append(record)
         else:
             # QA #4: 全層が unavailable の月は層ごとの理由を残す（一律の文言にしない）。
+            # 各理由は {reason_code, reason_label, reason_detail} 形式（読者向けQAレビュー対応）。
             excluded.append({
                 "billing_month": billing_month,
                 "layer_reasons": {key: layer.get("unavailable_reason") for key, layer in layers.items()},

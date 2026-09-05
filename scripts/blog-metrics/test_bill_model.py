@@ -142,6 +142,95 @@ class BuildMonthRecordTest(unittest.TestCase):
         self.assertTrue(record["excluded"])
         self.assertIn("欠測", record["reason"])
 
+    def _full_month_daily(self, billing_month: str) -> dict:
+        start, end = bill_model.billing_period(billing_month, meter_read_day=2)
+        daily = {}
+        d = start
+        while d <= end:
+            daily[d.isoformat()] = self._daily_row(d.isoformat(), sell=13.0)
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        return daily
+
+    def test_official_sell_used_when_present_and_period_matches(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        start, end = bill_model.billing_period("2026-08", meter_read_day=2)
+        total_days = (end - start).days + 1
+        sensor_sell_kwh = 13.0 * total_days  # 403.0 kWh
+        official_by_month = {
+            "2026-08": {
+                "settlement_month": "2026-08",
+                "period_from": start.isoformat(),
+                "period_to": end.isoformat(),
+                "official_sell_kwh": 400.0,
+                "sell_revenue_yen": 6400,
+            }
+        }
+        record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month)
+        self.assertEqual(record["sell_source"], "tepco_official")
+        self.assertEqual(record["sell_kwh_official"], 400.0)
+        self.assertEqual(record["sell_kwh"], round(sensor_sell_kwh, 3))
+        self.assertEqual(record["sell_revenue_fit_yen"], 6400)
+        # diff% = (センサー - 公式) / 公式 * 100
+        expected_diff_pct = round(((sensor_sell_kwh - 400.0) / 400.0) * 100, 1)
+        self.assertEqual(record["sell_diff_pct"], expected_diff_pct)
+        self.assertGreater(record["sell_diff_pct"], 0)  # センサーが公式より多く見積もっている
+
+    def test_falls_back_to_sensor_when_official_sell_absent(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month={})
+        self.assertEqual(record["sell_source"], "sensor")
+        self.assertIsNone(record["sell_kwh_official"])
+        self.assertIsNone(record["sell_diff_pct"])
+        self.assertEqual(record["sell_revenue_fit_yen"], bill_model._round_yen(record["sell_kwh"] * 16.0))
+
+    def test_falls_back_to_sensor_when_official_sell_period_mismatch(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        official_by_month = {
+            "2026-08": {
+                "settlement_month": "2026-08",
+                "period_from": "2099-01-01",  # daily.json 側の請求期間とわざとズラす
+                "period_to": "2099-01-31",
+                "official_sell_kwh": 400.0,
+                "sell_revenue_yen": 6400,
+            }
+        }
+        record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month)
+        self.assertEqual(record["sell_source"], "sensor")
+        self.assertIsNone(record["sell_kwh_official"])
+
+
+class LoadOfficialSellTest(unittest.TestCase):
+    def test_missing_file_returns_empty_dict(self):
+        result = bill_model.load_official_sell(Path("/nonexistent/official_sell.json"))
+        self.assertEqual(result, {})
+
+    def test_loads_and_indexes_by_settlement_month(self):
+        import json
+        import tempfile
+
+        payload = {
+            "months": [
+                {
+                    "settlement_month": "2026-08",
+                    "period_from": "2026-07-02",
+                    "period_to": "2026-08-01",
+                    "official_sell_kwh": 408.1,
+                    "sell_revenue_yen": 6528,
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "official_sell.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = bill_model.load_official_sell(path)
+        self.assertIn("2026-08", result)
+        self.assertEqual(result["2026-08"]["official_sell_kwh"], 408.1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,9 @@
       "solar_kwh": 640.225,
       "consumption_kwh": 247.89,
       "sell_kwh": 677.684,
+      "sell_kwh_official": 691.6,
+      "sell_diff_pct": -2.0,
+      "sell_source": "tepco_official",
       "bill_actual": {
         "buy_kwh": 5.215,
         "basic_fee_yen": 0,
@@ -31,10 +34,10 @@
         "capacity_unknown": true,
         "total_yen": 8597
       },
-      "sell_revenue_fit_yen": 10843,
-      "sell_revenue_post_fit_yen": 5421,
-      "saving_yen_fit": 19259,
-      "saving_yen_post_fit": 13837
+      "sell_revenue_fit_yen": 11072,
+      "sell_revenue_post_fit_yen": 5533,
+      "saving_yen_fit": 19488,
+      "saving_yen_post_fit": 13949
     },
     {
       "billing_month": "2026-06",
@@ -47,6 +50,9 @@
       "solar_kwh": 831.146,
       "consumption_kwh": 246.141,
       "sell_kwh": 1016.817,
+      "sell_kwh_official": 1010.1,
+      "sell_diff_pct": 0.7,
+      "sell_source": "tepco_official",
       "bill_actual": {
         "buy_kwh": 2.469,
         "basic_fee_yen": 0,
@@ -67,10 +73,10 @@
         "capacity_unknown": true,
         "total_yen": 10383
       },
-      "sell_revenue_fit_yen": 16269,
-      "sell_revenue_post_fit_yen": 8135,
-      "saving_yen_fit": 26548,
-      "saving_yen_post_fit": 18414
+      "sell_revenue_fit_yen": 16160,
+      "sell_revenue_post_fit_yen": 8081,
+      "saving_yen_fit": 26439,
+      "saving_yen_post_fit": 18360
     },
     {
       "billing_month": "2026-08",
@@ -83,6 +89,9 @@
       "solar_kwh": 734.047,
       "consumption_kwh": 533.966,
       "sell_kwh": 406.961,
+      "sell_kwh_official": 408.1,
+      "sell_diff_pct": -0.3,
+      "sell_source": "tepco_official",
       "bill_actual": {
         "buy_kwh": 80.362,
         "basic_fee_yen": 0,
@@ -103,10 +112,10 @@
         "capacity_unknown": true,
         "total_yen": 20578
       },
-      "sell_revenue_fit_yen": 6511,
-      "sell_revenue_post_fit_yen": 3256,
-      "saving_yen_fit": 23971,
-      "saving_yen_post_fit": 20716
+      "sell_revenue_fit_yen": 6528,
+      "sell_revenue_post_fit_yen": 3265,
+      "saving_yen_fit": 23988,
+      "saving_yen_post_fit": 20725
     },
     {
       "billing_month": "2026-09",
@@ -119,6 +128,9 @@
       "solar_kwh": 756.794,
       "consumption_kwh": 542.759,
       "sell_kwh": 401.931,
+      "sell_kwh_official": 399.7,
+      "sell_diff_pct": 0.6,
+      "sell_source": "tepco_official",
       "bill_actual": {
         "buy_kwh": 73.043,
         "basic_fee_yen": 0,
@@ -139,10 +151,10 @@
         "capacity_unknown": true,
         "total_yen": 21080
       },
-      "sell_revenue_fit_yen": 6431,
-      "sell_revenue_post_fit_yen": 3215,
-      "saving_yen_fit": 24655,
-      "saving_yen_post_fit": 21439
+      "sell_revenue_fit_yen": 6400,
+      "sell_revenue_post_fit_yen": 3198,
+      "saving_yen_fit": 24624,
+      "saving_yen_post_fit": 21422
     }
   ],
   "excluded_months": [
@@ -163,7 +175,7 @@
       "reason": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
     }
   ],
-  "generated_at": "2026-09-05 13:07:39",
+  "generated_at": "2026-09-05 19:25:54",
   "tariff_source": {
     "retailer": "Japan電力",
     "plan": "くらしプランS",

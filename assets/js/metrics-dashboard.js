@@ -35,6 +35,19 @@
     return bills.months[bills.months.length - 1];
   }
 
+  function diffPctText(diffPct) {
+    if (diffPct === null || diffPct === undefined) return "";
+    var sign = diffPct > 0 ? "+" : "";
+    return "（センサー差 " + sign + diffPct.toFixed(1) + "%）";
+  }
+
+  function sellSummaryText(r) {
+    if (r.sell_source === "tepco_official") {
+      return kwh(r.sell_kwh_official) + diffPctText(r.sell_diff_pct) + "（東京電力パワーグリッド公式メーター実績）";
+    }
+    return kwh(r.sell_kwh) + "（センサー計測・公式突合未取得）";
+  }
+
   function renderSummary(monthly, bills) {
     var el = document.getElementById("metrics-summary");
     if (!el || !monthly || monthly.length === 0) return;
@@ -52,6 +65,7 @@
         "<li>直近の請求期間換算（" + latestBill.billing_month + "、" + latestBill.usage_period.start + "〜" + latestBill.usage_period.end + "）: " +
         "推定請求額 " + yen(latestBill.bill_actual.total_yen) +
         "（太陽光が無い場合の反実仮想: " + yen(latestBill.bill_l0_no_solar.total_yen) + "）</li>" +
+        "<li>売電量: " + sellSummaryText(latestBill) + "</li>" +
         "<li>節約額（公開単価ベース・FIT実態）: " + yen(latestBill.saving_yen_fit) +
         " / 節約額（卒FIT換算）: " + yen(latestBill.saving_yen_post_fit) + "</li>";
     }
@@ -174,6 +188,7 @@
         "<td>" + r.billing_month + "</td>" +
         "<td>" + r.usage_period.start + " 〜 " + r.usage_period.end + "</td>" +
         "<td>" + kwh(r.bill_actual.buy_kwh) + "</td>" +
+        "<td>" + sellSummaryText(r) + "</td>" +
         "<td>" + yen(r.bill_actual.total_yen) + "</td>" +
         "<td>" + yen(r.bill_l0_no_solar.total_yen) + "</td>" +
         "<td>" + yen(r.saving_yen_fit) + "</td>" +
@@ -189,7 +204,7 @@
     }
     el.innerHTML =
       "<table>" +
-      "<thead><tr><th>請求月</th><th>請求期間</th><th>買電量</th><th>推定請求額</th><th>反実仮想（太陽光なし）</th><th>節約額(FIT実態)</th><th>節約額(卒FIT換算)</th></tr></thead>" +
+      "<thead><tr><th>請求月</th><th>請求期間</th><th>買電量</th><th>売電量（公式メーター）</th><th>推定請求額</th><th>反実仮想（太陽光なし）</th><th>節約額(FIT実態)</th><th>節約額(卒FIT換算)</th></tr></thead>" +
       "<tbody>" + rows + "</tbody>" +
       "</table>" + excludedNote;
   }

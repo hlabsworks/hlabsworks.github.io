@@ -4,8 +4,11 @@ Japan電力 くらしプランS の推定請求額を再現し、太陽光なし
 節約額（FIT実態 / 卒FIT換算）を算出する。
 
 入力:
-  - scripts/blog-metrics/tariff.json （公開単価データ、手動更新）
-  - data/metrics/daily.json          （aggregate.sh の生成物。暦日ごとの実測 kWh）
+  - scripts/blog-metrics/tariff.json      （公開単価データ、手動更新）
+  - data/metrics/daily.json               （aggregate.sh の生成物。暦日ごとの実測 kWh）
+  - data/metrics/official_sell.json（任意）（import_official_sell.py の生成物。東京電力
+    パワーグリッドの公式メーター売電実績。無い場合はセンサー(power_history)由来の
+    sell_kwh にフォールバックする）
 出力:
   - data/metrics/bills.json
 
@@ -14,6 +17,12 @@ Japan電力 くらしプランS の推定請求額を再現し、太陽光なし
   - 請求期間（毎月2日〜翌月1日）の全日分のデータが daily.json に揃っている月のみ
     bills.json の "months" に含める。データ欠測・tariff.json 側の単価未収載の月は
     "excluded_months" に理由付きで列挙し、値を捏造しない。
+  - 売電収入（FIT実態）は official_sell.json に対応する精算月があればそれを優先採用する
+    （東京電力パワーグリッドの実支払額のため、センサー推定より正確）。算定期間が
+    daily.json 側の請求期間と一致しない場合は信用せずセンサー値にフォールバックする。
+    採用した売電量の出典は各月の "sell_source" ("tepco_official"|"sensor") に記録し、
+    センサー計測との差分は "sell_diff_pct" に併記する（センサー値は "sell_kwh" として
+    参考値のまま残す）。
   - 容量拠出金は契約電力(kW)が未確定（tariff.json の contract_capacity_amp が null）の間は
     0円として計上し、"capacity_unknown": true を明示する。契約電力が確定したら
     tariff.json を更新するだけで自動的に計上されるようにする。
@@ -28,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -38,6 +48,7 @@ REPO_ROOT = SCRIPT_DIR.parent.parent
 
 DEFAULT_TARIFF_PATH = SCRIPT_DIR / "tariff.json"
 DEFAULT_DAILY_PATH = REPO_ROOT / "data" / "metrics" / "daily.json"
+DEFAULT_OFFICIAL_SELL_PATH = REPO_ROOT / "data" / "metrics" / "official_sell.json"
 DEFAULT_OUT_PATH = REPO_ROOT / "data" / "metrics" / "bills.json"
 
 
@@ -189,6 +200,19 @@ def load_daily(path: Path) -> dict[str, dict]:
     return {r["date"]: r for r in rows}
 
 
+def load_official_sell(path: Path) -> dict[str, dict]:
+    """import_official_sell.py の生成物(official_sell.json)を読み、settlement_month
+    (= billing_month と同じ命名規則) をキーにした辞書にする。
+
+    ファイルが存在しない場合は空の辞書を返す（official_sell.json は任意の補助データ
+    であり、無ければ従来どおりセンサー値にフォールバックする設計のため）。
+    """
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {m["settlement_month"]: m for m in data.get("months", [])}
+
+
 def _daterange(start: date, end: date):
     d = start
     while d <= end:
@@ -223,7 +247,29 @@ def list_candidate_billing_months(min_date: date, max_date: date) -> list[str]:
     return months
 
 
-def build_month_record(tariff: dict, daily_by_date: dict, billing_month: str) -> dict:
+def resolve_official_sell(official_by_month: dict, billing_month: str, start: date, end: date) -> dict | None:
+    """billing_month に対応する official_sell.json のレコードを返す。
+
+    settlement_month が一致しても算定期間(period_from/period_to)が daily.json 側の
+    請求期間(start/end)とズレている場合は、値を信用せずセンサー値にフォールバックする
+    （財務に関わる値のため、キー一致だけで採用しない）。
+    """
+    official = official_by_month.get(billing_month)
+    if official is None:
+        return None
+    if official["period_from"] != start.isoformat() or official["period_to"] != end.isoformat():
+        print(
+            f"bill_model.py: official_sell.json の期間が一致しないため {billing_month} はセンサー値にフォールバックします "
+            f"(official: {official['period_from']}..{official['period_to']}, usage: {start.isoformat()}..{end.isoformat()})",
+            file=sys.stderr,
+        )
+        return None
+    return official
+
+
+def build_month_record(
+    tariff: dict, daily_by_date: dict, billing_month: str, official_by_month: dict | None = None
+) -> dict:
     meter_read_day = tariff["meter_read_day"]
     start, end = billing_period(billing_month, meter_read_day)
     total_days = (end - start).days + 1
@@ -252,15 +298,33 @@ def build_month_record(tariff: dict, daily_by_date: dict, billing_month: str) ->
         }
 
     solar_kwh, _, _ = sum_period(daily_by_date, start, end, "solar_kwh")
-    sell_kwh, _, _ = sum_period(daily_by_date, start, end, "sell_kwh")
+    sell_kwh_sensor, _, _ = sum_period(daily_by_date, start, end, "sell_kwh")
 
     bill_actual = compute_bill(tariff, buy_kwh, billing_month)
     bill_l0 = compute_bill(tariff, consumption_kwh, billing_month)
 
     sell_fit = tariff["sell_price_yen_per_kwh"]["fit"]
     sell_post_fit = tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"]
-    sell_revenue_fit_yen = _round_yen(sell_kwh * sell_fit)
-    sell_revenue_post_fit_yen = _round_yen(sell_kwh * sell_post_fit)
+
+    official = resolve_official_sell(official_by_month or {}, billing_month, start, end)
+    if official is not None:
+        sell_kwh_official = official["official_sell_kwh"]
+        sell_source = "tepco_official"
+        # 東京電力パワーグリッドが実際に支払った金額（購入実績お知らせサービス）をそのまま採用する。
+        # センサー推定(sell_kwh_sensor × FIT単価)より正確なため、これを「FIT実態」の売電収入とする。
+        sell_revenue_fit_yen = official["sell_revenue_yen"]
+        sell_revenue_post_fit_yen = _round_yen(sell_kwh_official * sell_post_fit)
+        sell_diff_pct = (
+            round(((sell_kwh_sensor - sell_kwh_official) / sell_kwh_official) * 100, 1)
+            if sell_kwh_official
+            else None
+        )
+    else:
+        sell_kwh_official = None
+        sell_source = "sensor"
+        sell_revenue_fit_yen = _round_yen(sell_kwh_sensor * sell_fit)
+        sell_revenue_post_fit_yen = _round_yen(sell_kwh_sensor * sell_post_fit)
+        sell_diff_pct = None
 
     saving_yen_fit = (bill_l0.total_yen - bill_actual.total_yen) + sell_revenue_fit_yen
     saving_yen_post_fit = (bill_l0.total_yen - bill_actual.total_yen) + sell_revenue_post_fit_yen
@@ -271,7 +335,10 @@ def build_month_record(tariff: dict, daily_by_date: dict, billing_month: str) ->
         "usage_period": {"start": start.isoformat(), "end": end.isoformat(), "days": total_days},
         "solar_kwh": round(solar_kwh, 3),
         "consumption_kwh": round(consumption_kwh, 3),
-        "sell_kwh": round(sell_kwh, 3),
+        "sell_kwh": round(sell_kwh_sensor, 3),
+        "sell_kwh_official": round(sell_kwh_official, 3) if sell_kwh_official is not None else None,
+        "sell_diff_pct": sell_diff_pct,
+        "sell_source": sell_source,
         "bill_actual": bill_actual.to_dict(),
         "bill_l0_no_solar": bill_l0.to_dict(),
         "sell_revenue_fit_yen": sell_revenue_fit_yen,
@@ -281,7 +348,7 @@ def build_month_record(tariff: dict, daily_by_date: dict, billing_month: str) ->
     }
 
 
-def build_bills(tariff: dict, daily_by_date: dict) -> dict:
+def build_bills(tariff: dict, daily_by_date: dict, official_by_month: dict | None = None) -> dict:
     dates = sorted(date.fromisoformat(d) for d in daily_by_date)
     if not dates:
         return {"months": [], "excluded_months": []}
@@ -289,7 +356,7 @@ def build_bills(tariff: dict, daily_by_date: dict) -> dict:
     months = []
     excluded = []
     for billing_month in list_candidate_billing_months(dates[0], dates[-1]):
-        record = build_month_record(tariff, daily_by_date, billing_month)
+        record = build_month_record(tariff, daily_by_date, billing_month, official_by_month)
         if record["excluded"]:
             excluded.append({"billing_month": record["billing_month"], "reason": record["reason"]})
         else:
@@ -301,13 +368,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tariff", type=Path, default=DEFAULT_TARIFF_PATH, help="tariff.json のパス")
     parser.add_argument("--daily", type=Path, default=DEFAULT_DAILY_PATH, help="daily.json のパス")
+    parser.add_argument(
+        "--official-sell", type=Path, default=DEFAULT_OFFICIAL_SELL_PATH,
+        help="import_official_sell.py の生成物(official_sell.json)のパス（無ければセンサー値にフォールバック）",
+    )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH, help="出力先 bills.json のパス")
     args = parser.parse_args()
 
     tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
     daily_by_date = load_daily(args.daily)
+    official_by_month = load_official_sell(args.official_sell)
 
-    result = build_bills(tariff, daily_by_date)
+    result = build_bills(tariff, daily_by_date, official_by_month)
     result["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     result["tariff_source"] = {
         "retailer": tariff["retailer"],

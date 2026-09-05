@@ -1,0 +1,90 @@
+{
+  "months": [
+    {
+      "settlement_month": "2025-10",
+      "period_from": "2025-09-02",
+      "period_to": "2025-10-01",
+      "official_sell_kwh": 413.0,
+      "sell_revenue_yen": 6608
+    },
+    {
+      "settlement_month": "2025-11",
+      "period_from": "2025-10-02",
+      "period_to": "2025-11-01",
+      "official_sell_kwh": 231.5,
+      "sell_revenue_yen": 3712
+    },
+    {
+      "settlement_month": "2025-12",
+      "period_from": "2025-11-02",
+      "period_to": "2025-12-01",
+      "official_sell_kwh": 175.0,
+      "sell_revenue_yen": 2800
+    },
+    {
+      "settlement_month": "2026-01",
+      "period_from": "2025-12-02",
+      "period_to": "2026-01-01",
+      "official_sell_kwh": 104.1,
+      "sell_revenue_yen": 1664
+    },
+    {
+      "settlement_month": "2026-02",
+      "period_from": "2026-01-02",
+      "period_to": "2026-02-01",
+      "official_sell_kwh": 151.5,
+      "sell_revenue_yen": 2432
+    },
+    {
+      "settlement_month": "2026-03",
+      "period_from": "2026-02-02",
+      "period_to": "2026-03-01",
+      "official_sell_kwh": 241.1,
+      "sell_revenue_yen": 3856
+    },
+    {
+      "settlement_month": "2026-04",
+      "period_from": "2026-03-02",
+      "period_to": "2026-04-01",
+      "official_sell_kwh": 464.7,
+      "sell_revenue_yen": 7440
+    },
+    {
+      "settlement_month": "2026-05",
+      "period_from": "2026-04-02",
+      "period_to": "2026-05-01",
+      "official_sell_kwh": 691.6,
+      "sell_revenue_yen": 11072
+    },
+    {
+      "settlement_month": "2026-06",
+      "period_from": "2026-05-02",
+      "period_to": "2026-06-01",
+      "official_sell_kwh": 1010.1,
+      "sell_revenue_yen": 16160
+    },
+    {
+      "settlement_month": "2026-07",
+      "period_from": "2026-06-02",
+      "period_to": "2026-07-01",
+      "official_sell_kwh": 577.8,
+      "sell_revenue_yen": 9248
+    },
+    {
+      "settlement_month": "2026-08",
+      "period_from": "2026-07-02",
+      "period_to": "2026-08-01",
+      "official_sell_kwh": 408.1,
+      "sell_revenue_yen": 6528
+    },
+    {
+      "settlement_month": "2026-09",
+      "period_from": "2026-08-02",
+      "period_to": "2026-09-01",
+      "official_sell_kwh": 399.7,
+      "sell_revenue_yen": 6400
+    }
+  ],
+  "generated_at": "2026-09-05 19:25:50",
+  "source_note": "東京電力パワーグリッド 購入実績お知らせサービスの公式メーター指示数差分・支払実績。供給地点番号・設備ID・検針日・指示数の生値は含まない。"
+}

@@ -17,27 +17,27 @@
       "bill_actual": {
         "buy_kwh": 5.215,
         "basic_fee_yen": 0,
-        "energy_charge_yen": 141,
-        "fuel_adjustment_yen": 18,
-        "renewable_levy_yen": 22,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 181
+        "energy_charge_yen": 140,
+        "fuel_adjustment_yen": 30,
+        "renewable_levy_yen": 21,
+        "capacity_contribution_yen": 141,
+        "capacity_estimated": false,
+        "total_yen": 333
       },
       "bill_l0_no_solar": {
         "buy_kwh": 247.89,
         "basic_fee_yen": 0,
         "energy_charge_yen": 6693,
-        "fuel_adjustment_yen": 868,
+        "fuel_adjustment_yen": 1445,
         "renewable_levy_yen": 1036,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 8597
+        "capacity_contribution_yen": 141,
+        "capacity_estimated": false,
+        "total_yen": 9315
       },
       "sell_revenue_fit_yen": 11072,
       "sell_revenue_post_fit_yen": 5533,
-      "saving_yen_fit": 19488,
-      "saving_yen_post_fit": 13949
+      "saving_yen_fit": 20054,
+      "saving_yen_post_fit": 14515
     },
     {
       "billing_month": "2026-06",
@@ -56,27 +56,27 @@
       "bill_actual": {
         "buy_kwh": 2.469,
         "basic_fee_yen": 0,
-        "energy_charge_yen": 67,
-        "fuel_adjustment_yen": 27,
+        "energy_charge_yen": 66,
+        "fuel_adjustment_yen": 34,
         "renewable_levy_yen": 10,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 104
+        "capacity_contribution_yen": 327,
+        "capacity_estimated": false,
+        "total_yen": 438
       },
       "bill_l0_no_solar": {
         "buy_kwh": 246.141,
         "basic_fee_yen": 0,
-        "energy_charge_yen": 6646,
-        "fuel_adjustment_yen": 2708,
-        "renewable_levy_yen": 1029,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 10383
+        "energy_charge_yen": 6645,
+        "fuel_adjustment_yen": 3433,
+        "renewable_levy_yen": 1028,
+        "capacity_contribution_yen": 327,
+        "capacity_estimated": false,
+        "total_yen": 11434
       },
       "sell_revenue_fit_yen": 16160,
       "sell_revenue_post_fit_yen": 8081,
-      "saving_yen_fit": 26439,
-      "saving_yen_post_fit": 18360
+      "saving_yen_fit": 27156,
+      "saving_yen_post_fit": 19077
     },
     {
       "billing_month": "2026-08",
@@ -95,66 +95,27 @@
       "bill_actual": {
         "buy_kwh": 80.362,
         "basic_fee_yen": 0,
-        "energy_charge_yen": 2170,
-        "fuel_adjustment_yen": 612,
-        "renewable_levy_yen": 336,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 3118
+        "energy_charge_yen": 2169,
+        "fuel_adjustment_yen": 834,
+        "renewable_levy_yen": 335,
+        "capacity_contribution_yen": 213,
+        "capacity_estimated": false,
+        "total_yen": 3551
       },
       "bill_l0_no_solar": {
         "buy_kwh": 533.966,
         "basic_fee_yen": 0,
         "energy_charge_yen": 14283,
-        "fuel_adjustment_yen": 4063,
-        "renewable_levy_yen": 2232,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 20578
+        "fuel_adjustment_yen": 5542,
+        "renewable_levy_yen": 2231,
+        "capacity_contribution_yen": 213,
+        "capacity_estimated": false,
+        "total_yen": 22269
       },
       "sell_revenue_fit_yen": 6528,
       "sell_revenue_post_fit_yen": 3265,
-      "saving_yen_fit": 23988,
-      "saving_yen_post_fit": 20725
-    },
-    {
-      "billing_month": "2026-09",
-      "excluded": false,
-      "usage_period": {
-        "start": "2026-08-02",
-        "end": "2026-09-01",
-        "days": 31
-      },
-      "solar_kwh": 756.794,
-      "consumption_kwh": 542.759,
-      "sell_kwh": 401.931,
-      "sell_kwh_official": 399.7,
-      "sell_diff_pct": 0.6,
-      "sell_source": "tepco_official",
-      "bill_actual": {
-        "buy_kwh": 73.043,
-        "basic_fee_yen": 0,
-        "energy_charge_yen": 1972,
-        "fuel_adjustment_yen": 579,
-        "renewable_levy_yen": 305,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 2856
-      },
-      "bill_l0_no_solar": {
-        "buy_kwh": 542.759,
-        "basic_fee_yen": 0,
-        "energy_charge_yen": 14512,
-        "fuel_adjustment_yen": 4299,
-        "renewable_levy_yen": 2269,
-        "capacity_contribution_yen": 0,
-        "capacity_unknown": true,
-        "total_yen": 21080
-      },
-      "sell_revenue_fit_yen": 6400,
-      "sell_revenue_post_fit_yen": 3198,
-      "saving_yen_fit": 24624,
-      "saving_yen_post_fit": 21422
+      "saving_yen_fit": 25246,
+      "saving_yen_post_fit": 21983
     }
   ],
   "excluded_months": [
@@ -171,11 +132,15 @@
       "reason": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 2/30 日"
     },
     {
+      "billing_month": "2026-09",
+      "reason": "tariff.json の fuel_cost_adjustment_yen_per_kwh に 2026-09 が未収載"
+    },
+    {
       "billing_month": "2026-10",
       "reason": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
     }
   ],
-  "generated_at": "2026-09-05 19:25:54",
+  "generated_at": "2026-09-05 21:25:56",
   "tariff_source": {
     "retailer": "Japan電力",
     "plan": "くらしプランS",

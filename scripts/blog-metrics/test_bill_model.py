@@ -29,13 +29,13 @@ def make_tariff(**overrides) -> dict:
             "2025-05..2026-04": 3.98,
             "2026-05..2027-04": 4.18,
         },
-        "capacity_contribution_yen_per_kw_month": {
-            "2026-08": 159,
-            "contract_capacity_amp": None,
+        "capacity_contribution_yen_per_month": {
+            "2026-08": 213,
+            "default_for_unbilled_months": 213,
         },
         "fuel_cost_adjustment_yen_per_kwh": {
-            "2026-07": {"applied": 8.69, "base": 8.69, "relief": 0.00},
-            "2026-08": {"applied": -3.50, "base": 1.00, "relief": -4.50},
+            "2026-07": 8.69,
+            "2026-08": -3.50,
         },
         "sell_price_yen_per_kwh": {"fit": 16.0, "post_fit_assumed_for_readers": 8.0},
         "meter_read_day": 2,
@@ -77,25 +77,54 @@ class BillingPeriodTest(unittest.TestCase):
 
 
 class ComputeBillTest(unittest.TestCase):
-    def test_capacity_unknown_contributes_zero_and_is_flagged(self):
+    def test_capacity_uses_actual_billed_value_when_month_present(self):
         tariff = make_tariff()
         bill = bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-08")
-        self.assertTrue(bill.capacity_unknown)
-        self.assertEqual(bill.capacity_contribution_yen, 0)
+        self.assertFalse(bill.capacity_estimated)
+        self.assertEqual(bill.capacity_contribution_yen, 213)
+
+    def test_capacity_falls_back_to_default_for_unbilled_month(self):
+        # 請求PDF未取得の月（capacity_contribution_yen_per_monthに billing_month が無い）は
+        # default_for_unbilled_months を使い、capacity_estimated=True を明示する。
+        tariff = make_tariff()
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-09"] = -3.50  # fuel未収載だと先にKeyErrorになるため補う
+        bill = bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-09")
+        self.assertTrue(bill.capacity_estimated)
+        self.assertEqual(bill.capacity_contribution_yen, 213)
+
+    def test_missing_default_for_unbilled_month_raises(self):
+        # default_for_unbilled_months 自体が無い状態で未収載月を渡すとKeyErrorになる
+        # （値を捏造しない設計を守るための失敗パス）。
+        tariff = make_tariff()
+        del tariff["capacity_contribution_yen_per_month"]["default_for_unbilled_months"]
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-09"] = -3.50
+        with self.assertRaises(KeyError):
+            bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-09")
 
     def test_negative_fuel_adjustment_reduces_total(self):
         tariff = make_tariff()
-        # 2026-08 は applied=-3.50（政府軽減措置込みでマイナス）。買電量に比例して総額を押し下げる。
+        # 2026-08 は -3.50円/kWh（政府軽減措置込みでマイナス）。買電量に比例して総額を押し下げる。
         bill = bill_model.compute_bill(tariff, buy_kwh=100.0, billing_month="2026-08")
-        self.assertEqual(bill.fuel_adjustment_yen, bill_model._round_yen(100.0 * -3.50))
+        self.assertEqual(bill.fuel_adjustment_yen, bill_model._floor_yen(100.0 * -3.50))
         self.assertLess(bill.fuel_adjustment_yen, 0)
 
-    def test_capacity_contribution_applied_when_contract_amp_known(self):
+    def test_renewable_levy_is_floored_not_rounded(self):
+        # 3.98円/kWh × 65kWh = 258.7円 → 円未満切り捨てで258円（四捨五入なら259円になり誤り）。
+        # 請求書の実際の端数処理方式（bill_breakdown.json突合でVERIFIED）。
         tariff = make_tariff()
-        tariff["capacity_contribution_yen_per_kw_month"]["contract_capacity_amp"] = 40  # 40A = 4kW
-        bill = bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-08")
-        self.assertFalse(bill.capacity_unknown)
-        self.assertEqual(bill.capacity_contribution_yen, bill_model._round_yen(159 * 4.0))
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-04"] = -0.27
+        tariff["capacity_contribution_yen_per_month"]["2026-04"] = 0
+        bill = bill_model.compute_bill(tariff, buy_kwh=65.0, billing_month="2026-04")
+        self.assertEqual(bill.renewable_levy_yen, 258)
+
+    def test_total_yen_is_floored_sum_of_exact_components(self):
+        # 2026-08実績(83kWh, fuel_rate=10.38円/kWh)の再現: energy=2241 + fuel=861.54(厳密値)
+        # + levy=floor(346.94)=346 + capacity=213 → 3661.54 を円未満切り捨てして3661円
+        # （実請求額と一致。energy-archive/japaden/derived/bill_breakdown.json 2026-08 参照）。
+        tariff = make_tariff()
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-08"] = 10.38
+        bill = bill_model.compute_bill(tariff, buy_kwh=83.0, billing_month="2026-08")
+        self.assertEqual(bill.total_yen, 3661)
 
     def test_missing_fuel_adjustment_month_raises(self):
         tariff = make_tariff()
@@ -106,6 +135,37 @@ class ComputeBillTest(unittest.TestCase):
         tariff = make_tariff()
         with self.assertRaises(ValueError):
             bill_model.compute_bill(tariff, buy_kwh=-1.0, billing_month="2026-08")
+
+
+class ReconciledMonthsTest(unittest.TestCase):
+    """energy-archive/japaden/derived/bill_breakdown.json（請求明細PDF13か月分、2026-09-05抽出）
+    の usage_kwh を入力に compute_bill を実行し、実請求額 billed_yen と ±1円以内で一致することを
+    固定する。値は tariff.json の _verification.reconciled_months と同一のfixture（本ファイルに
+    埋め込み、energy-archive への実行時依存は作らない）。
+    """
+
+    # (billing_month, usage_kwh, billed_yen)
+    RECONCILED_MONTHS = [
+        ("2025-08", 73.0, 2563), ("2025-09", 242.0, 8362), ("2025-10", 160.0, 5495),
+        ("2025-11", 86.0, 3219), ("2025-12", 140.0, 5136), ("2026-01", 428.0, 14409),
+        ("2026-02", 511.0, 14285), ("2026-03", 245.0, 7314), ("2026-04", 70.0, 2149),
+        ("2026-05", 9.0, 473), ("2026-06", 3.0, 461), ("2026-07", 34.0, 1770),
+        ("2026-08", 83.0, 3661),
+    ]
+
+    def _load_real_tariff(self) -> dict:
+        import json as _json
+        return _json.loads((Path(__file__).resolve().parent / "tariff.json").read_text(encoding="utf-8"))
+
+    def test_all_13_months_match_billed_yen_within_1_yen(self):
+        tariff = self._load_real_tariff()
+        for billing_month, usage_kwh, billed_yen in self.RECONCILED_MONTHS:
+            with self.subTest(billing_month=billing_month):
+                bill = bill_model.compute_bill(tariff, buy_kwh=usage_kwh, billing_month=billing_month)
+                self.assertLessEqual(
+                    abs(bill.total_yen - billed_yen), 1,
+                    f"{billing_month}: computed={bill.total_yen} billed={billed_yen}",
+                )
 
 
 class BuildMonthRecordTest(unittest.TestCase):

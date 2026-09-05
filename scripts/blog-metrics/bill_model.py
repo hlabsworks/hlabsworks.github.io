@@ -23,11 +23,22 @@ Japan電力 くらしプランS の推定請求額を再現し、太陽光なし
     採用した売電量の出典は各月の "sell_source" ("tepco_official"|"sensor") に記録し、
     センサー計測との差分は "sell_diff_pct" に併記する（センサー値は "sell_kwh" として
     参考値のまま残す）。
-  - 容量拠出金は契約電力(kW)が未確定（tariff.json の contract_capacity_amp が null）の間は
-    0円として計上し、"capacity_unknown": true を明示する。契約電力が確定したら
-    tariff.json を更新するだけで自動的に計上されるようにする。
-  - 円換算は各内訳項目ごとに四捨五入(ROUND_HALF_UP)し、合計はその内訳の総和とする
-    （実際の請求書の端数処理方式と厳密には一致しない可能性がある。ASSUMED）。
+  - 容量拠出金は tariff.json の capacity_contribution_yen_per_month に billing_month の
+    実額（請求PDFから確定した円額そのもの）があればそれを使う。無い月（未請求の将来月）は
+    default_for_unbilled_months（直近請求月の実額）で代用し、"capacity_estimated": true
+    を明示する。
+  - 円換算は、請求明細PDF13か月分（energy-archive/japaden/derived/bill_breakdown.json,
+    2026-09-05抽出）との突合で確定した実際の端数処理方式（VERIFIED）に従う:
+      1. 電力量料金（段階制）と容量拠出金は元々整数円のため丸め不要。
+      2. 燃料費等調整額は単価(円/kWh, 小数2桁)×kWhの厳密値をそのまま使う（請求書自体が
+         この行を丸めずセント単位のまま表示するため）。
+      3. 再エネ発電促進賦課金は単価×kWhを円未満切り捨て（math.floor）する（請求書がこの
+         行だけ切り捨てた整数円を表示するため）。
+      4. 合計(total_yen)は 1〜3 の内訳の総和を円未満切り捨て(math.floor)する。
+    この方式で請求PDF13か月分全てbilled_yenと完全一致することを確認済み
+    （test_bill_model.py の ReconciledMonthsTest 参照）。
+    内訳の表示用フィールド(energy_charge_yen等)は可読性のため各々を円未満切り捨てた値で、
+    その総和は端数の関係でtotal_yenと最大数円ずれうる（ASSUMED、表示専用）。
   - L0（太陽光なし反実仮想）は「消費電力(consumption_kwh)の全量を買電した」とみなす。
     L1/L2/L3（太陽光のみ／蓄電池／ポータブル電源の層別）は SolarChargeController 側の
     日次ロールアップが未整備のため準備中。現状の "bill_actual" は実測（太陽光+蓄電池+
@@ -37,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -53,8 +65,15 @@ DEFAULT_OUT_PATH = REPO_ROOT / "data" / "metrics" / "bills.json"
 
 
 def _round_yen(value: float) -> int:
-    """円単位に四捨五入する（ROUND_HALF_UP）。"""
+    """円単位に四捨五入する（ROUND_HALF_UP）。売電収入（TEPCO購入実績・センサー推定）の
+    丸めに使う。買電側の請求額再現は _floor_yen を使う（端数処理方式が異なるため。
+    請求書側の端数処理はVERIFIED、売電側は要検証のためASSUMEDのまま四捨五入を維持）。"""
     return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _floor_yen(value: float) -> int:
+    """円単位に切り捨てる（請求書の端数処理方式。VERIFIED、bill_breakdown.json 突合済み）。"""
+    return math.floor(value)
 
 
 def _parse_ym(ym: str) -> int:
@@ -127,7 +146,7 @@ class BillBreakdown:
     fuel_adjustment_yen: int
     renewable_levy_yen: int
     capacity_contribution_yen: int
-    capacity_unknown: bool
+    capacity_estimated: bool
     total_yen: int
 
     def to_dict(self) -> dict:
@@ -138,13 +157,17 @@ class BillBreakdown:
             "fuel_adjustment_yen": self.fuel_adjustment_yen,
             "renewable_levy_yen": self.renewable_levy_yen,
             "capacity_contribution_yen": self.capacity_contribution_yen,
-            "capacity_unknown": self.capacity_unknown,
+            "capacity_estimated": self.capacity_estimated,
             "total_yen": self.total_yen,
         }
 
 
 def compute_bill(tariff: dict, buy_kwh: float, billing_month: str) -> BillBreakdown:
-    """buy_kwh(当該請求期間の買電量kWh)から tariff.json の公開単価で請求額を再現する。"""
+    """buy_kwh(当該請求期間の買電量kWh)から tariff.json の実請求単価で請求額を再現する。
+
+    端数処理は請求PDF13か月分との突合で確定した方式（VERIFIED、モジュールdocstring参照）:
+    燃料費等調整額は厳密値のまま、再エネ賦課金は円未満切り捨て、合計はその総和を円未満切り捨て。
+    """
     if buy_kwh < 0:
         raise ValueError(f"buy_kwh は非負を想定（実際: {buy_kwh}）")
 
@@ -154,43 +177,29 @@ def compute_bill(tariff: dict, buy_kwh: float, billing_month: str) -> BillBreakd
     fuel_adj_table = tariff["fuel_cost_adjustment_yen_per_kwh"]
     if billing_month not in fuel_adj_table:
         raise KeyError(f"fuel_cost_adjustment_yen_per_kwh に {billing_month} がありません")
-    fuel_adjustment = buy_kwh * fuel_adj_table[billing_month]["applied"]
+    fuel_adjustment = buy_kwh * fuel_adj_table[billing_month]
 
     levy_rate = renewable_levy_rate(tariff, billing_month)
-    renewable_levy = buy_kwh * levy_rate
+    renewable_levy = math.floor(buy_kwh * levy_rate)
 
-    capacity_table = tariff["capacity_contribution_yen_per_kw_month"]
-    contract_amp = capacity_table.get("contract_capacity_amp")
-    capacity_unknown = contract_amp is None
-    if capacity_unknown:
-        capacity_contribution = 0.0
+    capacity_table = tariff["capacity_contribution_yen_per_month"]
+    if billing_month in capacity_table:
+        capacity_contribution = capacity_table[billing_month]
+        capacity_estimated = False
     else:
-        rate = capacity_table.get(billing_month)
-        if rate is None:
-            raise KeyError(f"capacity_contribution_yen_per_kw_month に {billing_month} がありません")
-        contract_kw = contract_amp * 100 / 1000  # 低圧: 契約電力(kW) = 契約容量(A) × 100V / 1000
-        capacity_contribution = rate * contract_kw
+        capacity_contribution = capacity_table["default_for_unbilled_months"]
+        capacity_estimated = True
 
-    basic_fee_yen = _round_yen(basic_fee)
-    energy_charge_yen = _round_yen(energy_charge)
-    fuel_adjustment_yen = _round_yen(fuel_adjustment)
-    renewable_levy_yen = _round_yen(renewable_levy)
-    capacity_contribution_yen = _round_yen(capacity_contribution)
-    total_yen = (
-        basic_fee_yen
-        + energy_charge_yen
-        + fuel_adjustment_yen
-        + renewable_levy_yen
-        + capacity_contribution_yen
-    )
+    total_yen = math.floor(basic_fee + energy_charge + fuel_adjustment + renewable_levy + capacity_contribution)
+
     return BillBreakdown(
         buy_kwh=buy_kwh,
-        basic_fee_yen=basic_fee_yen,
-        energy_charge_yen=energy_charge_yen,
-        fuel_adjustment_yen=fuel_adjustment_yen,
-        renewable_levy_yen=renewable_levy_yen,
-        capacity_contribution_yen=capacity_contribution_yen,
-        capacity_unknown=capacity_unknown,
+        basic_fee_yen=_floor_yen(basic_fee),
+        energy_charge_yen=_floor_yen(energy_charge),
+        fuel_adjustment_yen=_floor_yen(fuel_adjustment),
+        renewable_levy_yen=renewable_levy,
+        capacity_contribution_yen=_floor_yen(capacity_contribution),
+        capacity_estimated=capacity_estimated,
         total_yen=total_yen,
     )
 

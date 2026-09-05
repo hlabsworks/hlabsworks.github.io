@@ -60,9 +60,9 @@ done
 
 # 電気料金の単価。tariff.json（公開単価データ）の最新月から自動導出する。
 # 節約額試算(daily.json/monthly.json の簡易値) = 自家消費分(=太陽光発電-売電) × 買電単価 + 売電分 × 売電単価
-#   買電単価 = 従量料金 第1段階単価 + 燃料費等調整単価(最新月, applied) + 再エネ賦課金(最新月)
-#     （容量拠出金は円/kW・月の定額であり従量単価に馴染まないため、この簡易値には含めない。
-#       契約容量確定後の正確な請求額再現は bill_model.py が生成する bills.json を参照）
+#   買電単価 = 従量料金 第1段階単価 + 燃料費等調整単価(最新請求月, 実請求適用値) + 再エネ賦課金(最新請求月)
+#     （容量拠出金は月額固定でkWh従量単価に馴染まないため、この簡易値には含めない。
+#       正確な請求額再現は bill_model.py が生成する bills.json を参照）
 #   売電単価 = FIT実態単価（自宅は FIT 期間中）。卒FIT換算値は bills.json 側で別途算出する。
 # 出典・単価定義は tariff.json 本体を参照（curl 等での再取得はしない。値の手動更新は tariff.json を直接編集）。
 read -r BUY_PRICE_YEN_PER_KWH SELL_PRICE_YEN_PER_KWH BUY_PRICE_EFFECTIVE_MONTH < <(python3 - "${TARIFF_JSON}" <<'PYEOF'
@@ -71,7 +71,7 @@ tariff = json.load(open(sys.argv[1], encoding="utf-8"))
 fuel_adj_months = [k for k in tariff["fuel_cost_adjustment_yen_per_kwh"] if not k.startswith("_")]
 latest_month = max(fuel_adj_months)
 tier1_rate = tariff["energy_tiers_yen_per_kwh"][0]["yen_per_kwh"]
-fuel_adj = tariff["fuel_cost_adjustment_yen_per_kwh"][latest_month]["applied"]
+fuel_adj = tariff["fuel_cost_adjustment_yen_per_kwh"][latest_month]
 
 def parse_ym(s):
     y, m = s.split("-")

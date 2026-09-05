@@ -10,36 +10,24 @@
     {"up_to_kwh": null, "yen_per_kwh": 26.00}
   ],
   "renewable_levy_yen_per_kwh": {
-    "_comment": "再生可能エネルギー発電促進賦課金（全国一律）。出典: https://www.japaden.jp/plancalculation/ (2026-05検針分〜2027-04検針分)。2025年度(2025-05〜2026-04)の値は要確認（経産省告示 3.98 円/kWh を暫定）",
+    "_comment": "再生可能エネルギー発電促進賦課金（全国一律）。出典: energy-archive/japaden/derived/bill_breakdown.json（請求明細PDF13か月分、2026-09-05抽出）。2025-08〜2026-04請求分（11か月）で3.98円/kWh、2026-05〜2026-08請求分（4か月）で4.18円/kWhの適用を確認済み。",
     "2025-05..2026-04": 3.98,
     "2026-05..2027-04": 4.18,
-    "_2025_value_status": "ASSUMED - 請求PDFで突合して確定すること"
+    "_verification_status": "VERIFIED - 請求PDF13か月分で突合済み（energy-archive/japaden/derived/bill_breakdown.json、2026-09-05）"
   },
-  "capacity_contribution_yen_per_kw_month": {
-    "_comment": "容量拠出金反映額 = 単価(円/kW・月) × 契約電力(kW)。低圧の契約電力 = 契約容量(A)×100V/1000（例 60A=6kW）。契約容量Aは請求PDFで確定。出典: https://japaden.jp/wp/wp-content/uploads/capacity/capacity_YYYYMM.pdf（中部・低圧 ③反映額単価）。キーは『起算月』",
-    "2025-07": 57, "2025-08": 69, "2025-09": 65, "2025-10": 78, "2025-11": 84, "2025-12": 79,
-    "2026-01": 79, "2026-02": 69, "2026-03": 0, "2026-04": 47, "2026-05": 109, "2026-06": 112,
-    "2026-07": 71, "2026-08": 159, "2026-09": 128,
-    "contract_capacity_amp": null,
-    "_contract_capacity_status": "TODO - 請求PDF/契約書で確定"
+  "capacity_contribution_yen_per_month": {
+    "_comment": "容量拠出金反映額（低圧、請求書に記載の最終金額そのもの。契約電力(kW)非依存の固定額と判明。出典: energy-archive/japaden/derived/bill_breakdown.json の capacity_yen（請求明細PDF13か月分、2026-09-05抽出）。旧仕様(capacity_contribution_yen_per_kw_month×契約電力)は請求書の契約容量欄が『-』表記で確定不能だったため廃止。2026-04は請求書に容量拠出金反映額の行自体が存在せず0円。キーは『使用分の月』(=billing_month)。",
+    "2025-08": 171, "2025-09": 207, "2025-10": 195, "2025-11": 234, "2025-12": 252,
+    "2026-01": 237, "2026-02": 237, "2026-03": 207, "2026-04": 0, "2026-05": 141,
+    "2026-06": 327, "2026-07": 336, "2026-08": 213,
+    "default_for_unbilled_months": 213,
+    "_default_comment": "請求PDF未取得の月（直近請求月より後）の推定値。直近請求月(2026-08)の実額をそのまま使う暫定値であり、実額とは限らない。"
   },
   "fuel_cost_adjustment_yen_per_kwh": {
-    "_comment": "燃料費等調整単価（中部・低圧、請求に適用される『軽減措置後』の値）。出典: https://japaden.jp/wp/wp-content/uploads/fuel_s/fuel_s_YYYYMM.pdf（2026-08 以降は新書式で『燃料費調整単価①＋政府値引き②』）。政府の電気料金軽減措置が含まれる月は base/relief を併記。",
-    "2025-07": {"applied": 0.00,  "base": 0.00,  "relief": 0.00},
-    "2025-08": {"applied": -0.73, "base": 1.27,  "relief": -2.00},
-    "2025-09": {"applied": 2.86,  "base": 5.26,  "relief": -2.40},
-    "2025-10": {"applied": 1.51,  "base": 3.51,  "relief": -2.00},
-    "2025-11": {"applied": 2.59,  "base": 2.59,  "relief": 0.00},
-    "2025-12": {"applied": 2.30,  "base": 2.30,  "relief": 0.00},
-    "2026-01": {"applied": 1.52,  "base": 1.52,  "relief": 0.00},
-    "2026-02": {"applied": -3.93, "base": 0.57,  "relief": -4.50},
-    "2026-03": {"applied": -2.33, "base": 2.17,  "relief": -4.50},
-    "2026-04": {"applied": -0.63, "base": 0.87,  "relief": -1.50},
-    "2026-05": {"applied": 3.50,  "base": 3.50,  "relief": 0.00},
-    "2026-06": {"applied": 11.00, "base": 11.00, "relief": 0.00},
-    "2026-07": {"applied": 8.69,  "base": 8.69,  "relief": 0.00},
-    "2026-08": {"applied": 7.61,  "base": 11.11, "relief": -3.50},
-    "2026-09": {"applied": 7.92,  "base": 12.42, "relief": -4.50}
+    "_comment": "燃料費等調整単価（中部・低圧、請求に実際に適用された値）。出典: energy-archive/japaden/derived/bill_breakdown.json の fuel_rate（請求明細PDF13か月分、2026-09-05抽出）。公開PDF (https://japaden.jp/wp/wp-content/uploads/fuel_s/fuel_s_YYYYMM.pdf) の値は『くらしプランS』の実請求単価と一致しなかった（2026-09-05 観測、例: 2025-09は公開PDF由来2.86円/kWhに対し請求書実値2.72円/kWh）ため使用しない。請求PDF未取得の月は未収載のまま（値を捏造せず、bill_model.py 側でその月をexcluded_monthsに回す）。",
+    "2025-08": 1.8, "2025-09": 2.72, "2025-10": 2.15, "2025-11": 3.74, "2025-12": 3.91,
+    "2026-01": 2.2, "2026-02": -3.27, "2026-03": -1.97, "2026-04": -0.27, "2026-05": 5.83,
+    "2026-06": 13.95, "2026-07": 11.01, "2026-08": 10.38
   },
   "sell_price_yen_per_kwh": {
     "_comment": "FIT 売電単価 16 円は TEPCO 購入実績（400kWh=6,400円）で裏取り済み。TEPCO PG 受給契約: 購入開始 2024-02-17、買取期間満了 2034-03-01、設備出力 9.4kW（W発電）、算定期間は毎月2日〜翌月1日（Japan電力の請求期間と一致）。読者向けの卒FIT換算は 8 円/kWh を仮定",
@@ -51,7 +39,21 @@
   },
   "meter_read_day": 2,
   "_verification": {
-    "_comment": "実請求額との突合は energy-archive の請求PDFで行う。突合誤差が±2%を超えたら単価・段階・賦課金のどれかが違う",
-    "reconciled_months": []
+    "_comment": "compute_bill(tariff, buy_kwh=請求書のusage_kwh, billing_month) の計算結果と、請求明細PDF13か月分(energy-archive/japaden/derived/bill_breakdown.json)のbilled_yenを突合した結果（2026-09-05、test_bill_model.py ReconciledMonthsTest で固定）。全月diff=0円で一致。突合誤差が発生したら単価・段階・賦課金・端数処理のどれかが違う。",
+    "reconciled_months": [
+      {"billing_month": "2025-08", "usage_kwh": 73.0, "computed_yen": 2563, "billed_yen": 2563, "diff_yen": 0},
+      {"billing_month": "2025-09", "usage_kwh": 242.0, "computed_yen": 8362, "billed_yen": 8362, "diff_yen": 0},
+      {"billing_month": "2025-10", "usage_kwh": 160.0, "computed_yen": 5495, "billed_yen": 5495, "diff_yen": 0},
+      {"billing_month": "2025-11", "usage_kwh": 86.0, "computed_yen": 3219, "billed_yen": 3219, "diff_yen": 0},
+      {"billing_month": "2025-12", "usage_kwh": 140.0, "computed_yen": 5136, "billed_yen": 5136, "diff_yen": 0},
+      {"billing_month": "2026-01", "usage_kwh": 428.0, "computed_yen": 14409, "billed_yen": 14409, "diff_yen": 0},
+      {"billing_month": "2026-02", "usage_kwh": 511.0, "computed_yen": 14285, "billed_yen": 14285, "diff_yen": 0},
+      {"billing_month": "2026-03", "usage_kwh": 245.0, "computed_yen": 7314, "billed_yen": 7314, "diff_yen": 0},
+      {"billing_month": "2026-04", "usage_kwh": 70.0, "computed_yen": 2149, "billed_yen": 2149, "diff_yen": 0},
+      {"billing_month": "2026-05", "usage_kwh": 9.0, "computed_yen": 473, "billed_yen": 473, "diff_yen": 0},
+      {"billing_month": "2026-06", "usage_kwh": 3.0, "computed_yen": 461, "billed_yen": 461, "diff_yen": 0},
+      {"billing_month": "2026-07", "usage_kwh": 34.0, "computed_yen": 1770, "billed_yen": 1770, "diff_yen": 0},
+      {"billing_month": "2026-08", "usage_kwh": 83.0, "computed_yen": 3661, "billed_yen": 3661, "diff_yen": 0}
+    ]
   }
 }

@@ -1,0 +1,53 @@
+{{- define "main" }}
+<article class="post-single">
+  <header class="post-header">
+    <h1 class="post-title">{{ .Title }}</h1>
+    {{- with .Description }}
+    <div class="post-description">{{ . | markdownify }}</div>
+    {{- end }}
+  </header>
+
+  <div class="post-content md-content">
+    {{ .Content }}
+
+    <h2>直近月のサマリー</h2>
+    <div id="metrics-summary"></div>
+
+    <h2>月次推移（発電・買電・売電・自家消費シフト）</h2>
+    <canvas id="chart-monthly-energy" height="140"></canvas>
+
+    <h2>月次の節約額試算</h2>
+    <canvas id="chart-monthly-saving" height="140"></canvas>
+
+    <h2>日次推移（{{ with site.Data.metrics.meta }}{{ .power_history_since }}{{ end }} 〜）</h2>
+    <canvas id="chart-daily-energy" height="140"></canvas>
+
+    {{- with site.Data.metrics.meta }}
+    <p class="metrics-notes">
+      発電・買電・売電の集計元は {{ .power_history_since }} から連続測定している自宅の電力計測値です。
+      蓄電池（ニチコン）への充電量は {{ .nichicon_data_since }} から記録しています。
+      ポータブル電源（EcoFlow）への充電量は直近ローリング14日分のみ保持しており（{{ .ecoflow_data_since }} 〜が現在の範囲）、
+      それより古い日付では欠測（表示上は「―」）となります。「蓄電池+ポタ電 充電」は両者を合算した値のため、
+      ポタ電側が欠測の期間は蓄電池分のみの数値です。<br>
+      節約額試算 = 自家消費分（太陽光発電 − 売電）× 買電単価 {{ .buy_price_yen_per_kwh }}円/kWh + 売電分 × 売電単価 {{ .sell_price_yen_per_kwh }}円/kWh
+      （実際の契約単価とは異なる場合があります）。<br>
+      最終更新: {{ .generated_at }}
+    </p>
+    {{- end }}
+  </div>
+</article>
+
+<script id="metrics-daily-data" type="application/json">{{ site.Data.metrics.daily | jsonify | safeJS }}</script>
+<script id="metrics-monthly-data" type="application/json">{{ site.Data.metrics.monthly | jsonify | safeJS }}</script>
+
+{{- /* footer.html は partialCached でラップされ .Type をキーに含まないため、
+       extend_footer.html 経由だと他セクションのキャッシュが混入する。
+       ページ固有のスクリプトはこの main ブロック内（非キャッシュ）で読み込む。
+       外部CDNは使わない（chart.umd.min.js は Maven webjar からの vendored copy）。 */}}
+{{- with resources.Get "js/vendor/chart.umd.min.js" }}
+<script defer src="{{ .RelPermalink }}"></script>
+{{- end }}
+{{- with resources.Get "js/metrics-dashboard.js" }}
+<script defer src="{{ .RelPermalink }}"></script>
+{{- end }}
+{{- end }}

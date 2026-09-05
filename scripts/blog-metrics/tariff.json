@@ -10,18 +10,16 @@
     {"up_to_kwh": null, "yen_per_kwh": 26.00}
   ],
   "renewable_levy_yen_per_kwh": {
-    "_comment": "再生可能エネルギー発電促進賦課金（全国一律）。出典: energy-archive/japaden/derived/bill_breakdown.json（請求明細PDF13か月分、2026-09-05抽出）。2025-08〜2026-04請求分（11か月）で3.98円/kWh、2026-05〜2026-08請求分（4か月）で4.18円/kWhの適用を確認済み。",
+    "_comment": "再生可能エネルギー発電促進賦課金（全国一律）。出典: energy-archive/japaden/derived/bill_breakdown.json（請求明細PDF13か月分、2026-09-05抽出）。2025-08〜2026-04請求分（9か月）で3.98円/kWh、2026-05〜2026-08請求分（4か月）で4.18円/kWhの適用を確認済み。",
     "2025-05..2026-04": 3.98,
     "2026-05..2027-04": 4.18,
-    "_verification_status": "VERIFIED - 請求PDF13か月分で突合済み（energy-archive/japaden/derived/bill_breakdown.json、2026-09-05）"
+    "_verification_status": "2025-08〜2026-08 請求分で突合済み。2025-05〜2025-07 は請求PDF未取得のため未検証"
   },
   "capacity_contribution_yen_per_month": {
-    "_comment": "容量拠出金反映額（低圧、請求書に記載の最終金額そのもの。契約電力(kW)非依存の固定額と判明。出典: energy-archive/japaden/derived/bill_breakdown.json の capacity_yen（請求明細PDF13か月分、2026-09-05抽出）。旧仕様(capacity_contribution_yen_per_kw_month×契約電力)は請求書の契約容量欄が『-』表記で確定不能だったため廃止。2026-04は請求書に容量拠出金反映額の行自体が存在せず0円。キーは『使用分の月』(=billing_month)。",
+    "_comment": "容量拠出金反映額（低圧、請求書に記載の最終金額そのもの。契約電力(kW)非依存の固定額と判明。出典: energy-archive/japaden/derived/bill_breakdown.json の capacity_yen（請求明細PDF13か月分、2026-09-05抽出）。旧仕様(capacity_contribution_yen_per_kw_month×契約電力)は請求書の契約容量欄が『-』表記で確定不能だったため廃止。2026-04は請求書に容量拠出金反映額の行自体が存在せず0円。キーは『使用分の月』(=billing_month)。請求PDF未取得の月は未収載のまま（値を捏造せず、bill_model.py 側でその月をexcluded_monthsに回す。燃料費等調整単価と同じ方針）。",
     "2025-08": 171, "2025-09": 207, "2025-10": 195, "2025-11": 234, "2025-12": 252,
     "2026-01": 237, "2026-02": 237, "2026-03": 207, "2026-04": 0, "2026-05": 141,
-    "2026-06": 327, "2026-07": 336, "2026-08": 213,
-    "default_for_unbilled_months": 213,
-    "_default_comment": "請求PDF未取得の月（直近請求月より後）の推定値。直近請求月(2026-08)の実額をそのまま使う暫定値であり、実額とは限らない。"
+    "2026-06": 327, "2026-07": 336, "2026-08": 213
   },
   "fuel_cost_adjustment_yen_per_kwh": {
     "_comment": "燃料費等調整単価（中部・低圧、請求に実際に適用された値）。出典: energy-archive/japaden/derived/bill_breakdown.json の fuel_rate（請求明細PDF13か月分、2026-09-05抽出）。公開PDF (https://japaden.jp/wp/wp-content/uploads/fuel_s/fuel_s_YYYYMM.pdf) の値は『くらしプランS』の実請求単価と一致しなかった（2026-09-05 観測、例: 2025-09は公開PDF由来2.86円/kWhに対し請求書実値2.72円/kWh）ため使用しない。請求PDF未取得の月は未収載のまま（値を捏造せず、bill_model.py 側でその月をexcluded_monthsに回す）。",

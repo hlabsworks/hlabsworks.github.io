@@ -31,7 +31,6 @@ def make_tariff(**overrides) -> dict:
         },
         "capacity_contribution_yen_per_month": {
             "2026-08": 213,
-            "default_for_unbilled_months": 213,
         },
         "fuel_cost_adjustment_yen_per_kwh": {
             "2026-07": 8.69,
@@ -80,26 +79,24 @@ class ComputeBillTest(unittest.TestCase):
     def test_capacity_uses_actual_billed_value_when_month_present(self):
         tariff = make_tariff()
         bill = bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-08")
-        self.assertFalse(bill.capacity_estimated)
         self.assertEqual(bill.capacity_contribution_yen, 213)
 
-    def test_capacity_falls_back_to_default_for_unbilled_month(self):
+    def test_capacity_missing_month_raises(self):
         # 請求PDF未取得の月（capacity_contribution_yen_per_monthに billing_month が無い）は
-        # default_for_unbilled_months を使い、capacity_estimated=True を明示する。
+        # 値を捏造せずKeyErrorにする（燃料費等調整額と同じ失敗パス）。
         tariff = make_tariff()
         tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-09"] = -3.50  # fuel未収載だと先にKeyErrorになるため補う
-        bill = bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-09")
-        self.assertTrue(bill.capacity_estimated)
-        self.assertEqual(bill.capacity_contribution_yen, 213)
-
-    def test_missing_default_for_unbilled_month_raises(self):
-        # default_for_unbilled_months 自体が無い状態で未収載月を渡すとKeyErrorになる
-        # （値を捏造しない設計を守るための失敗パス）。
-        tariff = make_tariff()
-        del tariff["capacity_contribution_yen_per_month"]["default_for_unbilled_months"]
-        tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-09"] = -3.50
         with self.assertRaises(KeyError):
             bill_model.compute_bill(tariff, buy_kwh=80.362, billing_month="2026-09")
+
+    def test_billing_month_outside_levy_ranges_raises(self):
+        # renewable_levy_yen_per_kwh のどの範囲にも入らない請求月（2030-01）はKeyErrorになる
+        # （値を捏造しない設計を守るための失敗パス）。
+        tariff = make_tariff()
+        tariff["fuel_cost_adjustment_yen_per_kwh"]["2030-01"] = 1.0
+        tariff["capacity_contribution_yen_per_month"]["2030-01"] = 213
+        with self.assertRaises(KeyError):
+            bill_model.compute_bill(tariff, buy_kwh=10.0, billing_month="2030-01")
 
     def test_negative_fuel_adjustment_reduces_total(self):
         tariff = make_tariff()
@@ -157,13 +154,13 @@ class ReconciledMonthsTest(unittest.TestCase):
         import json as _json
         return _json.loads((Path(__file__).resolve().parent / "tariff.json").read_text(encoding="utf-8"))
 
-    def test_all_13_months_match_billed_yen_within_1_yen(self):
+    def test_all_13_months_match_billed_yen_exactly(self):
         tariff = self._load_real_tariff()
         for billing_month, usage_kwh, billed_yen in self.RECONCILED_MONTHS:
             with self.subTest(billing_month=billing_month):
                 bill = bill_model.compute_bill(tariff, buy_kwh=usage_kwh, billing_month=billing_month)
-                self.assertLessEqual(
-                    abs(bill.total_yen - billed_yen), 1,
+                self.assertEqual(
+                    bill.total_yen, billed_yen,
                     f"{billing_month}: computed={bill.total_yen} billed={billed_yen}",
                 )
 
@@ -201,6 +198,22 @@ class BuildMonthRecordTest(unittest.TestCase):
         record = bill_model.build_month_record(tariff, daily, "2026-08")
         self.assertTrue(record["excluded"])
         self.assertIn("欠測", record["reason"])
+
+    def test_month_without_fuel_rate_is_excluded(self):
+        # fuel_cost_adjustment_yen_per_kwh に billing_month が未収載（請求PDF未取得）の場合、
+        # 日次データが全日揃っていても excluded_months に回す（値を捏造しない設計）。
+        tariff = make_tariff()
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        daily = {}
+        d = start
+        while d <= end:
+            daily[d.isoformat()] = self._daily_row(d.isoformat())
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        record = bill_model.build_month_record(tariff, daily, "2026-09")
+        self.assertTrue(record["excluded"])
+        self.assertIn("未収載", record["reason"])
 
     def _full_month_daily(self, billing_month: str) -> dict:
         start, end = bill_model.billing_period(billing_month, meter_read_day=2)
@@ -262,6 +275,15 @@ class BuildMonthRecordTest(unittest.TestCase):
         record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month)
         self.assertEqual(record["sell_source"], "sensor")
         self.assertIsNone(record["sell_kwh_official"])
+
+
+class BuildBillsTest(unittest.TestCase):
+    def test_empty_daily_returns_empty_result(self):
+        tariff = make_tariff()
+        result = bill_model.build_bills(tariff, {})
+        self.assertEqual(result["months"], [])
+        self.assertEqual(result["excluded_months"], [])
+        self.assertIn("_note", result)
 
 
 class LoadOfficialSellTest(unittest.TestCase):

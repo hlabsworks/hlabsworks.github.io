@@ -9,7 +9,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 43
+    "saving_yen": 46
   },
   {
     "date": "2026-03-08",
@@ -21,7 +21,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 1050
+    "saving_yen": 1116
   },
   {
     "date": "2026-03-09",
@@ -33,7 +33,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 964
+    "saving_yen": 1025
   },
   {
     "date": "2026-03-10",
@@ -45,7 +45,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 659
+    "saving_yen": 700
   },
   {
     "date": "2026-03-11",
@@ -57,7 +57,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 461
+    "saving_yen": 483
   },
   {
     "date": "2026-03-12",
@@ -69,7 +69,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 974
+    "saving_yen": 1031
   },
   {
     "date": "2026-03-13",
@@ -93,7 +93,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 572
+    "saving_yen": 597
   },
   {
     "date": "2026-03-15",
@@ -105,7 +105,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 862
+    "saving_yen": 916
   },
   {
     "date": "2026-03-16",
@@ -117,7 +117,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 462
+    "saving_yen": 476
   },
   {
     "date": "2026-03-17",
@@ -129,7 +129,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 487
+    "saving_yen": 504
   },
   {
     "date": "2026-03-18",
@@ -141,7 +141,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 430
+    "saving_yen": 438
   },
   {
     "date": "2026-03-19",
@@ -153,7 +153,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 326
+    "saving_yen": 340
   },
   {
     "date": "2026-03-20",
@@ -165,7 +165,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 319
+    "saving_yen": 325
   },
   {
     "date": "2026-03-21",
@@ -189,7 +189,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 641
+    "saving_yen": 659
   },
   {
     "date": "2026-03-23",
@@ -201,7 +201,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 249
+    "saving_yen": 257
   },
   {
     "date": "2026-03-24",
@@ -213,7 +213,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 587
+    "saving_yen": 597
   },
   {
     "date": "2026-03-25",
@@ -225,7 +225,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 196
+    "saving_yen": 208
   },
   {
     "date": "2026-03-26",
@@ -237,7 +237,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 337
+    "saving_yen": 353
   },
   {
     "date": "2026-03-27",
@@ -249,7 +249,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 551
+    "saving_yen": 558
   },
   {
     "date": "2026-03-28",
@@ -285,7 +285,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 335
+    "saving_yen": 346
   },
   {
     "date": "2026-03-31",
@@ -297,7 +297,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 152
+    "saving_yen": 161
   },
   {
     "date": "2026-04-01",
@@ -309,7 +309,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 501
+    "saving_yen": 529
   },
   {
     "date": "2026-04-02",
@@ -321,7 +321,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 295
+    "saving_yen": 311
   },
   {
     "date": "2026-04-03",
@@ -345,7 +345,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 229
+    "saving_yen": 243
   },
   {
     "date": "2026-04-05",
@@ -357,7 +357,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 605
+    "saving_yen": 637
   },
   {
     "date": "2026-04-06",
@@ -369,7 +369,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 461
+    "saving_yen": 462
   },
   {
     "date": "2026-04-07",
@@ -381,7 +381,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 344
+    "saving_yen": 357
   },
   {
     "date": "2026-04-08",
@@ -417,7 +417,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 86
+    "saving_yen": 91
   },
   {
     "date": "2026-04-11",
@@ -429,7 +429,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 528
+    "saving_yen": 531
   },
   {
     "date": "2026-04-12",
@@ -453,7 +453,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 177
+    "saving_yen": 181
   },
   {
     "date": "2026-04-14",
@@ -477,7 +477,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 324
+    "saving_yen": 335
   },
   {
     "date": "2026-04-16",
@@ -573,7 +573,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 251
+    "saving_yen": 264
   },
   {
     "date": "2026-04-24",
@@ -585,7 +585,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 483
+    "saving_yen": 507
   },
   {
     "date": "2026-04-25",
@@ -621,7 +621,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 325
+    "saving_yen": 330
   },
   {
     "date": "2026-04-28",
@@ -645,7 +645,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 383
+    "saving_yen": 397
   },
   {
     "date": "2026-04-30",
@@ -657,7 +657,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 274
+    "saving_yen": 288
   },
   {
     "date": "2026-05-01",
@@ -669,7 +669,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 221
+    "saving_yen": 233
   },
   {
     "date": "2026-05-02",
@@ -729,7 +729,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 331
+    "saving_yen": 342
   },
   {
     "date": "2026-05-07",
@@ -753,7 +753,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 303
+    "saving_yen": 304
   },
   {
     "date": "2026-05-09",
@@ -825,7 +825,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 381
+    "saving_yen": 383
   },
   {
     "date": "2026-05-15",
@@ -909,7 +909,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 354
+    "saving_yen": 372
   },
   {
     "date": "2026-05-22",
@@ -933,7 +933,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 356
+    "saving_yen": 375
   },
   {
     "date": "2026-05-24",
@@ -945,7 +945,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 457
+    "saving_yen": 467
   },
   {
     "date": "2026-05-25",
@@ -993,7 +993,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 351
+    "saving_yen": 368
   },
   {
     "date": "2026-05-29",
@@ -1053,7 +1053,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 346
+    "saving_yen": 357
   },
   {
     "date": "2026-06-03",
@@ -1065,7 +1065,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 266
+    "saving_yen": 276
   },
   {
     "date": "2026-06-04",
@@ -1077,7 +1077,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 339
+    "saving_yen": 357
   },
   {
     "date": "2026-06-05",
@@ -1113,7 +1113,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 269
+    "saving_yen": 284
   },
   {
     "date": "2026-06-08",
@@ -1125,7 +1125,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 530
+    "saving_yen": 543
   },
   {
     "date": "2026-06-09",
@@ -1137,7 +1137,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 221
+    "saving_yen": 233
   },
   {
     "date": "2026-06-10",
@@ -1149,7 +1149,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 423
+    "saving_yen": 426
   },
   {
     "date": "2026-06-11",
@@ -1197,7 +1197,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 360
+    "saving_yen": 362
   },
   {
     "date": "2026-06-15",
@@ -1269,7 +1269,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 318
+    "saving_yen": 336
   },
   {
     "date": "2026-06-21",
@@ -1281,7 +1281,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 390
+    "saving_yen": 402
   },
   {
     "date": "2026-06-22",
@@ -1293,7 +1293,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 428
+    "saving_yen": 431
   },
   {
     "date": "2026-06-23",
@@ -1305,7 +1305,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 343
+    "saving_yen": 345
   },
   {
     "date": "2026-06-24",
@@ -1317,7 +1317,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 352
+    "saving_yen": 353
   },
   {
     "date": "2026-06-25",
@@ -1329,7 +1329,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 234
+    "saving_yen": 248
   },
   {
     "date": "2026-06-26",
@@ -1341,7 +1341,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 280
+    "saving_yen": 297
   },
   {
     "date": "2026-06-27",
@@ -1353,7 +1353,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 166
+    "saving_yen": 176
   },
   {
     "date": "2026-06-28",
@@ -1365,7 +1365,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 232
+    "saving_yen": 246
   },
   {
     "date": "2026-06-29",
@@ -1389,7 +1389,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 299
+    "saving_yen": 317
   },
   {
     "date": "2026-07-03",
@@ -1401,7 +1401,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 490
+    "saving_yen": 518
   },
   {
     "date": "2026-07-04",
@@ -1413,7 +1413,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 579
+    "saving_yen": 606
   },
   {
     "date": "2026-07-05",
@@ -1425,7 +1425,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 364
+    "saving_yen": 385
   },
   {
     "date": "2026-07-06",
@@ -1437,7 +1437,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 455
+    "saving_yen": 482
   },
   {
     "date": "2026-07-07",
@@ -1449,7 +1449,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 602
+    "saving_yen": 630
   },
   {
     "date": "2026-07-08",
@@ -1497,7 +1497,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 487
+    "saving_yen": 508
   },
   {
     "date": "2026-07-12",
@@ -1509,7 +1509,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 563
+    "saving_yen": 596
   },
   {
     "date": "2026-07-13",
@@ -1521,7 +1521,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 321
+    "saving_yen": 340
   },
   {
     "date": "2026-07-14",
@@ -1533,7 +1533,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 826
+    "saving_yen": 862
   },
   {
     "date": "2026-07-15",
@@ -1545,7 +1545,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 749
+    "saving_yen": 773
   },
   {
     "date": "2026-07-16",
@@ -1557,7 +1557,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 768
+    "saving_yen": 802
   },
   {
     "date": "2026-07-17",
@@ -1569,7 +1569,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 812
+    "saving_yen": 857
   },
   {
     "date": "2026-07-18",
@@ -1581,7 +1581,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 829
+    "saving_yen": 876
   },
   {
     "date": "2026-07-19",
@@ -1593,7 +1593,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 656
+    "saving_yen": 677
   },
   {
     "date": "2026-07-20",
@@ -1605,7 +1605,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 712
+    "saving_yen": 735
   },
   {
     "date": "2026-07-21",
@@ -1617,7 +1617,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 675
+    "saving_yen": 702
   },
   {
     "date": "2026-07-22",
@@ -1629,7 +1629,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 710
+    "saving_yen": 742
   },
   {
     "date": "2026-07-23",
@@ -1641,7 +1641,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 755
+    "saving_yen": 782
   },
   {
     "date": "2026-07-24",
@@ -1653,7 +1653,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 801
+    "saving_yen": 839
   },
   {
     "date": "2026-07-25",
@@ -1665,7 +1665,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 864
+    "saving_yen": 903
   },
   {
     "date": "2026-07-26",
@@ -1677,7 +1677,7 @@
     "nichicon_charge_kwh": null,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": null,
-    "saving_yen": 618
+    "saving_yen": 654
   },
   {
     "date": "2026-07-27",
@@ -1689,7 +1689,7 @@
     "nichicon_charge_kwh": 10.587,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.587,
-    "saving_yen": 776
+    "saving_yen": 815
   },
   {
     "date": "2026-07-28",
@@ -1701,7 +1701,7 @@
     "nichicon_charge_kwh": 10.56,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.56,
-    "saving_yen": 562
+    "saving_yen": 594
   },
   {
     "date": "2026-07-29",
@@ -1713,7 +1713,7 @@
     "nichicon_charge_kwh": 10.633,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.633,
-    "saving_yen": 679
+    "saving_yen": 699
   },
   {
     "date": "2026-07-30",
@@ -1725,7 +1725,7 @@
     "nichicon_charge_kwh": 10.51,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.51,
-    "saving_yen": 694
+    "saving_yen": 723
   },
   {
     "date": "2026-07-31",
@@ -1737,7 +1737,7 @@
     "nichicon_charge_kwh": 10.98,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.98,
-    "saving_yen": 768
+    "saving_yen": 806
   },
   {
     "date": "2026-08-01",
@@ -1749,7 +1749,7 @@
     "nichicon_charge_kwh": 10.771,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.771,
-    "saving_yen": 788
+    "saving_yen": 822
   },
   {
     "date": "2026-08-02",
@@ -1761,7 +1761,7 @@
     "nichicon_charge_kwh": 11.748,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 11.748,
-    "saving_yen": 823
+    "saving_yen": 865
   },
   {
     "date": "2026-08-03",
@@ -1773,7 +1773,7 @@
     "nichicon_charge_kwh": 10.866,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.866,
-    "saving_yen": 648
+    "saving_yen": 678
   },
   {
     "date": "2026-08-04",
@@ -1785,7 +1785,7 @@
     "nichicon_charge_kwh": 9.644,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.644,
-    "saving_yen": 573
+    "saving_yen": 578
   },
   {
     "date": "2026-08-05",
@@ -1797,7 +1797,7 @@
     "nichicon_charge_kwh": 9.108,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.108,
-    "saving_yen": 610
+    "saving_yen": 619
   },
   {
     "date": "2026-08-06",
@@ -1809,7 +1809,7 @@
     "nichicon_charge_kwh": 10.951,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.951,
-    "saving_yen": 515
+    "saving_yen": 523
   },
   {
     "date": "2026-08-07",
@@ -1821,7 +1821,7 @@
     "nichicon_charge_kwh": 10.931,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.931,
-    "saving_yen": 816
+    "saving_yen": 852
   },
   {
     "date": "2026-08-08",
@@ -1833,7 +1833,7 @@
     "nichicon_charge_kwh": 10.533,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.533,
-    "saving_yen": 816
+    "saving_yen": 848
   },
   {
     "date": "2026-08-09",
@@ -1845,7 +1845,7 @@
     "nichicon_charge_kwh": 10.937,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.937,
-    "saving_yen": 962
+    "saving_yen": 1015
   },
   {
     "date": "2026-08-10",
@@ -1857,7 +1857,7 @@
     "nichicon_charge_kwh": 10.804,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.804,
-    "saving_yen": 748
+    "saving_yen": 776
   },
   {
     "date": "2026-08-11",
@@ -1869,7 +1869,7 @@
     "nichicon_charge_kwh": 9.226,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.226,
-    "saving_yen": 578
+    "saving_yen": 599
   },
   {
     "date": "2026-08-12",
@@ -1881,7 +1881,7 @@
     "nichicon_charge_kwh": 9.827,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.827,
-    "saving_yen": 430
+    "saving_yen": 446
   },
   {
     "date": "2026-08-13",
@@ -1893,7 +1893,7 @@
     "nichicon_charge_kwh": 8.704,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 8.704,
-    "saving_yen": 745
+    "saving_yen": 777
   },
   {
     "date": "2026-08-14",
@@ -1905,7 +1905,7 @@
     "nichicon_charge_kwh": 10.513,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.513,
-    "saving_yen": 493
+    "saving_yen": 517
   },
   {
     "date": "2026-08-15",
@@ -1917,7 +1917,7 @@
     "nichicon_charge_kwh": 10.099,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.099,
-    "saving_yen": 618
+    "saving_yen": 645
   },
   {
     "date": "2026-08-16",
@@ -1929,7 +1929,7 @@
     "nichicon_charge_kwh": 10.431,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.431,
-    "saving_yen": 793
+    "saving_yen": 824
   },
   {
     "date": "2026-08-17",
@@ -1941,7 +1941,7 @@
     "nichicon_charge_kwh": 10.222,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.222,
-    "saving_yen": 757
+    "saving_yen": 791
   },
   {
     "date": "2026-08-18",
@@ -1953,7 +1953,7 @@
     "nichicon_charge_kwh": 8.877,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 8.877,
-    "saving_yen": 763
+    "saving_yen": 793
   },
   {
     "date": "2026-08-19",
@@ -1965,7 +1965,7 @@
     "nichicon_charge_kwh": 9.86,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.86,
-    "saving_yen": 781
+    "saving_yen": 813
   },
   {
     "date": "2026-08-20",
@@ -1977,7 +1977,7 @@
     "nichicon_charge_kwh": 9.98,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.98,
-    "saving_yen": 669
+    "saving_yen": 690
   },
   {
     "date": "2026-08-21",
@@ -1989,7 +1989,7 @@
     "nichicon_charge_kwh": 10.915,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.915,
-    "saving_yen": 705
+    "saving_yen": 736
   },
   {
     "date": "2026-08-22",
@@ -2001,7 +2001,7 @@
     "nichicon_charge_kwh": 11.038,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 11.038,
-    "saving_yen": 645
+    "saving_yen": 674
   },
   {
     "date": "2026-08-23",
@@ -2013,7 +2013,7 @@
     "nichicon_charge_kwh": 9.37,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 9.37,
-    "saving_yen": 561
+    "saving_yen": 592
   },
   {
     "date": "2026-08-24",
@@ -2025,7 +2025,7 @@
     "nichicon_charge_kwh": 10.754,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.754,
-    "saving_yen": 852
+    "saving_yen": 890
   },
   {
     "date": "2026-08-25",
@@ -2037,7 +2037,7 @@
     "nichicon_charge_kwh": 10.595,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.595,
-    "saving_yen": 665
+    "saving_yen": 702
   },
   {
     "date": "2026-08-26",
@@ -2049,7 +2049,7 @@
     "nichicon_charge_kwh": 0.0,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 0.0,
-    "saving_yen": 835
+    "saving_yen": 879
   },
   {
     "date": "2026-08-27",
@@ -2061,7 +2061,7 @@
     "nichicon_charge_kwh": 10.875,
     "ecoflow_charge_kwh": null,
     "self_consumption_shift_kwh": 10.875,
-    "saving_yen": 669
+    "saving_yen": 708
   },
   {
     "date": "2026-08-28",
@@ -2073,7 +2073,7 @@
     "nichicon_charge_kwh": 10.759,
     "ecoflow_charge_kwh": 0.07,
     "self_consumption_shift_kwh": 10.829,
-    "saving_yen": 567
+    "saving_yen": 599
   },
   {
     "date": "2026-08-29",
@@ -2085,7 +2085,7 @@
     "nichicon_charge_kwh": 1.621,
     "ecoflow_charge_kwh": 0.804,
     "self_consumption_shift_kwh": 2.425,
-    "saving_yen": 169
+    "saving_yen": 179
   },
   {
     "date": "2026-08-30",
@@ -2097,7 +2097,7 @@
     "nichicon_charge_kwh": 0.835,
     "ecoflow_charge_kwh": 1.064,
     "self_consumption_shift_kwh": 1.899,
-    "saving_yen": 145
+    "saving_yen": 154
   },
   {
     "date": "2026-08-31",
@@ -2109,7 +2109,7 @@
     "nichicon_charge_kwh": 10.733,
     "ecoflow_charge_kwh": 5.755,
     "self_consumption_shift_kwh": 16.488,
-    "saving_yen": 675
+    "saving_yen": 713
   },
   {
     "date": "2026-09-01",
@@ -2121,7 +2121,7 @@
     "nichicon_charge_kwh": 7.998,
     "ecoflow_charge_kwh": 3.554,
     "self_consumption_shift_kwh": 11.552,
-    "saving_yen": 681
+    "saving_yen": 704
   },
   {
     "date": "2026-09-02",
@@ -2133,7 +2133,7 @@
     "nichicon_charge_kwh": 10.641,
     "ecoflow_charge_kwh": 3.86,
     "self_consumption_shift_kwh": 14.501,
-    "saving_yen": 877
+    "saving_yen": 925
   },
   {
     "date": "2026-09-03",
@@ -2145,7 +2145,7 @@
     "nichicon_charge_kwh": 9.031,
     "ecoflow_charge_kwh": 0.723,
     "self_consumption_shift_kwh": 9.754,
-    "saving_yen": 430
+    "saving_yen": 456
   },
   {
     "date": "2026-09-04",
@@ -2157,18 +2157,18 @@
     "nichicon_charge_kwh": 5.241,
     "ecoflow_charge_kwh": 1.23,
     "self_consumption_shift_kwh": 6.471,
-    "saving_yen": 310
+    "saving_yen": 329
   },
   {
     "date": "2026-09-05",
-    "solar_kwh": 8.964,
-    "consumption_kwh": 12.578,
-    "buy_kwh": 4.842,
-    "sell_kwh": 1.235,
-    "surplus_kwh": 1.235,
+    "solar_kwh": 13.252,
+    "consumption_kwh": 15.843,
+    "buy_kwh": 4.843,
+    "sell_kwh": 2.298,
+    "surplus_kwh": 2.298,
     "nichicon_charge_kwh": null,
-    "ecoflow_charge_kwh": 1.637,
-    "self_consumption_shift_kwh": 1.637,
-    "saving_yen": 322
+    "ecoflow_charge_kwh": 2.124,
+    "self_consumption_shift_kwh": 2.124,
+    "saving_yen": 492
   }
 ]

@@ -21,7 +21,6 @@
         "fuel_adjustment_yen": 30,
         "renewable_levy_yen": 21,
         "capacity_contribution_yen": 141,
-        "capacity_estimated": false,
         "total_yen": 333
       },
       "bill_l0_no_solar": {
@@ -31,7 +30,6 @@
         "fuel_adjustment_yen": 1445,
         "renewable_levy_yen": 1036,
         "capacity_contribution_yen": 141,
-        "capacity_estimated": false,
         "total_yen": 9315
       },
       "sell_revenue_fit_yen": 11072,
@@ -60,7 +58,6 @@
         "fuel_adjustment_yen": 34,
         "renewable_levy_yen": 10,
         "capacity_contribution_yen": 327,
-        "capacity_estimated": false,
         "total_yen": 438
       },
       "bill_l0_no_solar": {
@@ -70,7 +67,6 @@
         "fuel_adjustment_yen": 3433,
         "renewable_levy_yen": 1028,
         "capacity_contribution_yen": 327,
-        "capacity_estimated": false,
         "total_yen": 11434
       },
       "sell_revenue_fit_yen": 16160,
@@ -99,7 +95,6 @@
         "fuel_adjustment_yen": 834,
         "renewable_levy_yen": 335,
         "capacity_contribution_yen": 213,
-        "capacity_estimated": false,
         "total_yen": 3551
       },
       "bill_l0_no_solar": {
@@ -109,7 +104,6 @@
         "fuel_adjustment_yen": 5542,
         "renewable_levy_yen": 2231,
         "capacity_contribution_yen": 213,
-        "capacity_estimated": false,
         "total_yen": 22269
       },
       "sell_revenue_fit_yen": 6528,
@@ -140,7 +134,8 @@
       "reason": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
     }
   ],
-  "generated_at": "2026-09-05 21:25:56",
+  "_note": "内訳(energy_charge_yen等)は表示用に円未満切り捨て。合計(total_yen)は内訳の単純和ではなく、燃料費等調整額の厳密値（丸め前）を含めた計算式全体を円未満切り捨てするため、内訳の単純和とtotal_yenが端数の関係で最大数円ずれることがある（表示専用の丸め。詳細は bill_model.py のcompute_bill() docstring 参照）。",
+  "generated_at": "2026-09-05 21:42:16",
   "tariff_source": {
     "retailer": "Japan電力",
     "plan": "くらしプランS",

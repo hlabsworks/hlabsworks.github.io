@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""bill_model.py — 公開単価(tariff.json)を使い、請求期間（毎月2日〜翌月1日）ベースで
+"""bill_model.py — 請求実績単価(tariff.json)を使い、請求期間（毎月2日〜翌月1日）ベースで
 Japan電力 くらしプランS の推定請求額を再現し、太陽光なし(L0)反実仮想との差分から
 節約額（FIT実態 / 卒FIT換算）を算出する。
 
 入力:
-  - scripts/blog-metrics/tariff.json      （公開単価データ、手動更新）
+  - scripts/blog-metrics/tariff.json      （請求明細PDFベースの実績単価データ、手動更新）
   - data/metrics/daily.json               （aggregate.sh の生成物。暦日ごとの実測 kWh）
   - data/metrics/official_sell.json（任意）（import_official_sell.py の生成物。東京電力
     パワーグリッドの公式メーター売電実績。無い場合はセンサー(power_history)由来の
@@ -24,9 +24,8 @@ Japan電力 くらしプランS の推定請求額を再現し、太陽光なし
     センサー計測との差分は "sell_diff_pct" に併記する（センサー値は "sell_kwh" として
     参考値のまま残す）。
   - 容量拠出金は tariff.json の capacity_contribution_yen_per_month に billing_month の
-    実額（請求PDFから確定した円額そのもの）があればそれを使う。無い月（未請求の将来月）は
-    default_for_unbilled_months（直近請求月の実額）で代用し、"capacity_estimated": true
-    を明示する。
+    実額（請求PDFから確定した円額そのもの）が必要。無い月（請求PDF未取得の将来月）は
+    燃料費等調整額と同様に値を捏造せず excluded_months に理由付きで回す。
   - 円換算は、請求明細PDF13か月分（energy-archive/japaden/derived/bill_breakdown.json,
     2026-09-05抽出）との突合で確定した実際の端数処理方式（VERIFIED）に従う:
       1. 電力量料金（段階制）と容量拠出金は元々整数円のため丸め不要。
@@ -146,7 +145,6 @@ class BillBreakdown:
     fuel_adjustment_yen: int
     renewable_levy_yen: int
     capacity_contribution_yen: int
-    capacity_estimated: bool
     total_yen: int
 
     def to_dict(self) -> dict:
@@ -157,7 +155,6 @@ class BillBreakdown:
             "fuel_adjustment_yen": self.fuel_adjustment_yen,
             "renewable_levy_yen": self.renewable_levy_yen,
             "capacity_contribution_yen": self.capacity_contribution_yen,
-            "capacity_estimated": self.capacity_estimated,
             "total_yen": self.total_yen,
         }
 
@@ -183,12 +180,9 @@ def compute_bill(tariff: dict, buy_kwh: float, billing_month: str) -> BillBreakd
     renewable_levy = math.floor(buy_kwh * levy_rate)
 
     capacity_table = tariff["capacity_contribution_yen_per_month"]
-    if billing_month in capacity_table:
-        capacity_contribution = capacity_table[billing_month]
-        capacity_estimated = False
-    else:
-        capacity_contribution = capacity_table["default_for_unbilled_months"]
-        capacity_estimated = True
+    if billing_month not in capacity_table:
+        raise KeyError(f"capacity_contribution_yen_per_month に {billing_month} がありません")
+    capacity_contribution = capacity_table[billing_month]
 
     total_yen = math.floor(basic_fee + energy_charge + fuel_adjustment + renewable_levy + capacity_contribution)
 
@@ -199,7 +193,6 @@ def compute_bill(tariff: dict, buy_kwh: float, billing_month: str) -> BillBreakd
         fuel_adjustment_yen=_floor_yen(fuel_adjustment),
         renewable_levy_yen=renewable_levy,
         capacity_contribution_yen=_floor_yen(capacity_contribution),
-        capacity_estimated=capacity_estimated,
         total_yen=total_yen,
     )
 
@@ -298,6 +291,13 @@ def build_month_record(
             "reason": f"tariff.json の fuel_cost_adjustment_yen_per_kwh に {billing_month} が未収載",
         }
 
+    if billing_month not in tariff["capacity_contribution_yen_per_month"]:
+        return {
+            "billing_month": billing_month,
+            "excluded": True,
+            "reason": f"tariff.json の capacity_contribution_yen_per_month に {billing_month} が未収載",
+        }
+
     consumption_kwh, _, cons_missing = sum_period(daily_by_date, start, end, "consumption_kwh")
     if cons_missing > 0:
         return {
@@ -357,10 +357,18 @@ def build_month_record(
     }
 
 
+BILLS_ROUNDING_NOTE = (
+    "内訳(energy_charge_yen等)は表示用に円未満切り捨て。合計(total_yen)は内訳の単純和ではなく、"
+    "燃料費等調整額の厳密値（丸め前）を含めた計算式全体を円未満切り捨てするため、"
+    "内訳の単純和とtotal_yenが端数の関係で最大数円ずれることがある（表示専用の丸め。詳細は bill_model.py の"
+    "compute_bill() docstring 参照）。"
+)
+
+
 def build_bills(tariff: dict, daily_by_date: dict, official_by_month: dict | None = None) -> dict:
     dates = sorted(date.fromisoformat(d) for d in daily_by_date)
     if not dates:
-        return {"months": [], "excluded_months": []}
+        return {"months": [], "excluded_months": [], "_note": BILLS_ROUNDING_NOTE}
 
     months = []
     excluded = []
@@ -370,7 +378,7 @@ def build_bills(tariff: dict, daily_by_date: dict, official_by_month: dict | Non
             excluded.append({"billing_month": record["billing_month"], "reason": record["reason"]})
         else:
             months.append(record)
-    return {"months": months, "excluded_months": excluded}
+    return {"months": months, "excluded_months": excluded, "_note": BILLS_ROUNDING_NOTE}
 
 
 def main() -> None:

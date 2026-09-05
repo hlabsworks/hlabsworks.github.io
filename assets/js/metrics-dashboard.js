@@ -66,7 +66,7 @@
         "推定請求額 " + yen(latestBill.bill_actual.total_yen) +
         "（太陽光が無い場合の反実仮想: " + yen(latestBill.bill_l0_no_solar.total_yen) + "）</li>" +
         "<li>売電量: " + sellSummaryText(latestBill) + "</li>" +
-        "<li>節約額（公開単価ベース・FIT実態）: " + yen(latestBill.saving_yen_fit) +
+        "<li>節約額（請求実績単価ベース・FIT実態）: " + yen(latestBill.saving_yen_fit) +
         " / 節約額（卒FIT換算）: " + yen(latestBill.saving_yen_post_fit) + "</li>";
     }
     html += "</ul>";
@@ -147,7 +147,7 @@
       data: {
         labels: months.map(function (r) { return r.billing_month; }),
         datasets: [
-          { label: "推定請求額（実測・公開単価ベース）", data: months.map(function (r) { return r.bill_actual.total_yen; }), backgroundColor: "#4d8fd6" },
+          { label: "推定請求額（実測・請求実績単価ベース）", data: months.map(function (r) { return r.bill_actual.total_yen; }), backgroundColor: "#4d8fd6" },
           { label: "反実仮想（太陽光なしと仮定）", data: months.map(function (r) { return r.bill_l0_no_solar.total_yen; }), backgroundColor: "#c9484f" }
         ]
       },

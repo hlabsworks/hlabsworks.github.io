@@ -10,6 +10,42 @@
   <div class="post-content md-content">
     {{ .Content }}
 
+    <h2>太陽光・蓄電池・ポータブル電源の導入で、今いくら浮いているか</h2>
+    <div id="metrics-layer-summary"></div>
+    <p>
+      電気代を4つの層で比較しています。<strong>L0</strong> = 太陽光・蓄電池・本システムのいずれも
+      無かった場合（推定）、<strong>L1</strong> = 太陽光（9.4kW）のみ導入した場合（推定）、
+      <strong>L2</strong> = 太陽光＋蓄電池（ニチコンESS-H2L1）を導入した場合（推定）、
+      <strong>L3</strong> = 実際に導入している全構成（太陽光＋蓄電池＋ポータブル電源、実測）です。
+      L0〜L2は「推定」バッジの付いた反実仮想（もしそうしていなかったら／そうしていたら）であり、
+      系統連系点のエネルギー収支から復元した家庭の真の消費電力（時刻ごとの発電・買電・売電・
+      蓄電池充放電の収支から逆算した値）を基に5分単位でシミュレーションしています。表示金額は
+      「買電額 − 売電収入」（節約額の主指標）で、請求実績単価・FIT売電単価16円/kWhを使用します。
+      下のボタンで、自宅のFIT期間終了後を想定した卒FIT換算（8円/kWh）にも切り替えられます。
+      推定層（L0〜L2）が1件も算出できている請求月がまだ無い間は、下のグラフ・累計表は表示せず、
+      実測（L3）のみの請求額再現（本ページ下部の表）をご覧ください。
+    </p>
+    <div id="metrics-layer-chart-section">
+      <button id="layer-chart-toggle" type="button">卒FIT換算(8円/kWh)に切替</button>
+      <canvas id="chart-layer-bills" height="140"></canvas>
+      <h3>導入による累計節約額（4層すべてがそろう請求月）</h3>
+      <div id="metrics-layer-cumulative-table"></div>
+      <h3>各請求月の開示情報（5分プロファイルの品質・蓄電池SOC・不確かさ帯・買売電の出典）</h3>
+      <div id="metrics-layer-disclosure"></div>
+      <p class="metrics-notes">
+        蓄電池パラメータ（実効容量・変換効率・定格出力）は
+        <a href="https://www.nichicon.co.jp/products/ess/essh2l1.html" rel="nofollow">ニチコンESS-H2L1製品ページ</a>
+        の仕様値を基に、自宅での実測較正値（2026-09-01の充放電積分）で補正しています。太陽光は
+        FIT設備認定どおり9.4kW全量として計算しています。西屋根PVのDC/AC変換効率は未確定のため、
+        主値100%に加え95%仮定でも計算した不確かさ帯を上表に開示しています（グラフ・累計表は
+        主値のみ表示）。5分プロファイルデータが請求期間の全日分そろっていない月（coverage<100%）は
+        L0〜L2を表示せず、「計測項目不足のため推定不可」として扱います（値を捏造しません）。
+        蓄電池SOC（期間開始→終了）は請求期間境界での残エネルギーによる最大2〜3%のバイアスがあり、
+        金額の補正はしていません（注記のみ）。詳細は
+        docs/design/20260905_layer-model-ddr.md（SolarChargeControllerリポジトリ）を参照してください。
+      </p>
+    </div>
+
     <h2>直近月のサマリー</h2>
     <div id="metrics-summary"></div>
 
@@ -25,7 +61,10 @@
     <h2>請求実績単価による請求額再現（請求期間ベース）</h2>
     <p>
       Japan電力 くらしプランS（中部エリア）の<strong>請求実績単価</strong>を使い、請求期間（毎月2日〜翌月1日）ごとに
-      「太陽光発電が無かった場合（反実仮想）」の請求額を再現し、実測の買電額との差から節約額を試算しています。
+      実測（太陽光＋蓄電池＋ポータブル電源、上記L3と同じ）の請求額を再現しています。
+      「反実仮想（太陽光なし）」列は、系統連系点のエネルギー収支から復元した真の家庭負荷（上記L0と同じ）が
+      請求期間の全日分そろっている月のみ表示し、そろわない月は「計測項目不足のため推定不可」と表示します
+      （旧仕様の消費電力ベースの反実仮想は、逆潮流時に実態の67%程度しか説明できないことが判明したため廃止しました）。
       売電収入は自宅が現在 FIT 期間中のため FIT 単価で計算した「FIT実態」と、
       読者の多くが想定するであろう卒FIT想定単価で計算した「卒FIT換算」を併記します。
     </p>
@@ -44,11 +83,12 @@
       （{{ .buy_sell_price_effective_month }} 時点の tariff.json から自動算出。{{ .buy_sell_price_source }}）。<br>
       「請求実績単価による請求額再現」は請求期間（毎月2日〜翌月1日）の全日データが揃っている月のみ表示しています
       （直近月やデータ欠測のあった月は除外されます）。容量拠出金は請求明細PDFで確定した実額を計上しています。
-      請求PDF未取得の月は集計対象外です。蓄電池・ポータブル電源を分離した層別（L1/L2/L3）の内訳は準備中で、
-      現状の「実測」は太陽光＋蓄電池＋ポータブル電源を合わせた結果です。実際の契約内容・料金改定・税制変更により
-      本試算と実請求額は乖離する場合があります。<br>
+      請求PDF未取得の月は集計対象外です。実際の契約内容・料金改定・税制変更により本試算と実請求額は乖離する場合が
+      あります。<br>
       売電量は東京電力パワーグリッドの購入実績（公式メーター）を採用しており、パワコン計測（センサー値）との差は
-      欠測のない月で±2%以内です。公式メーター実績が未取得の月はセンサー計測値で代替表示します。<br>
+      欠測のない月で±2%以内です。公式メーター実績が未取得の月はセンサー計測値で代替表示します。買電量も同様に
+      Japan電力の請求明細PDF実績を優先採用し（買電センサーは量子化・不感帯で系統的に過小のため）、請求実績が
+      未取得の月はセンサー計測値で代替表示します。<br>
       最終更新: {{ .generated_at }}
     </p>
     {{- end }}
@@ -58,6 +98,7 @@
 <script id="metrics-daily-data" type="application/json">{{ site.Data.metrics.daily | jsonify | safeJS }}</script>
 <script id="metrics-monthly-data" type="application/json">{{ site.Data.metrics.monthly | jsonify | safeJS }}</script>
 <script id="metrics-bills-data" type="application/json">{{ site.Data.metrics.bills | jsonify | safeJS }}</script>
+<script id="metrics-layers-data" type="application/json">{{ site.Data.metrics.layers | jsonify | safeJS }}</script>
 
 {{- /* footer.html は partialCached でラップされ .Type をキーに含まないため、
        extend_footer.html 経由だと他セクションのキャッシュが混入する。

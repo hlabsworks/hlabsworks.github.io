@@ -4,3 +4,7 @@ resources/
 __pycache__/
 *.pyc
 .claude/
+
+# layer_model.py が bill_model.py の L0 算出用に書く中間ファイル。Hugo は読まない
+# （data/metrics/ 配下ではないため公開JSONではない。QA #12）。
+scripts/blog-metrics/.cache/

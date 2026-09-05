@@ -1,0 +1,97 @@
+{
+  "months": [
+    {
+      "settlement_month": "2025-08",
+      "period_from": "2025-07-02",
+      "period_to": "2025-08-01",
+      "official_buy_kwh": 73.0,
+      "billed_yen": 2563.0
+    },
+    {
+      "settlement_month": "2025-09",
+      "period_from": "2025-08-02",
+      "period_to": "2025-09-01",
+      "official_buy_kwh": 242.0,
+      "billed_yen": 8362.0
+    },
+    {
+      "settlement_month": "2025-10",
+      "period_from": "2025-09-02",
+      "period_to": "2025-10-01",
+      "official_buy_kwh": 160.0,
+      "billed_yen": 5495.0
+    },
+    {
+      "settlement_month": "2025-11",
+      "period_from": "2025-10-02",
+      "period_to": "2025-11-01",
+      "official_buy_kwh": 86.0,
+      "billed_yen": 3219.0
+    },
+    {
+      "settlement_month": "2025-12",
+      "period_from": "2025-11-02",
+      "period_to": "2025-12-01",
+      "official_buy_kwh": 140.0,
+      "billed_yen": 5136.0
+    },
+    {
+      "settlement_month": "2026-01",
+      "period_from": "2025-12-02",
+      "period_to": "2026-01-01",
+      "official_buy_kwh": 428.0,
+      "billed_yen": 14409.0
+    },
+    {
+      "settlement_month": "2026-02",
+      "period_from": "2026-01-02",
+      "period_to": "2026-02-01",
+      "official_buy_kwh": 511.0,
+      "billed_yen": 14285.0
+    },
+    {
+      "settlement_month": "2026-03",
+      "period_from": "2026-02-02",
+      "period_to": "2026-03-01",
+      "official_buy_kwh": 245.0,
+      "billed_yen": 7314.0
+    },
+    {
+      "settlement_month": "2026-04",
+      "period_from": "2026-03-02",
+      "period_to": "2026-04-01",
+      "official_buy_kwh": 70.0,
+      "billed_yen": 2149.0
+    },
+    {
+      "settlement_month": "2026-05",
+      "period_from": "2026-04-02",
+      "period_to": "2026-05-01",
+      "official_buy_kwh": 9.0,
+      "billed_yen": 473.0
+    },
+    {
+      "settlement_month": "2026-06",
+      "period_from": "2026-05-02",
+      "period_to": "2026-06-01",
+      "official_buy_kwh": 3.0,
+      "billed_yen": 461.0
+    },
+    {
+      "settlement_month": "2026-07",
+      "period_from": "2026-06-02",
+      "period_to": "2026-07-01",
+      "official_buy_kwh": 34.0,
+      "billed_yen": 1770.0
+    },
+    {
+      "settlement_month": "2026-08",
+      "period_from": "2026-07-02",
+      "period_to": "2026-08-01",
+      "official_buy_kwh": 83.0,
+      "billed_yen": 3661.0
+    }
+  ],
+  "generated_at": "2026-09-05 23:56:04",
+  "source_note": "Japan電力 請求明細PDF（pdftotext抽出）の実使用量(usage_kwh)・請求総額。供給地点特定番号・検針前指示数等の契約識別情報は含まない。"
+}

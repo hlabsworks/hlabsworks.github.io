@@ -254,7 +254,7 @@ class BuildMonthRecordTest(unittest.TestCase):
     def test_falls_back_to_sensor_when_official_sell_absent(self):
         tariff = make_tariff()
         daily = self._full_month_daily("2026-08")
-        record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month={})
+        record = bill_model.build_month_record(tariff, daily, "2026-08", official_sell_by_month={})
         self.assertEqual(record["sell_source"], "sensor")
         self.assertIsNone(record["sell_kwh_official"])
         self.assertIsNone(record["sell_diff_pct"])
@@ -275,6 +275,101 @@ class BuildMonthRecordTest(unittest.TestCase):
         record = bill_model.build_month_record(tariff, daily, "2026-08", official_by_month)
         self.assertEqual(record["sell_source"], "sensor")
         self.assertIsNone(record["sell_kwh_official"])
+
+    # --- L0（復元負荷ベース、旧consumption_kwhベースの廃止） ---
+
+    def test_l0_is_null_when_daily_load_absent(self):
+        # daily_load.json が無ければ捏造せず null（旧仕様の consumption_kwh フォールバックは廃止）。
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        record = bill_model.build_month_record(tariff, daily, "2026-08")
+        self.assertIsNone(record["bill_l0_no_solar"])
+        self.assertIn("daily_load.json", record["l0_unavailable_reason"])
+        self.assertIsNone(record["saving_yen_fit"])
+        self.assertIsNone(record["saving_yen_post_fit"])
+
+    def test_l0_is_null_when_daily_load_has_missing_day(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        start, end = bill_model.billing_period("2026-08", meter_read_day=2)
+        daily_load = {}
+        d = start
+        while d <= end:
+            if d.isoformat() != "2026-07-20":  # 1日だけ欠測させる
+                daily_load[d.isoformat()] = {"date": d.isoformat(), "load_kwh": 20.0}
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        record = bill_model.build_month_record(tariff, daily, "2026-08", daily_load_by_date=daily_load)
+        self.assertIsNone(record["bill_l0_no_solar"])
+        self.assertIn("欠測", record["l0_unavailable_reason"])
+
+    def test_l0_computed_from_restored_load_when_complete(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        start, end = bill_model.billing_period("2026-08", meter_read_day=2)
+        total_days = (end - start).days + 1
+        daily_load = {}
+        d = start
+        while d <= end:
+            daily_load[d.isoformat()] = {"date": d.isoformat(), "load_kwh": 20.0}
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        record = bill_model.build_month_record(tariff, daily, "2026-08", daily_load_by_date=daily_load)
+        expected_bill = bill_model.compute_bill(tariff, 20.0 * total_days, "2026-08")
+        self.assertEqual(record["bill_l0_no_solar"], expected_bill.to_dict())
+        self.assertIsNone(record["l0_unavailable_reason"])
+        self.assertIsNotNone(record["saving_yen_fit"])
+
+    # --- buy_source（請求実績の優先採用） ---
+
+    def test_buy_source_sensor_by_default(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        record = bill_model.build_month_record(tariff, daily, "2026-08")
+        self.assertEqual(record["buy_source"], "sensor")
+        self.assertIsNone(record["buy_diff_pct"])
+        self.assertEqual(record["bill_actual"]["buy_kwh"], record["buy_kwh_sensor"])
+
+    def test_buy_source_billed_when_official_buy_matches_period(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")  # buy_kwh=1.0/日 → sensor合計31.0
+        start, end = bill_model.billing_period("2026-08", meter_read_day=2)
+        official_buy_by_month = {
+            "2026-08": {
+                "settlement_month": "2026-08",
+                "period_from": start.isoformat(),
+                "period_to": end.isoformat(),
+                "official_buy_kwh": 83.0,
+                "billed_yen": 3661,
+            }
+        }
+        record = bill_model.build_month_record(
+            tariff, daily, "2026-08", official_buy_by_month=official_buy_by_month
+        )
+        self.assertEqual(record["buy_source"], "billed")
+        self.assertEqual(record["bill_actual"]["buy_kwh"], 83.0)
+        self.assertEqual(record["buy_kwh_sensor"], 31.0)
+        self.assertIsNotNone(record["buy_diff_pct"])
+
+    def test_buy_source_falls_back_to_sensor_on_period_mismatch(self):
+        tariff = make_tariff()
+        daily = self._full_month_daily("2026-08")
+        official_buy_by_month = {
+            "2026-08": {
+                "settlement_month": "2026-08",
+                "period_from": "2099-01-01",
+                "period_to": "2099-01-31",
+                "official_buy_kwh": 83.0,
+                "billed_yen": 3661,
+            }
+        }
+        record = bill_model.build_month_record(
+            tariff, daily, "2026-08", official_buy_by_month=official_buy_by_month
+        )
+        self.assertEqual(record["buy_source"], "sensor")
+        self.assertEqual(record["bill_actual"]["buy_kwh"], record["buy_kwh_sensor"])
 
 
 class BuildBillsTest(unittest.TestCase):
@@ -312,6 +407,52 @@ class LoadOfficialSellTest(unittest.TestCase):
             result = bill_model.load_official_sell(path)
         self.assertIn("2026-08", result)
         self.assertEqual(result["2026-08"]["official_sell_kwh"], 408.1)
+
+
+class LoadOfficialBuyTest(unittest.TestCase):
+    def test_missing_file_returns_empty_dict(self):
+        result = bill_model.load_official_buy(Path("/nonexistent/official_buy.json"))
+        self.assertEqual(result, {})
+
+    def test_loads_and_indexes_by_settlement_month(self):
+        import json
+        import tempfile
+
+        payload = {
+            "months": [
+                {
+                    "settlement_month": "2026-08",
+                    "period_from": "2026-07-02",
+                    "period_to": "2026-08-01",
+                    "official_buy_kwh": 83.0,
+                    "billed_yen": 3661,
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "official_buy.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = bill_model.load_official_buy(path)
+        self.assertIn("2026-08", result)
+        self.assertEqual(result["2026-08"]["official_buy_kwh"], 83.0)
+
+
+class LoadDailyLoadTest(unittest.TestCase):
+    def test_missing_file_returns_empty_dict(self):
+        result = bill_model.load_daily_load(Path("/nonexistent/daily_load.json"))
+        self.assertEqual(result, {})
+
+    def test_loads_and_indexes_by_date(self):
+        import json
+        import tempfile
+
+        payload = {"days": [{"date": "2026-09-01", "load_kwh": 26.76}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "daily_load.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = bill_model.load_daily_load(path)
+        self.assertIn("2026-09-01", result)
+        self.assertEqual(result["2026-09-01"]["load_kwh"], 26.76)
 
 
 if __name__ == "__main__":

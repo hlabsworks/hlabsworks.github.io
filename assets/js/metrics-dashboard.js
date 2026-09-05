@@ -2,9 +2,14 @@
  * 実績ダッシュボードのグラフ描画。/metrics/ ページ専用（layouts/_partials/extend_footer.html から
  * .Type == "metrics" のときだけ読み込まれる）。
  *
- * データは <script type="application/json"> 経由で埋め込まれた daily.json / monthly.json
- * （scripts/blog-metrics/aggregate.sh の生成物）を読む。日次・月次の集計値のみを扱い、
- * 時間帯別の値やデバイス個体情報はそもそも埋め込まれていない。
+ * データは <script type="application/json"> 経由で埋め込まれた daily.json / monthly.json /
+ * bills.json / layers.json（scripts/blog-metrics/aggregate.sh, bill_model.py, layer_model.py の
+ * 生成物）を読む。日次・月次の集計値のみを扱い、時間帯別の値やデバイス個体情報はそもそも
+ * 埋め込まれていない。
+ *
+ * layers.json は4層（L0=太陽光・蓄電池なし/L1=太陽光のみ/L2=太陽光+蓄電池/L3=全部導入）の
+ * 請求期間ベース比較（docs/design/20260905_layer-model-ddr.md、SolarChargeControllerリポジトリ）。
+ * L0〜L2は推定、L3のみ実測。available:false の層は描画しない（捏造しない）。
  */
 (function () {
   "use strict";
@@ -48,6 +53,22 @@
     return kwh(r.sell_kwh) + "（センサー計測・公式突合未取得）";
   }
 
+  // 反実仮想(L0)は復元負荷(load_true)が請求期間全日そろう月のみ表示する。
+  // それ以外は「計測項目不足のため推定不可」と表示し、値を捏造しない
+  // （docs/design/20260905_layer-model-ddr.md §0、bill_model.py の l0_unavailable_reason）。
+  function l0Text(r) {
+    if (r.bill_l0_no_solar) return yen(r.bill_l0_no_solar.total_yen);
+    return r.l0_unavailable_reason || "計測項目不足のため推定不可";
+  }
+
+  // QA #9a: 節約額(saving_yen_*)がnullの月は「―」ではなくl0と同じ理由を表示する。
+  function savingText(r, field) {
+    if (r[field] === null || r[field] === undefined) {
+      return r.l0_unavailable_reason || "計測項目不足のため推定不可";
+    }
+    return yen(r[field]);
+  }
+
   function renderSummary(monthly, bills) {
     var el = document.getElementById("metrics-summary");
     if (!el || !monthly || monthly.length === 0) return;
@@ -64,10 +85,10 @@
       html +=
         "<li>直近の請求期間換算（" + latestBill.billing_month + "、" + latestBill.usage_period.start + "〜" + latestBill.usage_period.end + "）: " +
         "推定請求額 " + yen(latestBill.bill_actual.total_yen) +
-        "（太陽光が無い場合の反実仮想: " + yen(latestBill.bill_l0_no_solar.total_yen) + "）</li>" +
+        "（太陽光が無い場合の反実仮想: " + l0Text(latestBill) + "）</li>" +
         "<li>売電量: " + sellSummaryText(latestBill) + "</li>" +
-        "<li>節約額（請求実績単価ベース・FIT実態）: " + yen(latestBill.saving_yen_fit) +
-        " / 節約額（卒FIT換算）: " + yen(latestBill.saving_yen_post_fit) + "</li>";
+        "<li>節約額（請求実績単価ベース・FIT実態）: " + savingText(latestBill, "saving_yen_fit") +
+        " / 節約額（卒FIT換算）: " + savingText(latestBill, "saving_yen_post_fit") + "</li>";
     }
     html += "</ul>";
     el.innerHTML = html;
@@ -148,7 +169,7 @@
         labels: months.map(function (r) { return r.billing_month; }),
         datasets: [
           { label: "推定請求額（実測・請求実績単価ベース）", data: months.map(function (r) { return r.bill_actual.total_yen; }), backgroundColor: "#4d8fd6" },
-          { label: "反実仮想（太陽光なしと仮定）", data: months.map(function (r) { return r.bill_l0_no_solar.total_yen; }), backgroundColor: "#c9484f" }
+          { label: "反実仮想（太陽光なしと仮定・復元負荷ベース）", data: months.map(function (r) { return r.bill_l0_no_solar ? r.bill_l0_no_solar.total_yen : null; }), backgroundColor: "#c9484f" }
         ]
       },
       options: {
@@ -190,9 +211,9 @@
         "<td>" + kwh(r.bill_actual.buy_kwh) + "</td>" +
         "<td>" + sellSummaryText(r) + "</td>" +
         "<td>" + yen(r.bill_actual.total_yen) + "</td>" +
-        "<td>" + yen(r.bill_l0_no_solar.total_yen) + "</td>" +
-        "<td>" + yen(r.saving_yen_fit) + "</td>" +
-        "<td>" + yen(r.saving_yen_post_fit) + "</td>" +
+        "<td>" + l0Text(r) + "</td>" +
+        "<td>" + savingText(r, "saving_yen_fit") + "</td>" +
+        "<td>" + savingText(r, "saving_yen_post_fit") + "</td>" +
         "</tr>";
     }).join("");
     var excludedNote = "";
@@ -209,10 +230,184 @@
       "</table>" + excludedNote;
   }
 
+  // --- 4層比較（L0/L1/L2/L3、data/metrics/layers.json） -----------------------------------
+  // L0=太陽光・蓄電池・本システムなし（推定）／L1=太陽光のみ（推定）／L2=太陽光+蓄電池（推定）／
+  // L3=全部導入（実測）。L0〜L2は5分プロファイルからのシミュレーション値であり「推定」バッジを付す。
+  var LAYER_NAMES = {
+    L0: "L0 太陽光・蓄電池なし（推定）",
+    L1: "L1 太陽光のみ（推定）",
+    L2: "L2 太陽光+蓄電池（推定）",
+    L3: "L3 全部導入（実測）",
+  };
+  var LAYER_COLORS = { L0: "#c9484f", L1: "#f4a92b", L2: "#3fa66b", L3: "#4d8fd6" };
+  var layerChartMetric = "net_cost_fit_yen"; // "net_cost_fit_yen" | "net_cost_post_fit_yen"
+  var layerChartInstance = null;
+
+  function renderLayerBillsChart(layers) {
+    var canvas = document.getElementById("chart-layer-bills");
+    if (!canvas || !window.Chart || !layers || !layers.months || layers.months.length === 0) return;
+    var months = layers.months;
+    var datasets = ["L0", "L1", "L2", "L3"].map(function (key) {
+      return {
+        label: LAYER_NAMES[key],
+        data: months.map(function (m) {
+          var layer = m.layers[key];
+          return layer && layer.available ? layer[layerChartMetric] : null;
+        }),
+        backgroundColor: LAYER_COLORS[key],
+      };
+    });
+    if (layerChartInstance) {
+      layerChartInstance.destroy();
+    }
+    layerChartInstance = new Chart(canvas.getContext("2d"), {
+      type: "bar",
+      data: { labels: months.map(function (m) { return m.billing_month; }), datasets: datasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: "bottom" } },
+        scales: { y: { title: { display: true, text: "円/請求期間（買電額 − 売電収入）" } } },
+      },
+    });
+  }
+
+  function renderLayerToggle(layers) {
+    var btn = document.getElementById("layer-chart-toggle");
+    if (!btn || !layers) return;
+    btn.addEventListener("click", function () {
+      layerChartMetric = layerChartMetric === "net_cost_fit_yen" ? "net_cost_post_fit_yen" : "net_cost_fit_yen";
+      btn.textContent = layerChartMetric === "net_cost_fit_yen" ? "卒FIT換算(8円/kWh)に切替" : "FIT実態(16円/kWh)に切替";
+      renderLayerBillsChart(layers);
+    });
+  }
+
+  function renderLayerSummary(layers) {
+    var el = document.getElementById("metrics-layer-summary");
+    if (!el) return;
+    var cumulative = layers && layers.cumulative;
+    if (!cumulative || !cumulative.available) {
+      el.innerHTML =
+        "<p>太陽光・蓄電池が無かった場合(L0)との比較を含む4層すべてがそろう請求月がまだありません。" +
+        "5分プロファイルデータ（2026-08-27〜）が請求期間（毎月2日〜翌月1日）の全日分そろい次第、表示されます。" +
+        "それまでは実測(L3)のみの請求額再現を下記の表でご覧いただけます。</p>";
+      return;
+    }
+    var savingPerMonthYen = cumulative.saving_yen_fit / cumulative.months_included;
+    el.innerHTML =
+      "<p>" +
+      "太陽光・蓄電池・ポータブル電源を導入したことで、直近" + cumulative.months_included + "請求月の合計で<strong>" +
+      yen(cumulative.saving_yen_fit) + "</strong>節約できています" +
+      "（太陽光・蓄電池が無かった場合の反実仮想 " + yen(cumulative.net_cost_fit_yen.L0) +
+      " → 実際の請求(FIT実態) " + yen(cumulative.net_cost_fit_yen.L3) + "）。" +
+      "1請求期間あたり平均 " + yen(savingPerMonthYen) + " のペースです。" +
+      "</p>";
+  }
+
+  function renderLayerCumulativeTable(layers) {
+    var el = document.getElementById("metrics-layer-cumulative-table");
+    if (!el) return;
+    var cumulative = layers && layers.cumulative;
+    if (!cumulative || !cumulative.available) {
+      el.innerHTML = "";
+      return;
+    }
+    var monthsByKey = {};
+    (layers.months || []).forEach(function (m) { monthsByKey[m.billing_month] = m; });
+    // QA #9c: L1・L2も併記し「太陽光のみ」「＋蓄電池」の限界価値を可視化する。
+    var rows = cumulative.billing_months.map(function (billing_month) {
+      var m = monthsByKey[billing_month];
+      var l0 = m.layers.L0, l1 = m.layers.L1, l2 = m.layers.L2, l3 = m.layers.L3;
+      return "<tr>" +
+        "<td>" + billing_month + "</td>" +
+        "<td>" + yen(l0.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l1.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l2.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l3.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l0.net_cost_fit_yen - l3.net_cost_fit_yen) + "</td>" +
+        "</tr>";
+    }).join("");
+    var c = cumulative.net_cost_fit_yen;
+    el.innerHTML =
+      "<table>" +
+      "<thead><tr><th>請求月</th><th>L0（なし、推定）</th><th>L1（太陽光のみ、推定）</th>" +
+      "<th>L2（＋蓄電池、推定）</th><th>L3（全部導入、実測）</th><th>節約額(L0→L3)</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "<tfoot><tr><th>累計（" + cumulative.months_included + "請求月）</th><th>" + yen(c.L0) +
+      "</th><th>" + yen(c.L1) + "</th><th>" + yen(c.L2) + "</th><th>" + yen(c.L3) +
+      "</th><th>" + yen(cumulative.saving_yen_fit) + "</th></tr></tfoot>" +
+      "</table>";
+  }
+
+  // QA #8: coverage / uncertainty / boundary_storage(SOC) / max_export_w / buy_source を
+  // 脚注表として開示する（DDR §2.7「注記で開示」）。
+  function renderLayerDisclosureTable(layers) {
+    var el = document.getElementById("metrics-layer-disclosure");
+    if (!el) return;
+    if (!layers || !layers.months || layers.months.length === 0) {
+      el.innerHTML = "";
+      return;
+    }
+    var rows = layers.months.map(function (m) {
+      var l2 = m.layers.L2;
+      var l3 = m.layers.L3;
+      var socText = l2 && l2.available
+        ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%"
+        : "―";
+      var uncertaintyText = m.uncertainty && m.uncertainty.L1
+        ? yen(m.uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(m.uncertainty.L1.net_cost_fit_yen_max)
+          + " / L2: " + yen(m.uncertainty.L2.net_cost_fit_yen_min) + "〜" + yen(m.uncertainty.L2.net_cost_fit_yen_max)
+        : "―";
+      var buySourceText = l3 && l3.available
+        ? (l3.buy_source === "billed" ? "請求実績" : "センサー計測") + " / " +
+          (l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
+        : "―";
+      return "<tr>" +
+        "<td>" + m.billing_month + "</td>" +
+        "<td>" + (m.coverage * 100).toFixed(1) + "%</td>" +
+        "<td>" + socText + "</td>" +
+        "<td>" + (m.max_export_w !== null && m.max_export_w !== undefined ? Math.round(m.max_export_w) + " W" : "―") + "</td>" +
+        "<td>" + uncertaintyText + "</td>" +
+        "<td>" + buySourceText + "</td>" +
+        "</tr>";
+    }).join("");
+    el.innerHTML =
+      "<table>" +
+      "<thead><tr><th>請求月</th><th>5分プロファイル coverage</th>" +
+      "<th>蓄電池SOC（期間開始→終了、注記のみ・金額補正なし）</th><th>最大逆潮流推定(L1/L2)</th>" +
+      "<th>不確かさ帯（バケット5/15/30分×効率1.00/0.95、net_cost_fit_yen L1 / L2）</th>" +
+      "<th>L3買電・売電の出典</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "</table>";
+  }
+
+  // QA #9b: 推定層(L0〜L2)が1つもavailableでない間は、4層比較チャート本体(トグル・canvas・
+  // 累計表・開示表)を出さず説明段落のみにする（空の凡例4本を描かない）。
+  function hasAnyEstimatedLayer(layers) {
+    if (!layers || !layers.months) return false;
+    return layers.months.some(function (m) {
+      return (m.layers.L0 && m.layers.L0.available)
+        || (m.layers.L1 && m.layers.L1.available)
+        || (m.layers.L2 && m.layers.L2.available);
+    });
+  }
+
+  function toggleLayerChartSection(layers) {
+    var section = document.getElementById("metrics-layer-chart-section");
+    if (!section) return;
+    section.style.display = hasAnyEstimatedLayer(layers) ? "" : "none";
+  }
+
   function init() {
     var daily = readJSON("metrics-daily-data");
     var monthly = readJSON("metrics-monthly-data");
     var bills = readJSON("metrics-bills-data");
+    var layers = readJSON("metrics-layers-data");
+    renderLayerSummary(layers);
+    toggleLayerChartSection(layers);
+    renderLayerBillsChart(layers);
+    renderLayerToggle(layers);
+    renderLayerCumulativeTable(layers);
+    renderLayerDisclosureTable(layers);
     renderSummary(monthly, bills);
     renderMonthlyEnergyChart(monthly);
     renderMonthlySavingChart(monthly);

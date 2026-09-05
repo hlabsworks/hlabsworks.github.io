@@ -2,16 +2,24 @@
 #
 # aggregate.sh — SolarChargeController の本番 SQLite DB から
 # 日次/月次の「集計値のみ」を抽出し、Hugo の data ディレクトリ
-# (data/metrics/daily.json, data/metrics/monthly.json) に書き出す。
+# (data/metrics/daily.json, data/metrics/monthly.json, data/metrics/meta.json) に書き出す。
+# あわせて official_buy.json（energy-archiveがあれば）、layers.json（energy_profile_5minが
+# あれば、layer_model.py 経由）、bills.json（bill_model.py 経由、必ずlayer_model.pyの後）
+# も更新する。
 #
 # 設計方針（重要・変更時は維持すること）:
 #   - DB へは READ-ONLY の SELECT のみを発行する（`sqlite3 -readonly` を必須で使用）。
 #     UPDATE/DELETE/INSERT やスキーマ変更は一切行わない。
-#   - 出力は日次・月次の集計値のみ。時間帯別カーブや生ログ、デバイスS/N等は含めない。
+#   - 出力は日次・月次の集計値のみ。時間帯別カーブや生ログ、デバイスS/N等は含めない
+#     （layers.json も同様。5分プロファイルはSSH stdin経由のメモリのみで扱いファイルに
+#     書かない。layer_model.py -> bill_model.py 間の中間ファイル(.cache/daily_load.json)
+#     は暦日ごとのkWh集計のみで時間帯粒度を含まない）。
 #   - 本番 Pi 上には一切ファイルを書かない。SELECT結果は SSH 経由で stdout に返させ、
 #     ローカル側でファイルに書き出す（Pi 上に一時ファイルすら作らない）。
 #   - 消費電力量(kWh)は「10秒固定間隔」を仮定せず、行間の実時間差(dt)で積分する。
 #     欠測ギャップはノイズにならないよう dt に上限(cap)を掛けて除外する。
+#   - bill_model.py は必ず layer_model.py の後に実行する（QA #10: L0の算出元
+#     .cache/daily_load.json を先に最新化しないと bills.json のL0が古いままになる）。
 #
 # 使い方:
 #   scripts/blog-metrics/aggregate.sh [options]
@@ -39,6 +47,9 @@ DB_PATH="/opt/solar-charge-controller/db/solar-charge-controller.db"
 SSH_HOST="ht1003@solarchgctl.local"
 LOCAL_MODE=false
 OUT_DIR="${REPO_ROOT}/data/metrics"
+# layer_model.py -> bill_model.py 間の中間ファイル（L0算出用）。Hugoは読まないため
+# data/metrics/ には置かない（.gitignore済み、QA #12）。
+CACHE_DIR="${SCRIPT_DIR}/.cache"
 
 TARIFF_JSON="${SCRIPT_DIR}/tariff.json"
 
@@ -105,7 +116,7 @@ run_sql() {
     fi
 }
 
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${CACHE_DIR}"
 
 # 3本の集計を1つの sqlite3 セッション(=1回のSSH接続)にまとめ、
 # power_history(90万行規模)へのウィンドウ関数スキャンを1パスに抑える。
@@ -242,3 +253,51 @@ echo "wrote:"
 echo "  ${OUT_DIR}/daily.json   ($(printf '%s' "${DAILY_JSON}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?') rows)"
 echo "  ${OUT_DIR}/monthly.json ($(printf '%s' "${MONTHLY_JSON}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?') rows)"
 echo "  ${OUT_DIR}/meta.json"
+
+# official_buy.json（Japan電力請求明細PDFの実使用量。energy-archiveが手元にある場合のみ、
+# layer_model.py/bill_model.py の buy_source="billed" 判定に使うため先に更新する）。
+if [[ -f "${HOME}/Develop/energy-archive/japaden/derived/bill_breakdown.json" ]]; then
+    python3 "${SCRIPT_DIR}/import_official_buy.py" --out "${OUT_DIR}/official_buy.json"
+else
+    echo "aggregate.sh: energy-archive/japaden/derived/bill_breakdown.json が無いため official_buy.json 更新をスキップします" >&2
+fi
+
+# --- 4本目: energy_profile_5min（Pi側・並行実装中、まだ存在しないDBもある） -------------
+# docs/design/20260905_layer-model-ddr.md §3.2/§4。存在確認は軽量な sqlite_master 参照
+# （power_history等の重いテーブルは再スキャンしない）。テーブルが無ければ layers.json 生成を
+# スキップし警告のみ出す（fatalにしない）。5分プロファイルはSSH stdin経由でlayer_model.pyに
+# 直接パイプし、Pi上にもローカルにも中間ファイルを作らない。
+TABLE_CHECK_SQL="SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='energy_profile_5min';"
+TABLE_EXISTS=$(printf '%s\n' "${TABLE_CHECK_SQL}" | run_sql || true)
+
+if [[ "${TABLE_EXISTS}" != "1" ]]; then
+    echo "aggregate.sh: energy_profile_5min テーブルが見つからないため layers.json 生成をスキップします" >&2
+else
+    run_sql_csv() {
+        if [[ "${LOCAL_MODE}" == true || -z "${SSH_HOST}" ]]; then
+            sqlite3 -readonly -csv -header "${DB_PATH}"
+        else
+            ssh "${SSH_HOST}" "sudo sqlite3 -readonly -csv -header '${DB_PATH}'"
+        fi
+    }
+    PROFILE_SQL="SELECT bucket_at, solar_w, buy_w, sell_w, nichicon_pv_w, nichicon_battery_w, nichicon_soc, eco_ac_in_w, eco_ac_out_w, power_n, nichicon_n, ecoflow_n FROM energy_profile_5min ORDER BY bucket_at;"
+    printf '%s\n' "${PROFILE_SQL}" | run_sql_csv | python3 "${SCRIPT_DIR}/layer_model.py" \
+        --tariff "${TARIFF_JSON}" \
+        --daily "${OUT_DIR}/daily.json" \
+        --official-sell "${OUT_DIR}/official_sell.json" \
+        --official-buy "${OUT_DIR}/official_buy.json" \
+        --out "${OUT_DIR}/layers.json" \
+        --daily-load-out "${CACHE_DIR}/daily_load.json"
+fi
+
+# --- bill_model.py（QA #10: aggregate.sh から呼ばれておらず bills.json が古くなる問題を修正） ---
+# layer_model.py が書いた .cache/daily_load.json（存在しなければ bill_l0_no_solar は全月 null。
+# 捏造しない）を使って bills.json を再生成する。必ず layer_model.py の後に実行する順序を守る
+# （daily_load.json が新しくないと L0 が古いままになるため）。
+python3 "${SCRIPT_DIR}/bill_model.py" \
+    --tariff "${TARIFF_JSON}" \
+    --daily "${OUT_DIR}/daily.json" \
+    --official-sell "${OUT_DIR}/official_sell.json" \
+    --official-buy "${OUT_DIR}/official_buy.json" \
+    --daily-load "${CACHE_DIR}/daily_load.json" \
+    --out "${OUT_DIR}/bills.json"

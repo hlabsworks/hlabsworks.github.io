@@ -42,7 +42,10 @@
     "2026-09": {"applied": 7.92,  "base": 12.42, "relief": -4.50}
   },
   "sell_price_yen_per_kwh": {
-    "_comment": "FIT 売電単価（オーナー確認 2026-09-05）。太陽光は 2023-10 運転開始、FIT 10年（〜2033-10頃）。読者向けの卒FIT換算は 8 円/kWh を仮定",
+    "_comment": "FIT 売電単価 16 円は TEPCO 購入実績（400kWh=6,400円）で裏取り済み。TEPCO PG 受給契約: 購入開始 2024-02-17、買取期間満了 2034-03-01、設備出力 9.4kW（W発電）、算定期間は毎月2日〜翌月1日（Japan電力の請求期間と一致）。読者向けの卒FIT換算は 8 円/kWh を仮定",
+    "fit_start": "2024-02-17",
+    "fit_end": "2034-03-01",
+    "pv_capacity_kw": 9.4,
     "fit": 16.0,
     "post_fit_assumed_for_readers": 8.0
   },

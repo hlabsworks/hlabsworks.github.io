@@ -399,7 +399,9 @@ def build_month_record(
     load_kwh, _, load_missing = sum_period(daily_load_by_date or {}, start, end, "load_kwh")
     if daily_load_by_date is None or len(daily_load_by_date) == 0:
         bill_l0 = None
-        l0_unavailable_reason = "data/metrics/daily_load.json が無いため復元負荷を算出できません"
+        l0_unavailable_reason = (
+            f"{DEFAULT_DAILY_LOAD_PATH.relative_to(REPO_ROOT)} が無いため復元負荷を算出できません"
+        )
     elif load_missing > 0:
         bill_l0 = None
         l0_unavailable_reason = (

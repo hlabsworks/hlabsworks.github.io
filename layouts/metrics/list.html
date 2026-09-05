@@ -30,21 +30,26 @@
       <canvas id="chart-layer-bills" height="140"></canvas>
       <h3>導入による累計節約額（4層すべてがそろう請求月）</h3>
       <div id="metrics-layer-cumulative-table"></div>
-      <h3>各請求月の開示情報（5分プロファイルの品質・蓄電池SOC・不確かさ帯・買売電の出典）</h3>
-      <div id="metrics-layer-disclosure"></div>
-      <p class="metrics-notes">
-        蓄電池パラメータ（実効容量・変換効率・定格出力）は
-        <a href="https://www.nichicon.co.jp/products/ess/essh2l1.html" rel="nofollow">ニチコンESS-H2L1製品ページ</a>
-        の仕様値を基に、自宅での実測較正値（2026-09-01の充放電積分）で補正しています。太陽光は
-        FIT設備認定どおり9.4kW全量として計算しています。西屋根PVのDC/AC変換効率は未確定のため、
-        主値100%に加え95%仮定でも計算した不確かさ帯を上表に開示しています（グラフ・累計表は
-        主値のみ表示）。5分プロファイルデータが請求期間の全日分そろっていない月（coverage<100%）は
-        L0〜L2を表示せず、「計測項目不足のため推定不可」として扱います（値を捏造しません）。
-        蓄電池SOC（期間開始→終了）は請求期間境界での残エネルギーによる最大2〜3%のバイアスがあり、
-        金額の補正はしていません（注記のみ）。詳細は
-        docs/design/20260905_layer-model-ddr.md（SolarChargeControllerリポジトリ）を参照してください。
-      </p>
     </div>
+
+    <h3>各請求月の開示情報（5分プロファイルの品質・蓄電池SOC・不確かさ帯・買売電の出典）</h3>
+    <p>
+      推定層（L0〜L2）が算出できていない請求月でも、実測（L3）の買電・売電の出典
+      （請求実績／公式メーター／センサー計測のいずれを採用したか）はこの表で確認できます。
+    </p>
+    <div id="metrics-layer-disclosure"></div>
+    <p class="metrics-notes">
+      蓄電池パラメータ（実効容量・変換効率・定格出力）は
+      <a href="https://www.nichicon.co.jp/products/ess/essh2l1.html" rel="nofollow">ニチコンESS-H2L1製品ページ</a>
+      の仕様値を基に、自宅での実測較正値（2026-09-01の充放電積分）で補正しています。太陽光は
+      FIT設備認定どおり9.4kW全量として計算しています。西屋根PVのDC/AC変換効率は未確定のため、
+      主値100%に加え95%仮定でも計算した不確かさ帯を上表に開示しています（グラフ・累計表は
+      主値のみ表示）。5分プロファイルデータが請求期間の全日分そろっていない月（coverage<100%）は
+      L0〜L2列を「―」にし、「計測項目不足のため推定不可」として扱います（値を捏造しません）。
+      蓄電池SOC（期間開始→終了）は請求期間境界での残エネルギーによる最大2〜3%のバイアスがあり、
+      金額の補正はしていません（注記のみ）。詳細は
+      docs/design/20260905_layer-model-ddr.md（SolarChargeControllerリポジトリ）を参照してください。
+    </p>
 
     <h2>直近月のサマリー</h2>
     <div id="metrics-summary"></div>

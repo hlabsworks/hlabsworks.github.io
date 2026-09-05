@@ -76,36 +76,38 @@ def _full_month_daily(billing_month: str, buy=1.0, solar=10.0, sell=5.0) -> dict
 
 
 # ---------------------------------------------------------------------------
-# golden day 合成フィクスチャ（QA #1 BLOCKER 対応）
+# golden day 合成フィクスチャ（QA #1 BLOCKER / #6 オーナー規則厳守対応）
 # ---------------------------------------------------------------------------
-# 12個のアンカー時刻の値は 2026-09-01 の実測値（docs/design/20260905_layer-model-ddr.md
-# §0「検証の要点」に記載の値と同一。00:00と12:20はDDR本文にも明記されている）。
+# 12個のアンカー時刻の値は本テストのために考案した合成値であり、2026-09-01等の実測値は
+# 一切含まない（オーナー決定「時間帯粒度の実測値は公開repoに一切置かない」を字義通り厳守）。
+# 深夜の放電・朝の充電立ち上がり・正午のSOC100%到達による全量売電・夕方以降の放電という
+# 定性的な形（DDR §0で観測されたレジームの一般的な形状）だけを模した、切りの良い数値。
 # 分 -> フィールド値の辞書。1440(=翌日00:00)は周期境界として0分の値を再利用する。
 _GOLDEN_ANCHOR_VALUES = {
-    0: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-446.0, nichicon_pv_w=0.0,
-            nichicon_soc=56.0, eco_ac_in_w=0.0, eco_ac_out_w=346.8),
-    180: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-447.0, nichicon_pv_w=0.0,
-              nichicon_soc=39.0, eco_ac_in_w=0.0, eco_ac_out_w=268.8),
-    360: dict(solar_w=1206.9, buy_w=0.0, sell_w=372.4, nichicon_battery_w=59.0, nichicon_pv_w=78.0,
-              nichicon_soc=23.0, eco_ac_in_w=257.4, eco_ac_out_w=229.6),
-    445: dict(solar_w=2579.3, buy_w=0.0, sell_w=734.5, nichicon_battery_w=623.0, nichicon_pv_w=619.0,
-              nichicon_soc=27.0, eco_ac_in_w=883.8, eco_ac_out_w=483.8),
-    540: dict(solar_w=4000.0, buy_w=0.0, sell_w=753.6, nichicon_battery_w=1404.0, nichicon_pv_w=1398.0,
-              nichicon_soc=39.0, eco_ac_in_w=1942.4, eco_ac_out_w=169.8),
-    600: dict(solar_w=4000.0, buy_w=0.0, sell_w=620.7, nichicon_battery_w=2358.0, nichicon_pv_w=2352.0,
-              nichicon_soc=58.0, eco_ac_in_w=1895.2, eco_ac_out_w=143.0),
-    660: dict(solar_w=2325.0, buy_w=0.0, sell_w=475.0, nichicon_battery_w=2082.0, nichicon_pv_w=2071.0,
-              nichicon_soc=79.0, eco_ac_in_w=868.6, eco_ac_out_w=168.8),
-    730: dict(solar_w=4000.0, buy_w=0.0, sell_w=6831.0, nichicon_battery_w=0.0, nichicon_pv_w=3905.0,
-              nichicon_soc=100.0, eco_ac_in_w=217.2, eco_ac_out_w=158.0),
-    740: dict(solar_w=2907.1, buy_w=0.0, sell_w=4450.0, nichicon_battery_w=0.0, nichicon_pv_w=2736.0,
-              nichicon_soc=100.0, eco_ac_in_w=174.7, eco_ac_out_w=141.3),
-    900: dict(solar_w=800.0, buy_w=10.3, sell_w=189.7, nichicon_battery_w=0.0, nichicon_pv_w=588.0,
-              nichicon_soc=100.0, eco_ac_in_w=256.0, eco_ac_out_w=233.4),
-    1080: dict(solar_w=0.0, buy_w=6.7, sell_w=0.0, nichicon_battery_w=-893.0, nichicon_pv_w=0.0,
-               nichicon_soc=88.0, eco_ac_in_w=0.0, eco_ac_out_w=221.6),
-    1260: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-1250.0, nichicon_pv_w=0.0,
-               nichicon_soc=58.0, eco_ac_in_w=0.0, eco_ac_out_w=407.8),
+    0: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-500.0, nichicon_pv_w=0.0,
+            nichicon_soc=50.0, eco_ac_in_w=0.0, eco_ac_out_w=300.0),
+    180: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-500.0, nichicon_pv_w=0.0,
+              nichicon_soc=35.0, eco_ac_in_w=0.0, eco_ac_out_w=250.0),
+    360: dict(solar_w=1000.0, buy_w=0.0, sell_w=300.0, nichicon_battery_w=100.0, nichicon_pv_w=100.0,
+              nichicon_soc=20.0, eco_ac_in_w=200.0, eco_ac_out_w=150.0),
+    445: dict(solar_w=2000.0, buy_w=0.0, sell_w=600.0, nichicon_battery_w=500.0, nichicon_pv_w=500.0,
+              nichicon_soc=25.0, eco_ac_in_w=700.0, eco_ac_out_w=400.0),
+    540: dict(solar_w=3500.0, buy_w=0.0, sell_w=700.0, nichicon_battery_w=1200.0, nichicon_pv_w=1200.0,
+              nichicon_soc=35.0, eco_ac_in_w=1500.0, eco_ac_out_w=200.0),
+    600: dict(solar_w=3500.0, buy_w=0.0, sell_w=600.0, nichicon_battery_w=2000.0, nichicon_pv_w=2000.0,
+              nichicon_soc=55.0, eco_ac_in_w=1500.0, eco_ac_out_w=150.0),
+    660: dict(solar_w=2000.0, buy_w=0.0, sell_w=400.0, nichicon_battery_w=1800.0, nichicon_pv_w=1800.0,
+              nichicon_soc=75.0, eco_ac_in_w=700.0, eco_ac_out_w=150.0),
+    730: dict(solar_w=3500.0, buy_w=0.0, sell_w=6000.0, nichicon_battery_w=0.0, nichicon_pv_w=3500.0,
+              nichicon_soc=100.0, eco_ac_in_w=200.0, eco_ac_out_w=150.0),
+    740: dict(solar_w=2500.0, buy_w=0.0, sell_w=4000.0, nichicon_battery_w=0.0, nichicon_pv_w=2500.0,
+              nichicon_soc=100.0, eco_ac_in_w=150.0, eco_ac_out_w=120.0),
+    900: dict(solar_w=700.0, buy_w=10.0, sell_w=150.0, nichicon_battery_w=0.0, nichicon_pv_w=500.0,
+              nichicon_soc=100.0, eco_ac_in_w=200.0, eco_ac_out_w=200.0),
+    1080: dict(solar_w=0.0, buy_w=5.0, sell_w=0.0, nichicon_battery_w=-800.0, nichicon_pv_w=0.0,
+               nichicon_soc=80.0, eco_ac_in_w=0.0, eco_ac_out_w=200.0),
+    1260: dict(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_battery_w=-1000.0, nichicon_pv_w=0.0,
+               nichicon_soc=55.0, eco_ac_in_w=0.0, eco_ac_out_w=350.0),
 }
 _GOLDEN_ANCHOR_VALUES[1440] = _GOLDEN_ANCHOR_VALUES[0]
 _GOLDEN_FIELDS = ("solar_w", "buy_w", "sell_w", "nichicon_battery_w", "nichicon_pv_w",
@@ -116,11 +118,19 @@ GOLDEN_SNAPSHOTS_HHMM = {
 }
 
 
+def expected_load_at_anchor(minute: int) -> float:
+    """アンカー時刻の期待復元負荷を恒等式（DDR §1）から独立に算出する（QA #6:
+    「恒等式は線形なので、合成アンカーでも期待値をコード内で式から導けば同じ拘束力を持つ」。
+    lm.Bucket.load_true_w() を呼ばず、素の四則演算で再実装することで検出力を保つ）。"""
+    v = _GOLDEN_ANCHOR_VALUES[minute]
+    return v["solar_w"] + v["nichicon_pv_w"] - v["nichicon_battery_w"] + v["buy_w"] - v["sell_w"] \
+        + v["eco_ac_out_w"] - v["eco_ac_in_w"]
+
+
 def build_synthetic_golden_day_buckets(day: str = "2026-09-01") -> list:
-    """QA #1 (BLOCKER): 実データをコミットできないため、12個の実測アンカー点（上記）を
-    線形補間して滑らかな288バケット/日の合成プロファイルを作る。アンカー時刻ちょうどの値は
-    実測値と文字どおり一致し、それ以外の276バケットは補間による合成値（時間帯粒度の実データを
-    含まない）。"""
+    """QA #1 (BLOCKER) / #6: 実データを一切使わず、12個の合成アンカー点（上記）を線形補間して
+    滑らかな288バケット/日のプロファイルを作る。アンカー時刻ちょうどの値も合成値であり、
+    実測値は含まない。"""
     anchors = sorted(_GOLDEN_ANCHOR_VALUES)
     buckets = []
     for slot in range(lm.DAY_BUCKETS):
@@ -141,17 +151,20 @@ def build_synthetic_golden_day_buckets(day: str = "2026-09-01") -> list:
 # ---------------------------------------------------------------------------
 class LoadIdentityTest(unittest.TestCase):
     def test_night_discharge_only(self):
-        # golden day 00:00 実測値: 蓄電池放電446W・DELTA出力347W・太陽光ゼロ → 復元負荷793W
-        b = make_bucket(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_pv_w=0.0, nichicon_battery_w=-446.0,
-                         eco_ac_in_w=0.0, eco_ac_out_w=346.8)
-        self.assertAlmostEqual(b.load_true_w(), 792.8, places=1)
+        # 夜間: 蓄電池放電のみ・太陽光ゼロの合成ケース（数値はテスト用の合成値、実測値ではない）。
+        # 蓄電池500W放電・DELTA出力300W → 復元負荷 = 0+0-(-500)+0-0+300-0 = 800W
+        b = make_bucket(solar_w=0.0, buy_w=0.0, sell_w=0.0, nichicon_pv_w=0.0, nichicon_battery_w=-500.0,
+                         eco_ac_in_w=0.0, eco_ac_out_w=300.0)
+        self.assertAlmostEqual(b.load_true_w(), 800.0, places=6)
 
     def test_sell_greater_than_solar_uses_west_roof_pv(self):
-        # golden day 12:20 実測値（DDR §0検証の要点）。西屋根PVが主パワコンと別系統である
-        # ことの根拠になった時刻。復元負荷は1159.7W(±1)。
-        b = make_bucket(solar_w=2907.1, buy_w=0.0, sell_w=4450.0, nichicon_pv_w=2736.0, nichicon_battery_w=0.0,
-                         eco_ac_in_w=174.7, eco_ac_out_w=141.3)
-        self.assertAlmostEqual(b.load_true_w(), 1159.7, delta=1.0)
+        # 西屋根PVが主パワコンと別系統であることを示す合成ケース（sell > solar でも恒等式が
+        # 破綻しないことを検証。数値は合成値、実測値ではない）。
+        # solar=2500, npv=2500, sell=4000, eco_in=150, eco_out=120
+        # → 復元負荷 = 2500+2500-0+0-4000+120-150 = 970W
+        b = make_bucket(solar_w=2500.0, buy_w=0.0, sell_w=4000.0, nichicon_pv_w=2500.0, nichicon_battery_w=0.0,
+                         eco_ac_in_w=150.0, eco_ac_out_w=120.0)
+        self.assertAlmostEqual(b.load_true_w(), 970.0, places=6)
 
     def test_round_trip_composition_charge_and_delta(self):
         # 主PV1000W、西屋根PV500Wのうち300Wを充電、DELTA充電200W、系統買電50W、売電0W
@@ -179,20 +192,36 @@ class LoadIdentityTest(unittest.TestCase):
 class ColumnAliasTest(unittest.TestCase):
     def test_archived_csv_column_names_are_accepted(self):
         # energy-archive の退避済みCSV列名（bucket, n_p, n_n, n_e）をエイリアス経由で読める。
+        # 数値は合成値（実測値ではない）: 蓄電池放電400W・DELTA出力250W・太陽光ゼロ
+        # → 復元負荷 = 0+0-(-400)+0-0+250-0 = 650W
         rows = [{
             "bucket": "2026-09-01 00:00", "solar_w": "0.0", "buy_w": "0.0", "sell_w": "0.0",
-            "nichicon_battery_w": "-446.0", "nichicon_pv_w": "0.0", "nichicon_soc": "56.0",
-            "eco_ac_in_w": "0.0", "eco_ac_out_w": "346.8", "eco_usb_out_w": "0.0",
+            "nichicon_battery_w": "-400.0", "nichicon_pv_w": "0.0", "nichicon_soc": "50.0",
+            "eco_ac_in_w": "0.0", "eco_ac_out_w": "250.0", "eco_usb_out_w": "0.0",
             "n_p": "5", "n_n": "1", "n_e": "20",
         }]
         buckets = lm.parse_profile_rows(rows)
         self.assertEqual(len(buckets), 1)
         self.assertEqual(buckets[0].bucket_at, "2026-09-01 00:00")
-        self.assertAlmostEqual(buckets[0].load_true_w(), 792.8, places=1)
+        self.assertAlmostEqual(buckets[0].load_true_w(), 650.0, places=6)
 
     def test_missing_bucket_column_raises(self):
         with self.assertRaises(KeyError):
             lm.parse_profile_rows([{"solar_w": "0.0"}])
+
+    def test_malformed_numeric_cell_raises_with_column_context(self):
+        # 追加テストa: 数値化できないセルは、どのバケット・どの列が壊れているか
+        # 追跡できる例外メッセージ（bucket_atと列名を含む）を出す。
+        rows = [{
+            "bucket": "2026-09-01 00:05", "solar_w": "N/A", "buy_w": "0.0", "sell_w": "0.0",
+            "nichicon_battery_w": "0.0", "nichicon_pv_w": "0.0", "nichicon_soc": "50.0",
+            "eco_ac_in_w": "0.0", "eco_ac_out_w": "0.0",
+        }]
+        with self.assertRaises(ValueError) as ctx:
+            lm.parse_profile_rows(rows)
+        message = str(ctx.exception)
+        self.assertIn("solar_w", message)
+        self.assertIn("2026-09-01 00:05", message)
 
     def test_eco_usb_out_w_is_not_used_for_load(self):
         # usb_output_w は負荷復元に含めない（オーナー決定）。CSVにあっても無視される。
@@ -398,17 +427,15 @@ class GoldenDaySyntheticTest(unittest.TestCase):
     def test_full_day_has_288_buckets(self):
         self.assertEqual(len(self.buckets), 288)
 
-    def test_twelve_snapshots_match_real_measured_values(self):
-        # アンカー時刻は実測値と文字どおり一致する（QA #1 の指示どおり残す12点）。
-        expected = {
-            "00:00": 792.8, "03:00": 715.8, "06:00": 825.7, "07:25": 1440.8,
-            "09:00": 1467.8, "10:00": 1621.1, "11:00": 1139.2, "12:10": 1014.8,
-            "12:20": 1159.7, "15:00": 1186.0, "18:00": 1121.3, "21:00": 1657.8,
-        }
+    def test_twelve_snapshots_match_formula_derived_expected_load(self):
+        # QA #6: アンカー時刻の期待値は実測値ではなく、恒等式(DDR §1)から独立に算出する
+        # （expected_load_at_anchor は Bucket.load_true_w() を呼ばず素の四則演算で再実装）。
         by_time = {b.bucket_at[-5:]: b for b in self.buckets}
-        for t, expected_w in expected.items():
-            with self.subTest(time=t):
-                self.assertAlmostEqual(by_time[t].load_true_w(), expected_w, delta=0.5)
+        for hhmm, minute in GOLDEN_SNAPSHOTS_HHMM.items():
+            with self.subTest(time=hhmm):
+                self.assertAlmostEqual(
+                    by_time[hhmm].load_true_w(), expected_load_at_anchor(minute), places=6
+                )
 
     def test_l0_ge_l1_ge_l2_buy_order(self):
         l0 = lm.simulate_l0(self.resampled)
@@ -480,16 +507,17 @@ class GoldenDayRealDataOptInTest(unittest.TestCase):
         charge_wh = sum(max(0.0, b.nichicon_battery_w) * (lm.BUCKET_MINUTES / 60.0) for b in self.buckets)
         self.assertAlmostEqual(charge_wh / 1000.0, 7.99, delta=0.05)
 
-    def test_twelve_snapshots_match_expected_load(self):
-        expected = {
-            "00:00": 792.8, "03:00": 715.8, "06:00": 825.7, "07:25": 1440.8,
-            "09:00": 1467.8, "10:00": 1621.1, "11:00": 1139.2, "12:10": 1014.8,
-            "12:20": 1159.7, "15:00": 1186.0, "18:00": 1121.3, "21:00": 1657.8,
-        }
-        by_time = {b.bucket_at[-5:]: b for b in self.buckets}
-        for t, expected_w in expected.items():
-            with self.subTest(time=t):
-                self.assertAlmostEqual(by_time[t].load_true_w(), expected_w, delta=0.5)
+    def test_every_bucket_matches_independent_formula_reimplementation(self):
+        # QA #6: 実測の具体的な瞬時値(W)を本ファイルに書かない。real dataでの検証は
+        # Bucket.load_true_w() を呼ばず恒等式(DDR §1)を素の四則演算で独立に再実装し、
+        # 実CSV全288バケットで一致することを確認する（実測magnitudeをハードコードしない）。
+        for b in self.buckets:
+            independent = (
+                b.solar_w + b.nichicon_pv_w - b.nichicon_battery_w
+                + b.buy_w - b.sell_w + b.eco_ac_out_w - b.eco_ac_in_w
+            )
+            with self.subTest(bucket_at=b.bucket_at):
+                self.assertAlmostEqual(b.load_true_w(), independent, places=6)
 
     def test_l0_ge_l1_ge_l2_buy_order(self):
         l0 = lm.simulate_l0(self.resampled)
@@ -568,6 +596,19 @@ class BuildMonthLayersTest(unittest.TestCase):
         self.assertFalse(record["layers"]["L2"]["available"])
         # QA #2: 部分月の一律コード生成理由ではなく、欠測日/期間の具体的な文言が出ること。
         self.assertIn("5分プロファイル欠測", record["layers"]["L0"]["unavailable_reason"])
+
+    def test_l3_only_month_still_exposes_disclosure_keys(self):
+        # 追加テストc: L3のみavailableな月でも、ダッシュボードの開示表
+        # (renderLayerDisclosureTable) が必要とするキー(buy_source/sell_source/coverage)は
+        # recordに揃っている（QA再レビュー #1: 開示表がL3のみの月でも読者に届く前提の検証）。
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date={})
+        self.assertTrue(record["layers"]["L3"]["available"])
+        self.assertIn("buy_source", record["layers"]["L3"])
+        self.assertIn("sell_source", record["layers"]["L3"])
+        self.assertIn("coverage", record)
+        self.assertEqual(record["coverage"], 0.0)
 
     def test_buy_source_billed_when_official_buy_matches_period(self):
         tariff = make_tariff()
@@ -714,6 +755,16 @@ class QualityGateTest(unittest.TestCase):
         usable, reason = lm.day_is_usable(None, date(2026, 9, 1))
         self.assertFalse(usable)
         self.assertEqual(reason, "5分プロファイルデータなし")
+
+    def test_duplicate_bucket_at_is_not_counted_as_complete_day(self):
+        # 追加テストb: 288行あっても bucket_at が重複していれば、実際には異なる時刻が
+        # 欠落している（重複分で頭数が水増しされている）ため usable=False にする。
+        buckets = [make_bucket(f"2026-09-01 {(h * 5) // 60:02d}:{(h * 5) % 60:02d}") for h in range(lm.DAY_BUCKETS - 1)]
+        buckets.append(make_bucket("2026-09-01 00:00"))  # 00:00 を重複させ、本来あるべき最終時刻を欠落させる
+        self.assertEqual(len(buckets), lm.DAY_BUCKETS)
+        usable, reason = lm.day_is_usable(buckets, date(2026, 9, 1))
+        self.assertFalse(usable)
+        self.assertIn("bucket_at重複", reason)
 
     def test_partial_month_marks_layer_unavailable(self):
         # QA #2: coverage 1.0 未満（1日でも欠測）ならL0〜L2はunavailable。0.95ゲートは廃止。

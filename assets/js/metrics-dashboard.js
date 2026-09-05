@@ -286,9 +286,13 @@
     if (!el) return;
     var cumulative = layers && layers.cumulative;
     if (!cumulative || !cumulative.available) {
+      // QA #7: ハードコード日付をやめ、layers.json の params.profile_since
+      // （layer_model.py が入力プロファイルの最古バケット日から出力）を使う。
+      var profileSince = layers && layers.params && layers.params.profile_since;
+      var sinceText = profileSince ? "（" + profileSince + "〜）" : "";
       el.innerHTML =
         "<p>太陽光・蓄電池が無かった場合(L0)との比較を含む4層すべてがそろう請求月がまだありません。" +
-        "5分プロファイルデータ（2026-08-27〜）が請求期間（毎月2日〜翌月1日）の全日分そろい次第、表示されます。" +
+        "5分プロファイルデータ" + sinceText + "が請求期間（毎月2日〜翌月1日）の全日分そろい次第、表示されます。" +
         "それまでは実測(L3)のみの請求額再現を下記の表でご覧いただけます。</p>";
       return;
     }
@@ -381,7 +385,9 @@
   }
 
   // QA #9b: 推定層(L0〜L2)が1つもavailableでない間は、4層比較チャート本体(トグル・canvas・
-  // 累計表・開示表)を出さず説明段落のみにする（空の凡例4本を描かない）。
+  // 累計表のみ)を出さず説明段落のみにする（空の凡例4本を描かない）。開示表
+  // (#metrics-layer-disclosure) はL3のbuy_source/sell_source等を読者に届けるため、
+  // 推定層の有無に関わらず常に表示する（QA再レビュー #1 対応）。
   function hasAnyEstimatedLayer(layers) {
     if (!layers || !layers.months) return false;
     return layers.months.some(function (m) {

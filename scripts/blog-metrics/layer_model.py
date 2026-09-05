@@ -81,8 +81,10 @@ BATTERY_MAX_DISCHARGE_KW = 5.9  # 定格出力
 
 PV_CAPACITY_KW = 9.4  # L1 全量（FIT設備認定が9.4kW一体、オーナー決定）
 
-# 5分プロファイルの列名エイリアス。energy_profile_5min（Pi側・新設予定）のカラム名を正とし、
-# 退避済みCSV（energy-archive/solarchgctl/profile_5min/*.csv）の列名も受け付ける。
+# 5分プロファイルの列名エイリアス。energy_profile_5min（Pi側・実装済み、V1.00.059。
+# EnergyProfile5MinAggregatorがdt加重(ゼロ次ホールド)で集計、DDR §5-C追記参照）のカラム名を
+# 正とし、退避済みCSV（energy-archive/solarchgctl/profile_5min/*.csv、実装前の簡易集計で
+# +4.1%バイアスあり、DDR §5-C参照）の列名も受け付ける。
 COLUMN_ALIASES: dict[str, str] = {
     "bucket_at": "bucket_at", "bucket": "bucket_at",
     "solar_w": "solar_w",
@@ -111,10 +113,17 @@ def _round_yen(value: float) -> int:
     return bill_model._round_yen(value)
 
 
-def _to_float(value: str | None) -> float | None:
+def _to_float(value: str | None, column: str = "", bucket_at: str = "") -> float | None:
+    """数値セルをfloatに変換する。変換できない場合は列名とbucket_atを含む例外にする
+    （追加テストa: どのバケットのどの列が壊れているか原因追跡できるようにする）。"""
     if value is None or value == "":
         return None
-    return float(value)
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"profile行の数値変換に失敗しました: bucket_at={bucket_at!r} column={column!r} value={value!r}"
+        ) from exc
 
 
 @dataclass
@@ -157,17 +166,18 @@ def parse_profile_rows(rows) -> list[Bucket]:
             canon[canon_key] = value
         if "bucket_at" not in canon or not canon["bucket_at"]:
             raise KeyError(f"profile行に bucket_at/bucket 列がありません: {row}")
+        bucket_at = canon["bucket_at"]
         buckets.append(
             Bucket(
-                bucket_at=canon["bucket_at"],
-                solar_w=_to_float(canon.get("solar_w")),
-                buy_w=_to_float(canon.get("buy_w")),
-                sell_w=_to_float(canon.get("sell_w")),
-                nichicon_pv_w=_to_float(canon.get("nichicon_pv_w")),
-                nichicon_battery_w=_to_float(canon.get("nichicon_battery_w")),
-                nichicon_soc=_to_float(canon.get("nichicon_soc")),
-                eco_ac_in_w=_to_float(canon.get("eco_ac_in_w")),
-                eco_ac_out_w=_to_float(canon.get("eco_ac_out_w")),
+                bucket_at=bucket_at,
+                solar_w=_to_float(canon.get("solar_w"), "solar_w", bucket_at),
+                buy_w=_to_float(canon.get("buy_w"), "buy_w", bucket_at),
+                sell_w=_to_float(canon.get("sell_w"), "sell_w", bucket_at),
+                nichicon_pv_w=_to_float(canon.get("nichicon_pv_w"), "nichicon_pv_w", bucket_at),
+                nichicon_battery_w=_to_float(canon.get("nichicon_battery_w"), "nichicon_battery_w", bucket_at),
+                nichicon_soc=_to_float(canon.get("nichicon_soc"), "nichicon_soc", bucket_at),
+                eco_ac_in_w=_to_float(canon.get("eco_ac_in_w"), "eco_ac_in_w", bucket_at),
+                eco_ac_out_w=_to_float(canon.get("eco_ac_out_w"), "eco_ac_out_w", bucket_at),
             )
         )
     return buckets
@@ -197,6 +207,12 @@ def day_is_usable(buckets: list[Bucket] | None, d: date) -> tuple[bool, str | No
     expected = expected_bucket_count(d)
     if len(buckets) != expected:
         return False, f"バケット数不足 {len(buckets)}/{expected}"
+    # 追加テストb: bucket_at が重複していると、行数は288でも実際には異なる時刻が
+    # 欠落している（重複分で頭数が水増しされる）。件数一致だけでなく重複が無いことも確認する。
+    distinct_times = {b.bucket_at for b in buckets}
+    if len(distinct_times) != expected:
+        duplicated = len(buckets) - len(distinct_times)
+        return False, f"bucket_at重複 {duplicated}件（実際の時刻種別 {len(distinct_times)}/{expected}）"
     for b in buckets:
         if b.load_true_w() is None:
             return False, "一部フィールド欠測"
@@ -638,6 +654,10 @@ def build_layers(
 
     cumulative = _build_cumulative(months)
 
+    # QA #7: ダッシュボードのハードコード日付をやめ、入力プロファイルの最古バケット日を
+    # params.profile_since として出力する（無ければ null。日付のみで時間帯粒度は含まない）。
+    profile_since = min(profile_by_date) if profile_by_date else None
+
     return {
         "params": {
             "battery_charge_kwh_per_100soc": BATTERY_CHARGE_KWH_PER_100SOC,
@@ -647,6 +667,7 @@ def build_layers(
             "pv_ac_efficiency": 1.00,
             "sell_price_yen_per_kwh_fit": tariff["sell_price_yen_per_kwh"]["fit"],
             "sell_price_yen_per_kwh_post_fit": tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"],
+            "profile_since": profile_since,
             "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）",
         },
         "months": months,

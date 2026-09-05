@@ -3,9 +3,9 @@
 # aggregate.sh — SolarChargeController の本番 SQLite DB から
 # 日次/月次の「集計値のみ」を抽出し、Hugo の data ディレクトリ
 # (data/metrics/daily.json, data/metrics/monthly.json, data/metrics/meta.json) に書き出す。
-# あわせて official_buy.json（energy-archiveがあれば）、layers.json（energy_profile_5minが
-# あれば、layer_model.py 経由）、bills.json（bill_model.py 経由、必ずlayer_model.pyの後）
-# も更新する。
+# あわせて official_sell.json・official_buy.json（energy-archiveがあれば）、layers.json
+# （energy_profile_5minがあれば、layer_model.py 経由）、bills.json（bill_model.py 経由、
+# 必ずlayer_model.pyの後）も更新する。
 #
 # 設計方針（重要・変更時は維持すること）:
 #   - DB へは READ-ONLY の SELECT のみを発行する（`sqlite3 -readonly` を必須で使用）。
@@ -254,6 +254,15 @@ echo "  ${OUT_DIR}/daily.json   ($(printf '%s' "${DAILY_JSON}" | python3 -c 'imp
 echo "  ${OUT_DIR}/monthly.json ($(printf '%s' "${MONTHLY_JSON}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?') rows)"
 echo "  ${OUT_DIR}/meta.json"
 
+# official_sell.json（東京電力パワーグリッドの公式売電実績。energy-archiveが手元にある場合のみ、
+# bill_model.py/layer_model.py の sell_source="tepco_official" 判定に使うため先に更新する。
+# 手動更新のまま放置されないよう、official_buy.json と同じガードでaggregate.shに組み込む）。
+if [[ -f "${HOME}/Develop/energy-archive/tepco-fit/purchase_monthly.json" ]]; then
+    python3 "${SCRIPT_DIR}/import_official_sell.py" --out "${OUT_DIR}/official_sell.json"
+else
+    echo "aggregate.sh: energy-archive/tepco-fit/purchase_monthly.json が無いため official_sell.json 更新をスキップします" >&2
+fi
+
 # official_buy.json（Japan電力請求明細PDFの実使用量。energy-archiveが手元にある場合のみ、
 # layer_model.py/bill_model.py の buy_source="billed" 判定に使うため先に更新する）。
 if [[ -f "${HOME}/Develop/energy-archive/japaden/derived/bill_breakdown.json" ]]; then
@@ -262,11 +271,13 @@ else
     echo "aggregate.sh: energy-archive/japaden/derived/bill_breakdown.json が無いため official_buy.json 更新をスキップします" >&2
 fi
 
-# --- 4本目: energy_profile_5min（Pi側・並行実装中、まだ存在しないDBもある） -------------
+# --- 4本目: energy_profile_5min（Pi側 EnergyProfile5MinAggregator で実装済み、V1.00.059。
+# dt加重(ゼロ次ホールド)集計、DDR §5-C追記参照） -------------------------------------------
 # docs/design/20260905_layer-model-ddr.md §3.2/§4。存在確認は軽量な sqlite_master 参照
-# （power_history等の重いテーブルは再スキャンしない）。テーブルが無ければ layers.json 生成を
-# スキップし警告のみ出す（fatalにしない）。5分プロファイルはSSH stdin経由でlayer_model.pyに
-# 直接パイプし、Pi上にもローカルにも中間ファイルを作らない。
+# （power_history等の重いテーブルは再スキャンしない）。本番投入前の古いDBにはまだテーブルが
+# 無い場合があるため、無ければ layers.json 生成をスキップし警告のみ出す（fatalにしない）。
+# 5分プロファイルはSSH stdin経由でlayer_model.pyに直接パイプし、Pi上にもローカルにも
+# 中間ファイルを作らない。
 TABLE_CHECK_SQL="SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='energy_profile_5min';"
 TABLE_EXISTS=$(printf '%s\n' "${TABLE_CHECK_SQL}" | run_sql || true)
 

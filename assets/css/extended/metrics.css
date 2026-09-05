@@ -1,0 +1,12 @@
+/*
+ * /metrics/ ページ専用の補助スタイル。
+ * PaperMod は resources.Match "css/extended/*.css" で assets/css/extended/ 配下の全CSSを
+ * 自動連結する（themes/PaperMod/layouts/_partials/head.html 参照）。テーマは submodule の
+ * ため直接編集できないが、このファイルはリポジトリ側の assets/css/extended/ に置くだけで
+ * Hugo のマウント（プロジェクトassets優先・テーマassetsとの合成）により自動的に取り込まれる。
+ */
+.metrics-notes {
+  font-size: 0.85em;
+  color: var(--secondary, #6c6c6c);
+  line-height: 1.6;
+}

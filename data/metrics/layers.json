@@ -7,6 +7,7 @@
     "pv_ac_efficiency": 1.0,
     "sell_price_yen_per_kwh_fit": 16.0,
     "sell_price_yen_per_kwh_post_fit": 8.0,
+    "profile_since": "2026-08-27",
     "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）"
   },
   "months": [
@@ -206,5 +207,5 @@
     "months_included": 0,
     "available": false
   },
-  "generated_at": "2026-09-06 00:42:16"
+  "generated_at": "2026-09-06 07:15:52"
 }

@@ -71,7 +71,8 @@
       "boundary_storage_kwh": null,
       "max_export_w": null,
       "uncertainty": {},
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "billing_month": "2026-06",
@@ -132,7 +133,8 @@
       "boundary_storage_kwh": null,
       "max_export_w": null,
       "uncertainty": {},
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "billing_month": "2026-08",
@@ -193,7 +195,8 @@
       "boundary_storage_kwh": null,
       "max_export_w": null,
       "uncertainty": {},
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     }
   ],
   "excluded_months": [
@@ -703,5 +706,5 @@
     "interpolated_slots": 1
   },
   "_note": "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスがある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。",
-  "generated_at": "2026-09-06 10:44:38"
+  "generated_at": "2026-09-06 10:58:03"
 }

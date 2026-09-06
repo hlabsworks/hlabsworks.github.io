@@ -142,7 +142,7 @@
     }
   ],
   "_note": "内訳(energy_charge_yen等)は表示用に円未満切り捨て。合計(total_yen)は内訳の単純和ではなく、燃料費等調整額の厳密値（丸め前）を含めた計算式全体を円未満切り捨てするため、内訳の単純和とtotal_yenが端数の関係で最大数円ずれることがある（表示専用の丸め。詳細は bill_model.py のcompute_bill() docstring 参照）。",
-  "generated_at": "2026-09-06 10:44:45",
+  "generated_at": "2026-09-06 10:58:03",
   "tariff_source": {
     "retailer": "Japan電力",
     "plan": "くらしプランS",

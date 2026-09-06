@@ -758,6 +758,26 @@ class BuildMonthLayersTest(unittest.TestCase):
         self.assertTrue(record["layers"]["L2"]["available"])
         self.assertEqual(record["layers"]["L2"]["soc_start_pct"], 42.0)
 
+    def test_month_record_reports_interpolated_slots(self):
+        # QA再レビュー(2回目) #1: build_month_layers が interpolated_slots を出力していない
+        # ため、JS側(metrics-dashboard.js)が読む m.interpolated_slots が確定月では恒久的に
+        # 0になっていた。daily/in_progressと同形でmonthレコードにも追加する。
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        profile_by_date = {}
+        d = start
+        while d <= end:
+            day_buckets = build_synthetic_golden_day_buckets(day=d.isoformat())
+            if d.isoformat() == "2026-08-15":
+                day_buckets.pop(100)  # 1バケット行が丸ごと欠落 → 1スロット、チャネル値8個分
+            profile_by_date[d.isoformat()] = day_buckets
+            d += timedelta(days=1)
+        record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date)
+        self.assertTrue(record["layers"]["L0"]["available"])
+        self.assertEqual(record["interpolated_slots"], 1)
+        self.assertEqual(record["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS) + 1)
+
 
 class BuildLayersTest(unittest.TestCase):
     def test_empty_inputs_return_empty_result(self):
@@ -959,6 +979,28 @@ class BuildInProgressTest(unittest.TestCase):
         self.assertEqual(result["interpolated_buckets"], 0)
         # compute_bill経由なので段階制・容量拠出金込みの内訳(bill)を持つ（per_kwh_onlyでない）。
         self.assertIn("bill", result["layers"]["L0"])
+
+    def test_in_progress_excludes_mid_window_profile_gap(self):
+        # QA再レビュー(2回目) #2: effective_endの決定は「期間内で最後にusableなprofile日」
+        # (max)だと、窓の途中(start+1日)にprofile欠測日が挟まっていても飛び越えてしまい、
+        # L3(daily.json全日合算可能)とL0〜L2(usable日のみ)の日集合がずれる。startから連続
+        # してusableな最終日で打ち切ることを確認する。
+        tariff = make_tariff()
+        profile_by_date = {
+            "2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02"),
+            # 09-03はprofile自体が無い(窓の途中の欠測)
+            "2026-09-04": build_synthetic_golden_day_buckets(day="2026-09-04"),
+        }
+        daily_by_date = {
+            "2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            "2026-09-03": {"date": "2026-09-03", "buy_kwh": 2.0, "sell_kwh": 0.5},
+            "2026-09-04": {"date": "2026-09-04", "buy_kwh": 3.0, "sell_kwh": 0.5},
+        }
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=date(2026, 9, 20))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["period_end_actual"], "2026-09-02")
+        self.assertEqual(result["days_covered"], 1)
+        self.assertEqual(result["layers"]["L3"]["buy_kwh"], 1.0)
 
     def test_uses_provisional_tariff_when_billing_month_unconfirmed(self):
         tariff = make_tariff()  # 2026-09のみ確定
@@ -1170,6 +1212,16 @@ class ResolveDayBucketsTest(unittest.TestCase):
         self.assertEqual(r.interpolated_slots, 1)
         resolved_bucket = sorted(r.buckets, key=lambda b: b.bucket_at)[10]
         self.assertIsNotNone(resolved_bucket.nichicon_soc)
+
+    def test_soc_three_gaps_is_still_usable(self):
+        # QA再レビュー(2回目) 追加テスト: nichicon_soc単独でも境界値(3個)までは補間対象。
+        buckets = self._golden_day()
+        for i in (10, 11, 12):
+            buckets[i] = make_bucket(buckets[i].bucket_at, nichicon_soc=None)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        self.assertEqual(r.interpolated_values, 3)
+        self.assertEqual(r.interpolated_slots, 3)
 
     def test_extra_off_slot_row_makes_day_unusable(self):
         # QA再レビュー #5: 想定外時刻（生成スロット集合外）の行が混入していると不採用にする

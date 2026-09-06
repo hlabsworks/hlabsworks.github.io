@@ -748,6 +748,7 @@ def build_month_layers(
     missing_days: list[str] = []
     all_buckets: list[Bucket] = []
     month_interpolated_buckets = 0
+    month_interpolated_slots = 0
     for d in days_in_period:
         d_str = d.isoformat()
         day_buckets = profile_by_date.get(d_str)
@@ -757,6 +758,7 @@ def build_month_layers(
         else:
             all_buckets.extend(resolution.buckets)
             month_interpolated_buckets += resolution.interpolated_values
+            month_interpolated_slots += resolution.interpolated_slots
 
     coverage = 1.0 - (len(missing_days) / total_days) if total_days else 0.0
 
@@ -831,6 +833,7 @@ def build_month_layers(
         "max_export_w": round(max_export_w, 1) if max_export_w is not None else None,
         "uncertainty": uncertainty,
         "interpolated_buckets": month_interpolated_buckets,
+        "interpolated_slots": month_interpolated_slots,
     }
 
 
@@ -855,7 +858,8 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
     """usableな各日（1日3バケットまでの欠落は resolve_day_buckets が線形補間して埋める。
     オーナー承認機能・2026-09-06、DDR §0既知のノイズ対策）についてL0/L1/L2(推定)と
     L3(センサー実測)の日次buy/sell kWhと円換算(per_kwh_only)を算出する（請求期間が全日
-    揃うまで待たず、今ある分(08-28〜)を見せる）。暦日単位の集計のみで時間帯粒度は含まない。
+    揃うまで待たず、今ある分（params.profile_since 以降）を見せる）。暦日単位の集計のみで
+    時間帯粒度は含まない。
     層ごとに独立して available/unavailable を判定する（1層でも欠ければ他層も隠す、では
     「今ある分を見せたい」という目的に反するため）。
     """
@@ -972,10 +976,16 @@ def build_in_progress(
     effective_end の決め方（QA再レビュー #1）: L0〜L2は5分プロファイルがusableな日のみ、
     L3はdaily.jsonにある日のみを別々に合算すると、両者の「as of」日付がずれて
     （例: L0は3日分、L3は4日分）読者を混乱させる。そこで
-    effective_end = min(期間内で最後にusableなprofile日, 期間内でdaily.jsonに買電がある
-    最後の日, today−1日) を1つに決め、L3のsum_periodとL0〜L2のprofile集計の両方に
-    同じ日集合[start, effective_end]を使う。today自体は当日の部分行（aggregate.shが
+    effective_end = min(startから連続してusableなprofile日の最終日, 期間内でdaily.json
+    に買電がある最後の日, today−1日) を1つに決め、L3のsum_periodとL0〜L2のprofile集計の
+    両方に同じ日集合[start, effective_end]を使う。today自体は当日の部分行（aggregate.shが
     書き出す途中経過値）を含むため常に除外する（QA再レビュー #2）。
+    「startから連続して」usableな最終日を使う理由（QA再レビュー(2回目) #2）: 単純に
+    「期間内で最後にusableなprofile日」（max）を取ると、窓の途中(start+1日等)に
+    profile欠測日が挟まっていてもそれを飛び越えてしまい、L3側の合算日集合とズレる
+    （例: profile={start, start+2日}だと欠測のstart+1日を無視してstart+2日まで
+    合算してしまう）。startから欠測なく連続している区間の末尾で打ち切ることで、
+    途中の欠測も正しく反映する。
     何のデータも無ければ None を返す。
     """
     meter_read_day = tariff["meter_read_day"]
@@ -1007,7 +1017,16 @@ def build_in_progress(
             interpolated_values_by_date[d_str] = resolution.interpolated_values
             interpolated_slots_by_date[d_str] = resolution.interpolated_slots
 
-    last_usable_profile_date = date.fromisoformat(max(resolved_by_date)) if resolved_by_date else None
+    # QA再レビュー#2(2回目): resolved_by_dateの「最大の日付」ではなく、startから連続して
+    # usableな日が続く区間の末尾を使う。窓の途中(例: start, start+2)にprofile欠測日が
+    # 挟まっていると、単純なmax()では欠測日を飛び越えてL3側とズレたeffective_endに
+    # なってしまうため（例: profile={start, start+2日}だとmax()はstart+2日を返すが、
+    # start+1日が欠測なので本来はstart日で打ち切るべき）。
+    last_usable_profile_date = None
+    for d in bill_model._daterange(start, raw_upper_bound):
+        if d.isoformat() not in resolved_by_date:
+            break
+        last_usable_profile_date = d
 
     last_daily_date = None
     for d in bill_model._daterange(start, raw_upper_bound):

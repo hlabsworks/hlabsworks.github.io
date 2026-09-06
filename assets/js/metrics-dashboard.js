@@ -244,8 +244,8 @@
     if (!el || !bills || !bills.months || bills.months.length === 0) return;
     var rows = bills.months.map(function (r) {
       return "<tr>" +
-        "<td>" + r.billing_month + "</td>" +
-        "<td>" + r.usage_period.start + " 〜 " + r.usage_period.end + "</td>" +
+        "<td>" + escapeHtml(r.billing_month) + "</td>" +
+        "<td>" + escapeHtml(r.usage_period.start) + " 〜 " + escapeHtml(r.usage_period.end) + "</td>" +
         "<td>" + kwh(r.bill_actual.buy_kwh) + "</td>" +
         "<td>" + sellSummaryText(r) + "</td>" +
         "<td>" + yen(r.bill_actual.total_yen) + "</td>" +
@@ -514,7 +514,7 @@
       var m = monthsByKey[billing_month];
       var l0 = m.layers.L0, l1 = m.layers.L1, l2 = m.layers.L2, l3 = m.layers.L3;
       return "<tr>" +
-        "<td>" + billing_month + "</td>" +
+        "<td>" + escapeHtml(billing_month) + "</td>" +
         "<td>" + yen(l0.net_cost_fit_yen) + "</td>" +
         "<td>" + yen(l1.net_cost_fit_yen) + "</td>" +
         "<td>" + yen(l2.net_cost_fit_yen) + "</td>" +
@@ -528,7 +528,7 @@
       "<thead><tr><th>請求月</th><th>L0（なし、推定）</th><th>L1（太陽光のみ、推定）</th>" +
       "<th>L2（＋蓄電池、推定）</th><th>L3（全部導入、実測）</th><th>節約額(L0→L3)</th></tr></thead>" +
       "<tbody>" + rows + "</tbody>" +
-      "<tfoot><tr><th>累計（" + cumulative.months_included + "請求月）</th><th>" + yen(c.L0) +
+      "<tfoot><tr><th>累計（" + escapeHtml(cumulative.months_included) + "請求月）</th><th>" + yen(c.L0) +
       "</th><th>" + yen(c.L1) + "</th><th>" + yen(c.L2) + "</th><th>" + yen(c.L3) +
       "</th><th>" + yen(cumulative.saving_yen_fit) + "</th></tr></tfoot>" +
       "</table>";
@@ -541,23 +541,25 @@
   // QA再レビュー #6: interpolatedSlots（欠けていた時刻スロットの実数）と
   // interpolatedBuckets（補間したチャネル値の延べ数）を併記する。
   function disclosureRowHtml(billingMonthLabel, coverageText, l2, l3, maxExportW, uncertainty, interpolatedSlots, interpolatedBuckets) {
-    var socText = l2 && l2.available ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%" : "―";
+    var socText = l2 && l2.available
+      ? escapeHtml(l2.soc_start_pct) + "% → " + escapeHtml(l2.soc_end_pct) + "%"
+      : "―";
     var uncertaintyText = uncertainty && uncertainty.L1
       ? yen(uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L1.net_cost_fit_yen_max)
         + " / L2: " + yen(uncertainty.L2.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L2.net_cost_fit_yen_max)
       : "―";
     var buySourceText = l3 && l3.available
-      ? (l3.buy_source === "billed" ? "請求実績" : "センサー計測") + " / " +
-        (l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
+      ? escapeHtml(l3.buy_source === "billed" ? "請求実績" : "センサー計測") + " / " +
+        escapeHtml(l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
       : "―";
     return "<tr>" +
       "<td>" + escapeHtml(billingMonthLabel) + "</td>" +
       "<td>" + escapeHtml(coverageText) + "</td>" +
       "<td>" + socText + "</td>" +
-      "<td>" + (maxExportW !== null && maxExportW !== undefined ? Math.round(maxExportW) + " W" : "―") + "</td>" +
+      "<td>" + (maxExportW !== null && maxExportW !== undefined ? escapeHtml(Math.round(maxExportW)) + " W" : "―") + "</td>" +
       "<td>" + uncertaintyText + "</td>" +
       "<td>" + buySourceText + "</td>" +
-      "<td>" + (interpolatedSlots || 0) + "（" + (interpolatedBuckets || 0) + "）</td>" +
+      "<td>" + escapeHtml(interpolatedSlots || 0) + "（" + escapeHtml(interpolatedBuckets || 0) + "）</td>" +
       "</tr>";
   }
 

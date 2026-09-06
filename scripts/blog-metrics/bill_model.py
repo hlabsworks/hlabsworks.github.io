@@ -142,6 +142,81 @@ def billing_period(billing_month: str, meter_read_day: int) -> tuple[date, date]
     return start, end
 
 
+def billing_month_for_date(d: date, meter_read_day: int) -> str:
+    """暦日 d が属する請求月('YYYY-MM': 使用分の月)を返す（billing_period の逆写像）。
+    meter_read_day日以降はその月の翌月分、それより前は当月分になる
+    （例: meter_read_day=2, d=2026-07-15 → '2026-08'、d=2026-07-01 → '2026-07'）。"""
+    if d.day >= meter_read_day:
+        y, m = _add_month(d.year, d.month, 1)
+    else:
+        y, m = d.year, d.month
+    return f"{y:04d}-{m:02d}"
+
+
+def latest_confirmed_fuel_month(tariff: dict, billing_month: str) -> str | None:
+    """billing_month以前（を含む）で fuel_cost_adjustment_yen_per_kwh が確定している
+    直近の請求月を返す（無ければNone）。日次per_kwh_only計算の暫定単価適用に使う。"""
+    target = _parse_ym(billing_month)
+    candidates = [m for m in tariff["fuel_cost_adjustment_yen_per_kwh"] if not m.startswith("_") and _parse_ym(m) <= target]
+    return max(candidates, key=_parse_ym) if candidates else None
+
+
+def latest_confirmed_tariff_month(tariff: dict, billing_month: str) -> str | None:
+    """billing_month以前で fuel_cost_adjustment_yen_per_kwh と capacity_contribution_yen_per_month の
+    両方が確定している直近の請求月を返す（無ければNone）。compute_bill の暫定単価適用に使う。"""
+    target = _parse_ym(billing_month)
+    candidates = [
+        m for m in tariff["fuel_cost_adjustment_yen_per_kwh"]
+        if not m.startswith("_") and _parse_ym(m) <= target and m in tariff["capacity_contribution_yen_per_month"]
+    ]
+    return max(candidates, key=_parse_ym) if candidates else None
+
+
+def resolve_effective_tariff(tariff: dict, billing_month: str) -> tuple[dict, bool, str | None]:
+    """billing_month の燃料費調整単価・容量拠出金が確定していればそのまま tariff を返す。
+    未確定なら直近確定月の単価を暫定適用した tariff のコピーを返す（オーナー承認済み、
+    2026-09-06: 確定表示にのみ捏造禁止方針を適用し、月途中集計は明示ラベル付きで暫定単価を許容）。
+    戻り値: (実効tariff, provisional, 出典請求月|None)。全く確定月が無ければ
+    (tariff, False, None) のまま返し、呼び出し側の compute_bill が通常どおり KeyError になる。
+    """
+    has_fuel = billing_month in tariff["fuel_cost_adjustment_yen_per_kwh"]
+    has_capacity = billing_month in tariff["capacity_contribution_yen_per_month"]
+    if has_fuel and has_capacity:
+        return tariff, False, None
+    source_month = latest_confirmed_tariff_month(tariff, billing_month)
+    if source_month is None:
+        return tariff, False, None
+    patched = dict(tariff)
+    patched["fuel_cost_adjustment_yen_per_kwh"] = dict(tariff["fuel_cost_adjustment_yen_per_kwh"])
+    patched["fuel_cost_adjustment_yen_per_kwh"][billing_month] = tariff["fuel_cost_adjustment_yen_per_kwh"][source_month]
+    patched["capacity_contribution_yen_per_month"] = dict(tariff["capacity_contribution_yen_per_month"])
+    patched["capacity_contribution_yen_per_month"][billing_month] = tariff["capacity_contribution_yen_per_month"][source_month]
+    return patched, True, source_month
+
+
+def per_kwh_prices(tariff: dict, billing_month: str) -> tuple[float, float, float, bool, str | None]:
+    """日次簡易換算(per_kwh_only)用の買電・売電単価を返す。
+    買電単価 = 従量第1段単価 + 燃料費等調整単価 + 再エネ賦課金単価（容量拠出金・段階制は
+    月次按分できないため含めない、QAオーナー承認2026-09-06）。
+    燃料費等調整単価が billing_month で未確定なら直近確定月の値を暫定適用する。
+    戻り値: (buy_price_yen_per_kwh, sell_price_fit, sell_price_post_fit, provisional, 出典請求月|None)。
+    """
+    tier1_rate = tariff["energy_tiers_yen_per_kwh"][0]["yen_per_kwh"]
+    levy_rate = renewable_levy_rate(tariff, billing_month)
+    sell_fit = tariff["sell_price_yen_per_kwh"]["fit"]
+    sell_post_fit = tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"]
+
+    if billing_month in tariff["fuel_cost_adjustment_yen_per_kwh"]:
+        fuel_rate = tariff["fuel_cost_adjustment_yen_per_kwh"][billing_month]
+        return tier1_rate + fuel_rate + levy_rate, sell_fit, sell_post_fit, False, None
+
+    source_month = latest_confirmed_fuel_month(tariff, billing_month)
+    if source_month is None:
+        raise KeyError(f"fuel_cost_adjustment_yen_per_kwh に {billing_month} も暫定適用元も見つかりません")
+    fuel_rate = tariff["fuel_cost_adjustment_yen_per_kwh"][source_month]
+    return tier1_rate + fuel_rate + levy_rate, sell_fit, sell_post_fit, True, source_month
+
+
 def renewable_levy_rate(tariff: dict, billing_month: str) -> float:
     """再エネ賦課金単価(円/kWh)を、billing_month を含む年度レンジから引く。"""
     target = _parse_ym(billing_month)

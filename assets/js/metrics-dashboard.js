@@ -320,6 +320,88 @@
       layerChartMetric = layerChartMetric === "net_cost_fit_yen" ? "net_cost_post_fit_yen" : "net_cost_fit_yen";
       btn.textContent = layerChartMetric === "net_cost_fit_yen" ? "卒FIT換算(8円/kWh)に切替" : "FIT実態(16円/kWh)に切替";
       renderLayerBillsChart(layers);
+      // オーナー承認機能（2026-09-06）: 月途中カード・日次グラフもFIT/卒FITトグルに連動させる。
+      renderInProgressCard(layers);
+      renderDailyLayersChart(layers);
+    });
+  }
+
+  // オーナー承認機能（2026-09-06）: 確定月を待たず「今ある分」を見せるヘッドラインカード。
+  function badge(text) {
+    return "<span class=\"metrics-badge\">" + escapeHtml(text) + "</span>";
+  }
+
+  function inProgressAmountText(layer) {
+    if (!layer || !layer.available) return "―";
+    return yen(layer[layerChartMetric]);
+  }
+
+  function renderInProgressCard(layers) {
+    var el = document.getElementById("metrics-in-progress-card");
+    if (!el) return;
+    var ip = layers && layers.in_progress;
+    if (!ip) {
+      el.innerHTML = "<p>今月ここまでの途中集計を表示するためのデータがまだありません。</p>";
+      return;
+    }
+    var badges = [badge("推定"), badge("途中")];
+    if (ip.tariff_provisional) {
+      badges.push(badge("暫定単価（" + escapeHtml(ip.tariff_source_month) + " の単価を適用）"));
+    }
+    var l0 = ip.layers.L0, l1 = ip.layers.L1, l2 = ip.layers.L2, l3 = ip.layers.L3;
+    var deltaText = (l0 && l0.available && l3 && l3.available)
+      ? yen(l0[layerChartMetric] - l3[layerChartMetric])
+      : "―";
+    el.innerHTML =
+      "<div class=\"metrics-in-progress-card\">" +
+      "<p>" + badges.join(" ") + "</p>" +
+      "<p>請求月 " + escapeHtml(ip.billing_month) + "（" + ip.usage_period.start + "〜" + ip.period_end_actual +
+      "、" + ip.days_covered + "/" + ip.usage_period.days + "日分）</p>" +
+      "<ul>" +
+      "<li>L0（太陽光・蓄電池なし、推定）: " + inProgressAmountText(l0) + "</li>" +
+      "<li>L1（太陽光のみ、推定）: " + inProgressAmountText(l1) + "</li>" +
+      "<li>L2（＋蓄電池、推定）: " + inProgressAmountText(l2) + "</li>" +
+      "<li>L3（全部導入、実測）: " + inProgressAmountText(l3) + "</li>" +
+      "<li>節約額（L0→L3、ここまでの途中集計）: " + deltaText + "</li>" +
+      "</ul>" +
+      "</div>";
+  }
+
+  // オーナー承認機能（2026-09-06）: 08-28〜の日次4層系列（円/日、per_kwh_only簡易換算）。
+  var dailyLayerChartInstance = null;
+
+  function renderDailyLayersChart(layers) {
+    var canvas = document.getElementById("chart-daily-layers");
+    if (!canvas || !window.Chart || !layers || !layers.daily || layers.daily.length === 0) return;
+    var daily = layers.daily;
+    var datasets = ["L0", "L1", "L2", "L3"].map(function (key) {
+      return {
+        label: LAYER_NAMES[key],
+        data: daily.map(function (d) {
+          var layer = d.layers[key];
+          return layer && layer.available ? layer[layerChartMetric] : null;
+        }),
+        borderColor: LAYER_COLORS[key],
+        backgroundColor: "transparent",
+        tension: 0.15,
+        pointRadius: 0,
+        spanGaps: true,
+      };
+    });
+    if (dailyLayerChartInstance) {
+      dailyLayerChartInstance.destroy();
+    }
+    dailyLayerChartInstance = new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: { labels: daily.map(function (d) { return d.date; }), datasets: datasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 14 } },
+          y: { title: { display: true, text: "円/日（簡易per_kwh_only換算、買電額 − 売電収入）" } },
+        },
+      },
     });
   }
 
@@ -328,14 +410,8 @@
     if (!el) return;
     var cumulative = layers && layers.cumulative;
     if (!cumulative || !cumulative.available) {
-      // QA #7: ハードコード日付をやめ、layers.json の params.profile_since
-      // （layer_model.py が入力プロファイルの最古バケット日から出力）を使う。
-      var profileSince = layers && layers.params && layers.params.profile_since;
-      var sinceText = profileSince ? "（" + profileSince + "〜）" : "";
-      el.innerHTML =
-        "<p>太陽光・蓄電池が無かった場合(L0)との比較を含む4層すべてがそろう請求月がまだありません。" +
-        "5分プロファイルデータ" + sinceText + "が請求期間（毎月2日〜翌月1日）の全日分そろい次第、表示されます。" +
-        "それまでは実測(L3)のみの請求額再現を下記の表でご覧いただけます。</p>";
+      // オーナー承認機能（2026-09-06）: 確定月が無い間の空状態文言を変更する。
+      el.innerHTML = "<p>確定月はまだありません。以下は途中集計です。</p>";
       return;
     }
     var savingPerMonthYen = cumulative.saving_yen_fit / cumulative.months_included;
@@ -386,43 +462,51 @@
 
   // QA #8: coverage / uncertainty / boundary_storage(SOC) / max_export_w / buy_source を
   // 脚注表として開示する（DDR §2.7「注記で開示」）。
+  function disclosureRowHtml(billingMonthLabel, coverageFraction, l2, l3, maxExportW, uncertainty) {
+    var socText = l2 && l2.available ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%" : "―";
+    var uncertaintyText = uncertainty && uncertainty.L1
+      ? yen(uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L1.net_cost_fit_yen_max)
+        + " / L2: " + yen(uncertainty.L2.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L2.net_cost_fit_yen_max)
+      : "―";
+    var buySourceText = l3 && l3.available
+      ? (l3.buy_source === "billed" ? "請求実績" : "センサー計測") + " / " +
+        (l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
+      : "―";
+    return "<tr>" +
+      "<td>" + billingMonthLabel + "</td>" +
+      "<td>" + (coverageFraction * 100).toFixed(1) + "%</td>" +
+      "<td>" + socText + "</td>" +
+      "<td>" + (maxExportW !== null && maxExportW !== undefined ? Math.round(maxExportW) + " W" : "―") + "</td>" +
+      "<td>" + uncertaintyText + "</td>" +
+      "<td>" + buySourceText + "</td>" +
+      "</tr>";
+  }
+
+  // QA #8 + オーナー承認機能（2026-09-06）: in_progress（月途中集計）の行も追加する
+  // （coverage = days_covered / 期間日数）。
   function renderLayerDisclosureTable(layers) {
     var el = document.getElementById("metrics-layer-disclosure");
     if (!el) return;
-    if (!layers || !layers.months || layers.months.length === 0) {
+    var monthRows = (layers && layers.months ? layers.months : []).map(function (m) {
+      return disclosureRowHtml(m.billing_month, m.coverage, m.layers.L2, m.layers.L3, m.max_export_w, m.uncertainty);
+    });
+    var ip = layers && layers.in_progress;
+    if (ip) {
+      monthRows.push(disclosureRowHtml(
+        ip.billing_month + "（途中）", ip.days_covered / ip.usage_period.days, ip.layers.L2, ip.layers.L3, null, null
+      ));
+    }
+    if (monthRows.length === 0) {
       el.innerHTML = "";
       return;
     }
-    var rows = layers.months.map(function (m) {
-      var l2 = m.layers.L2;
-      var l3 = m.layers.L3;
-      var socText = l2 && l2.available
-        ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%"
-        : "―";
-      var uncertaintyText = m.uncertainty && m.uncertainty.L1
-        ? yen(m.uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(m.uncertainty.L1.net_cost_fit_yen_max)
-          + " / L2: " + yen(m.uncertainty.L2.net_cost_fit_yen_min) + "〜" + yen(m.uncertainty.L2.net_cost_fit_yen_max)
-        : "―";
-      var buySourceText = l3 && l3.available
-        ? (l3.buy_source === "billed" ? "請求実績" : "センサー計測") + " / " +
-          (l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
-        : "―";
-      return "<tr>" +
-        "<td>" + m.billing_month + "</td>" +
-        "<td>" + (m.coverage * 100).toFixed(1) + "%</td>" +
-        "<td>" + socText + "</td>" +
-        "<td>" + (m.max_export_w !== null && m.max_export_w !== undefined ? Math.round(m.max_export_w) + " W" : "―") + "</td>" +
-        "<td>" + uncertaintyText + "</td>" +
-        "<td>" + buySourceText + "</td>" +
-        "</tr>";
-    }).join("");
     el.innerHTML =
       "<table>" +
       "<thead><tr><th>請求月</th><th>5分プロファイル coverage</th>" +
       "<th>蓄電池SOC（期間開始→終了、注記のみ・金額補正なし）</th><th>最大逆潮流推定(L1/L2)</th>" +
       "<th>不確かさ帯（バケット5/15/30分×効率1.00/0.95、net_cost_fit_yen L1 / L2）</th>" +
       "<th>L3買電・売電の出典</th></tr></thead>" +
-      "<tbody>" + rows + "</tbody>" +
+      "<tbody>" + monthRows.join("") + "</tbody>" +
       "</table>";
   }
 
@@ -451,6 +535,8 @@
     var bills = readJSON("metrics-bills-data");
     var layers = readJSON("metrics-layers-data");
     renderLayerSummary(layers);
+    renderInProgressCard(layers);
+    renderDailyLayersChart(layers);
     toggleLayerChartSection(layers);
     renderLayerBillsChart(layers);
     renderLayerToggle(layers);

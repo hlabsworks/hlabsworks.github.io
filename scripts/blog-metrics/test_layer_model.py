@@ -15,7 +15,9 @@ QA #1 (BLOCKER) 対応: 時間帯粒度の実データ(*.csv)は本repoにコミ
 """
 import contextlib
 import io
+import json
 import os
+import re
 import sys
 import unittest
 from datetime import date, timedelta
@@ -411,6 +413,67 @@ class EnergyConservationTest(unittest.TestCase):
         self.assertAlmostEqual(balance, 0.0, places=6)
 
 
+class SimulateL2SeriesTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、日次4層系列）: L2 SOCの日跨ぎ引き継ぎ・ギャップ再アンカー。"""
+
+    def _bucket(self, bucket_at, **overrides):
+        return make_bucket(bucket_at, **overrides)
+
+    def test_soc_carries_over_contiguous_day_boundary(self):
+        # day1 23:55 と day2 00:00 は5分連続 → ギャップなしでsocが引き継がれる
+        # （day2側の実測soc=50.0には再アンカーされず、day1から引き継いだ推定値(≈1.0%、
+        # SOC制約が支配的になる低残量)が使われる。既存の discharge_capped_by_soc の
+        # シナリオと同じ考え方で、SOC次第で放電可能量＝買電量が変わることを利用する）。
+        day1_last = self._bucket("2026-09-01 23:55", nichicon_soc=1.0)  # 負荷ゼロ→socは変化しない
+        day2_first = self._bucket("2026-09-02 00:00", eco_ac_out_w=8000.0, nichicon_soc=50.0)
+        result = lm.simulate_l2_series([day1_last, day2_first], pv_ac_efficiency=1.0, initial_soc_pct=1.0)
+        self.assertIn("2026-09-01", result)
+        self.assertIn("2026-09-02", result)
+
+        dt_h = 5 / 60
+        zero_row = {"solar_w": 0.0, "nichicon_pv_w": 0.0, "nichicon_battery_w": 0.0, "buy_w": 0.0, "sell_w": 0.0,
+                    "eco_ac_out_w": 0.0, "eco_ac_in_w": 0.0}
+        draw_row = {"solar_w": 0.0, "nichicon_pv_w": 0.0, "nichicon_battery_w": 0.0, "buy_w": 0.0, "sell_w": 0.0,
+                    "eco_ac_out_w": 8000.0, "eco_ac_in_w": 0.0}
+        step1 = lm._simulate_l2_step(zero_row, dt_h, 1.0, 1.0)
+        step2_carried = lm._simulate_l2_step(draw_row, dt_h, step1.soc_pct, 1.0)
+        step2_reanchored = lm._simulate_l2_step(draw_row, dt_h, 50.0, 1.0)
+        day2_buy_kwh = result["2026-09-02"][0]
+        self.assertAlmostEqual(day2_buy_kwh, step2_carried.buy_w * dt_h / 1000.0, places=6)
+        self.assertNotAlmostEqual(day2_buy_kwh, step2_reanchored.buy_w * dt_h / 1000.0, places=2)
+
+    def test_gap_reinitializes_to_actual_soc(self):
+        # day1とday3の間（day2）が丸ごと欠測しているケース。day3の最初のバケットでは
+        # 実測nichicon_soc(50.0)に再アンカーし、day1から引き継いだ推定値(carriedのまま
+        # なら1.0%)は使わない（SOC次第で放電可能量＝買電量が変わる負荷を使って区別する）。
+        day1 = self._bucket("2026-09-01 23:55", nichicon_soc=1.0)  # 負荷ゼロ→socは変化しない
+        day3 = self._bucket("2026-09-03 00:00", eco_ac_out_w=8000.0, nichicon_soc=50.0)
+        result_gap = lm.simulate_l2_series([day1, day3], pv_ac_efficiency=1.0, initial_soc_pct=1.0)
+
+        dt_h = 5 / 60
+        draw_row = {"solar_w": 0.0, "nichicon_pv_w": 0.0, "nichicon_battery_w": 0.0, "buy_w": 0.0, "sell_w": 0.0,
+                    "eco_ac_out_w": 8000.0, "eco_ac_in_w": 0.0}
+        expected_reanchored = lm._simulate_l2_step(draw_row, dt_h, 50.0, 1.0)
+        expected_if_carried = lm._simulate_l2_step(draw_row, dt_h, 1.0, 1.0)  # 起きてはいけない挙動
+        day3_buy_kwh = result_gap["2026-09-03"][0]
+        self.assertAlmostEqual(day3_buy_kwh, expected_reanchored.buy_w * dt_h / 1000.0, places=6)
+        self.assertNotAlmostEqual(day3_buy_kwh, expected_if_carried.buy_w * dt_h / 1000.0, places=2)
+
+    def test_daily_totals_sum_correctly_across_two_days(self):
+        buckets = [
+            self._bucket("2026-09-01 00:00", eco_ac_out_w=1000.0, nichicon_soc=50.0),
+            self._bucket("2026-09-01 00:05", eco_ac_out_w=1000.0),
+            self._bucket("2026-09-02 00:00", eco_ac_out_w=1000.0),
+        ]
+        result = lm.simulate_l2_series(buckets, pv_ac_efficiency=1.0, initial_soc_pct=50.0)
+        self.assertEqual(set(result.keys()), {"2026-09-01", "2026-09-02"})
+        # soc50%なら1000Wの放電要求は蓄電池だけで賄えるため買電は発生しない
+        # （日付ごとの内訳がきちんと分かれて記録されていることの確認）。
+        for buy_kwh, sell_kwh in result.values():
+            self.assertGreaterEqual(buy_kwh, 0.0)
+            self.assertEqual(sell_kwh, 0.0)
+
+
 # ---------------------------------------------------------------------------
 # C. golden day（DDR §5-C）
 # ---------------------------------------------------------------------------
@@ -754,6 +817,151 @@ class BuildCumulativeTest(unittest.TestCase):
         cumulative = lm._build_cumulative(months)
         self.assertEqual(cumulative["months_included"], 1)
         self.assertEqual(cumulative["billing_months"], ["2026-08"])
+
+
+class BuildDailyLayersTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、日次4層系列）: 請求期間が全日揃うまで待たず、
+    usableな日ごとにL0〜L3を出す。"""
+
+    def test_per_kwh_only_matches_manual_formula(self):
+        tariff = make_tariff()  # 2026-09 が確定
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")  # 2026-09に属する日
+        profile_by_date = {"2026-09-01": buckets}
+        days = lm.build_daily_layers(tariff, {}, profile_by_date)
+        self.assertEqual(len(days), 1)
+        entry = days[0]
+        self.assertEqual(entry["date"], "2026-09-01")
+        self.assertEqual(entry["billing_month"], "2026-09")
+        self.assertEqual(entry["tariff_basis"], "per_kwh_only")
+        self.assertFalse(entry["tariff_provisional"])
+        self.assertIsNone(entry["tariff_source_month"])
+
+        buy_price, sell_fit, sell_post_fit, _, _ = bill_model.per_kwh_prices(tariff, "2026-09")
+        resampled = lm.resample_buckets(buckets, lm.BUCKET_MINUTES)
+        l0_totals = lm.simulate_l0(resampled)
+        expected_net_fit = lm._round_yen(l0_totals.buy_kwh * buy_price - l0_totals.sell_kwh * sell_fit)
+        expected_net_post_fit = lm._round_yen(l0_totals.buy_kwh * buy_price - l0_totals.sell_kwh * sell_post_fit)
+        l0 = entry["layers"]["L0"]
+        self.assertTrue(l0["available"])
+        self.assertEqual(l0["net_cost_fit_yen"], expected_net_fit)
+        self.assertEqual(l0["net_cost_post_fit_yen"], expected_net_post_fit)
+        self.assertAlmostEqual(l0["buy_kwh"], round(l0_totals.buy_kwh, 3), places=3)
+        # per_kwh_only には容量拠出金・段階制の内訳(bill)が無い。
+        self.assertNotIn("bill", l0)
+
+    def test_provisional_tariff_flagged_for_unconfirmed_month(self):
+        tariff = make_tariff()  # 2026-09のみ確定、2026-10は未確定
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-15")  # billing_month=2026-10
+        profile_by_date = {"2026-09-15": buckets}
+        days = lm.build_daily_layers(tariff, {}, profile_by_date)
+        self.assertEqual(len(days), 1)
+        entry = days[0]
+        self.assertEqual(entry["billing_month"], "2026-10")
+        self.assertTrue(entry["tariff_provisional"])
+        self.assertEqual(entry["tariff_source_month"], "2026-09")
+
+    def test_l3_independently_unavailable_when_daily_json_missing_that_date(self):
+        tariff = make_tariff()
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        profile_by_date = {"2026-09-01": buckets}
+        days = lm.build_daily_layers(tariff, {}, profile_by_date)  # daily_by_date は空
+        entry = days[0]
+        self.assertTrue(entry["layers"]["L0"]["available"])
+        self.assertTrue(entry["layers"]["L1"]["available"])
+        self.assertTrue(entry["layers"]["L2"]["available"])
+        self.assertFalse(entry["layers"]["L3"]["available"])
+        self.assertNotIn("buy_kwh", entry["layers"]["L3"])
+
+    def test_l3_available_and_sourced_from_sensor_when_daily_json_present(self):
+        tariff = make_tariff()
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        profile_by_date = {"2026-09-01": buckets}
+        daily_by_date = {"2026-09-01": {"date": "2026-09-01", "buy_kwh": 5.0, "sell_kwh": 2.0, "solar_kwh": 10.0}}
+        days = lm.build_daily_layers(tariff, daily_by_date, profile_by_date)
+        l3 = days[0]["layers"]["L3"]
+        self.assertTrue(l3["available"])
+        self.assertEqual(l3["source"], "sensor")
+        self.assertEqual(l3["buy_kwh"], 5.0)
+        self.assertEqual(l3["sell_kwh"], 2.0)
+
+    def test_no_time_of_day_granularity_in_output(self):
+        tariff = make_tariff()
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        profile_by_date = {"2026-09-01": buckets}
+        days = lm.build_daily_layers(tariff, {}, profile_by_date)
+        dumped = json.dumps(days, ensure_ascii=False)
+        self.assertNotIn("bucket_at", dumped)
+        # 日付(YYYY-MM-DD)のみで時刻(HH:MM)が一切含まれないことを確認する。
+        self.assertIsNone(re.search(r"\d{2}:\d{2}", dumped))
+
+    def test_empty_profile_returns_empty_list(self):
+        tariff = make_tariff()
+        self.assertEqual(lm.build_daily_layers(tariff, {}, {}), [])
+
+
+class BuildInProgressTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、月途中集計）。"""
+
+    def test_returns_none_when_no_data_at_all(self):
+        tariff = make_tariff()
+        result = lm.build_in_progress(tariff, {}, {}, today=date(2026, 9, 20))
+        self.assertIsNone(result)
+
+    def test_cuts_at_last_usable_day_and_counts_covered_days(self):
+        tariff = make_tariff()
+        # today=2026-09-20 の請求期間は 2026-09-02〜2026-10-01（billing_month=2026-10）。
+        # usableなプロファイル日を09-02,09-03の2日だけ用意し、09-04以降は無い状態にする。
+        profile_by_date = {
+            "2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02"),
+            "2026-09-03": build_synthetic_golden_day_buckets(day="2026-09-03"),
+        }
+        daily_by_date = {
+            "2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            "2026-09-03": {"date": "2026-09-03", "buy_kwh": 1.0, "sell_kwh": 0.5},
+        }
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=date(2026, 9, 20))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "in_progress")
+        self.assertEqual(result["billing_month"], "2026-10")
+        self.assertEqual(result["usage_period"], {"start": "2026-09-02", "end": "2026-10-01", "days": 30})
+        self.assertEqual(result["days_covered"], 2)
+        self.assertEqual(result["period_end_actual"], "2026-09-03")
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertTrue(result["layers"][key]["available"])
+        # compute_bill経由なので段階制・容量拠出金込みの内訳(bill)を持つ（per_kwh_onlyでない）。
+        self.assertIn("bill", result["layers"]["L0"])
+
+    def test_uses_provisional_tariff_when_billing_month_unconfirmed(self):
+        tariff = make_tariff()  # 2026-09のみ確定
+        profile_by_date = {"2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02")}
+        daily_by_date = {"2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5}}
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=date(2026, 9, 20))
+        self.assertTrue(result["tariff_provisional"])
+        self.assertEqual(result["tariff_source_month"], "2026-09")
+        # 実際にeffective_tariffで計算されたbillになっていることを確認する。
+        effective_tariff, provisional, source_month = bill_model.resolve_effective_tariff(tariff, "2026-10")
+        expected_bill = bill_model.compute_bill(effective_tariff, result["layers"]["L3"]["buy_kwh"], "2026-10")
+        self.assertEqual(result["layers"]["L3"]["bill"]["total_yen"], expected_bill.total_yen)
+
+    def test_confirmed_month_build_month_layers_unaffected_by_provisional_helpers(self):
+        # 確定月(build_month_layers)は resolve_effective_tariff を経由しないため、暫定単価の
+        # 出典が存在していても混入しない（tariff未確定ならこれまでどおり除外される）。
+        tariff = make_tariff()
+        tariff["fuel_cost_adjustment_yen_per_kwh"] = {}  # 2026-09自体を未確定にする
+        tariff["capacity_contribution_yen_per_month"] = {}
+        daily = _full_month_daily("2026-09")
+        record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date={})
+        l3 = record["layers"]["L3"]
+        self.assertFalse(l3["available"])
+        self.assertEqual(l3["unavailable_reason"]["reason_code"], "tariff_missing")
+
+    def test_status_field_is_in_progress_not_confirmed(self):
+        tariff = make_tariff()
+        profile_by_date = {"2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02")}
+        daily_by_date = {"2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5}}
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=date(2026, 9, 20))
+        self.assertEqual(result["status"], "in_progress")
+        self.assertNotIn("excluded", result)
 
 
 # ---------------------------------------------------------------------------

@@ -95,6 +95,95 @@ class BillingPeriodTest(unittest.TestCase):
             bill_model.billing_period("2026-08", meter_read_day=1)
 
 
+class BillingMonthForDateTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、月途中集計）: billing_period の逆写像。"""
+
+    def test_date_on_or_after_meter_read_day_belongs_to_next_month(self):
+        self.assertEqual(bill_model.billing_month_for_date(date(2026, 7, 15), meter_read_day=2), "2026-08")
+        self.assertEqual(bill_model.billing_month_for_date(date(2026, 7, 2), meter_read_day=2), "2026-08")
+
+    def test_date_before_meter_read_day_belongs_to_current_month(self):
+        self.assertEqual(bill_model.billing_month_for_date(date(2026, 7, 1), meter_read_day=2), "2026-07")
+
+    def test_round_trips_with_billing_period(self):
+        for d in (date(2026, 9, 2), date(2026, 9, 5), date(2026, 10, 1)):
+            billing_month = bill_model.billing_month_for_date(d, meter_read_day=2)
+            start, end = bill_model.billing_period(billing_month, meter_read_day=2)
+            self.assertTrue(start <= d <= end)
+
+
+class PerKwhPricesTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、日次per_kwh_only換算）。"""
+
+    def test_confirmed_month_uses_its_own_fuel_rate(self):
+        tariff = make_tariff()
+        buy_price, sell_fit, sell_post_fit, provisional, source_month = bill_model.per_kwh_prices(tariff, "2026-08")
+        expected = (
+            tariff["energy_tiers_yen_per_kwh"][0]["yen_per_kwh"]
+            + tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-08"]
+            + bill_model.renewable_levy_rate(tariff, "2026-08")
+        )
+        self.assertAlmostEqual(buy_price, expected, places=6)
+        self.assertFalse(provisional)
+        self.assertIsNone(source_month)
+        self.assertEqual(sell_fit, tariff["sell_price_yen_per_kwh"]["fit"])
+        self.assertEqual(sell_post_fit, tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"])
+
+    def test_unconfirmed_month_falls_back_to_latest_confirmed_fuel_rate(self):
+        tariff = make_tariff()  # fuel_cost_adjustment は 2026-07/2026-08 のみ確定
+        buy_price, _, _, provisional, source_month = bill_model.per_kwh_prices(tariff, "2026-09")
+        self.assertTrue(provisional)
+        self.assertEqual(source_month, "2026-08")
+        expected = tariff["energy_tiers_yen_per_kwh"][0]["yen_per_kwh"] + tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-08"] + 4.18
+        self.assertAlmostEqual(buy_price, expected, places=6)
+
+    def test_no_confirmed_month_at_all_raises(self):
+        tariff = make_tariff(fuel_cost_adjustment_yen_per_kwh={})
+        with self.assertRaises(KeyError):
+            bill_model.per_kwh_prices(tariff, "2026-09")
+
+
+class ResolveEffectiveTariffTest(unittest.TestCase):
+    """オーナー承認機能（2026-09-06、月途中集計）: 暫定単価の適用。"""
+
+    def test_confirmed_month_returns_tariff_unchanged(self):
+        tariff = make_tariff()
+        effective, provisional, source_month = bill_model.resolve_effective_tariff(tariff, "2026-08")
+        self.assertIs(effective, tariff)
+        self.assertFalse(provisional)
+        self.assertIsNone(source_month)
+
+    def test_unconfirmed_month_patches_fuel_and_capacity_from_latest_confirmed(self):
+        tariff = make_tariff()  # fuel+capacity両方が確定しているのは2026-08のみ
+        effective, provisional, source_month = bill_model.resolve_effective_tariff(tariff, "2026-10")
+        self.assertTrue(provisional)
+        self.assertEqual(source_month, "2026-08")
+        self.assertEqual(effective["fuel_cost_adjustment_yen_per_kwh"]["2026-10"], tariff["fuel_cost_adjustment_yen_per_kwh"]["2026-08"])
+        self.assertEqual(effective["capacity_contribution_yen_per_month"]["2026-10"], tariff["capacity_contribution_yen_per_month"]["2026-08"])
+        # 元のtariffは変更しない（副作用を持たせない）。
+        self.assertNotIn("2026-10", tariff["fuel_cost_adjustment_yen_per_kwh"])
+
+    def test_unconfirmed_month_with_no_fallback_returns_original_tariff(self):
+        tariff = make_tariff(fuel_cost_adjustment_yen_per_kwh={}, capacity_contribution_yen_per_month={})
+        effective, provisional, source_month = bill_model.resolve_effective_tariff(tariff, "2026-09")
+        self.assertIs(effective, tariff)
+        self.assertFalse(provisional)
+        self.assertIsNone(source_month)
+
+    def test_compute_bill_with_patched_tariff_succeeds_for_unconfirmed_month(self):
+        # 確定表示(compute_bill単体)には従来どおり暫定を渡さないが、明示的に暫定tariffを
+        # 作ってcompute_billに渡せば正常に計算できることを確認する（in_progress用の経路）。
+        tariff = make_tariff()
+        effective, provisional, source_month = bill_model.resolve_effective_tariff(tariff, "2026-10")
+        self.assertTrue(provisional)
+        bill = bill_model.compute_bill(effective, buy_kwh=10.0, billing_month="2026-10")
+        self.assertGreater(bill.total_yen, 0)
+        # 確定月(build_month_record が呼ぶ compute_bill)は暫定を使わないため、元のtariffで
+        # 同じ月を計算すると引き続きKeyErrorになる（捏造禁止方針が確定表示には残ることの確認）。
+        with self.assertRaises(KeyError):
+            bill_model.compute_bill(tariff, buy_kwh=10.0, billing_month="2026-10")
+
+
 class ComputeBillTest(unittest.TestCase):
     def test_capacity_uses_actual_billed_value_when_month_present(self):
         tariff = make_tariff()

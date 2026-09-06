@@ -81,6 +81,11 @@ BATTERY_MAX_DISCHARGE_KW = 5.9  # 定格出力
 
 PV_CAPACITY_KW = 9.4  # L1 全量（FIT設備認定が9.4kW一体、オーナー決定）
 
+# オーナー承認機能・2026-09-06（データ再生成 #5）: 退避済みCSV(archive_csv)は単純平均集計で
+# power_history由来チャンネルに約+4.1%の既知バイアスがある（DDR §5-C）。Pi側実装
+# (energy_profile_5min, V1.00.059) 投入後は --profile-source で明示的に上書きする。
+DEFAULT_PROFILE_SOURCE_LABEL = "archive_csv_simple_avg（暫定）"
+
 # 5分プロファイルの列名エイリアス。energy_profile_5min（Pi側・実装済み、V1.00.059。
 # EnergyProfile5MinAggregatorがdt加重(ゼロ次ホールド)で集計、DDR §5-C追記参照）のカラム名を
 # 正とし、退避済みCSV（energy-archive/solarchgctl/profile_5min/*.csv、実装前の簡易集計で
@@ -384,6 +389,71 @@ def simulate_l2(
     return LayerTotals(buy_kwh=buy_wh / 1000.0, sell_kwh=sell_wh / 1000.0, max_export_w=max_export), soc_pct
 
 
+def _next_bucket_at(bucket_at: str, minutes: int) -> str:
+    dt = datetime.strptime(bucket_at, "%Y-%m-%d %H:%M") + timedelta(minutes=minutes)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def simulate_l2_series(
+    ordered_buckets: list[Bucket], pv_ac_efficiency: float, initial_soc_pct: float
+) -> dict[str, tuple[float, float]]:
+    """時系列順（複数日をまたぐ、単一請求期間内を想定）のバケット列にL2を連続シミュレートし、
+    日付ごとの(buy_kwh, sell_kwh)を返す（オーナー承認機能・2026-09-06: 日次4層系列）。
+
+    バケット列の5分間隔の連続性が途切れる箇所（欠測日等のギャップ）では実測nichicon_socに
+    再アンカーし、不明な期間の充放電を捏造しない（ドリフトを蓄積させない）。DDR §2.4の
+    「期間開始時刻の実測socで初期化」をギャップ発生のたびにも適用したもの。
+    """
+    daily_wh: dict[str, list[float]] = {}
+    soc_pct = max(0.0, min(100.0, initial_soc_pct))
+    prev_bucket_at: str | None = None
+    dt_h = _dt_hours(BUCKET_MINUTES)
+    for b in ordered_buckets:
+        if prev_bucket_at is not None and b.bucket_at != _next_bucket_at(prev_bucket_at, BUCKET_MINUTES):
+            if b.nichicon_soc is not None:
+                soc_pct = max(0.0, min(100.0, b.nichicon_soc))
+        row = {
+            "solar_w": b.solar_w, "nichicon_pv_w": b.nichicon_pv_w, "nichicon_battery_w": b.nichicon_battery_w,
+            "buy_w": b.buy_w, "sell_w": b.sell_w, "eco_ac_out_w": b.eco_ac_out_w, "eco_ac_in_w": b.eco_ac_in_w,
+        }
+        step = _simulate_l2_step(row, dt_h, soc_pct, pv_ac_efficiency)
+        entry = daily_wh.setdefault(b.date_str, [0.0, 0.0])
+        entry[0] += step.buy_w * dt_h
+        entry[1] += step.sell_w * dt_h
+        soc_pct = step.soc_pct
+        prev_bucket_at = b.bucket_at
+    return {d: (v[0] / 1000.0, v[1] / 1000.0) for d, v in daily_wh.items()}
+
+
+def daily_layer_dict(
+    available: bool,
+    buy_kwh: float | None = None,
+    sell_kwh: float | None = None,
+    buy_price_yen_per_kwh: float | None = None,
+    sell_price_fit: float | None = None,
+    sell_price_post_fit: float | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """日次レイヤー内訳（オーナー承認機能・2026-09-06）。月次の compute_bill（段階制・容量
+    拠出金込み）とは異なり、per_kwh_only（買電単価×kWh − 売電単価×kWh）の概算にする
+    （容量拠出金・段階は暦日に按分できないため）。available:false は金額キーを持たない
+    （既存の unavailable_layer/available_layer と同じ規約）。"""
+    if not available:
+        return {"available": False}
+    net_fit = _round_yen(buy_kwh * buy_price_yen_per_kwh - sell_kwh * sell_price_fit)
+    net_post_fit = _round_yen(buy_kwh * buy_price_yen_per_kwh - sell_kwh * sell_price_post_fit)
+    d = {
+        "available": True,
+        "buy_kwh": round(buy_kwh, 3),
+        "sell_kwh": round(sell_kwh, 3),
+        "net_cost_fit_yen": net_fit,
+        "net_cost_post_fit_yen": net_post_fit,
+    }
+    if extra:
+        d.update(extra)
+    return d
+
+
 def eco_balance_warning(buckets: list[Bucket]) -> str | None:
     """DDR §5-E。EcoFlow収支（in >= out がほぼ常に成立するはず）の異常を検出する。"""
     in_wh = sum((b.eco_ac_in_w or 0.0) * _dt_hours(BUCKET_MINUTES) for b in buckets)
@@ -644,12 +714,210 @@ def build_daily_load(profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
     return days
 
 
+def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
+    """usableな各日についてL0/L1/L2(推定)とL3(センサー実測)の日次buy/sell kWhと
+    円換算(per_kwh_only)を算出する（オーナー承認機能・2026-09-06: 請求期間が全日揃うまで
+    待たず、今ある分(08-28〜)を見せる）。暦日単位の集計のみで時間帯粒度は含まない。
+    層ごとに独立して available/unavailable を判定する（1層でも欠ければ他層も隠す、では
+    「今ある分を見せたい」という目的に反するため）。
+    """
+    meter_read_day = tariff["meter_read_day"]
+    if not profile_by_date:
+        return []
+
+    usable_dates = sorted(
+        d for d in profile_by_date if day_is_usable(profile_by_date[d], date.fromisoformat(d))[0]
+    )
+    if not usable_dates:
+        return []
+
+    # L0/L1は状態を持たないため日ごとに独立計算する。
+    l0_l1_by_date: dict[str, tuple[LayerTotals, LayerTotals]] = {}
+    for d_str in usable_dates:
+        buckets = sorted(profile_by_date[d_str], key=lambda b: b.bucket_at)
+        resampled = resample_buckets(buckets, BUCKET_MINUTES)
+        l0_l1_by_date[d_str] = (simulate_l0(resampled), simulate_l1(resampled, pv_ac_efficiency=1.0))
+
+    # L2は請求期間ごとにグルーピングして連続シミュレートする（日をまたいで引き継ぐ）。
+    first_date = date.fromisoformat(usable_dates[0])
+    last_date = date.fromisoformat(usable_dates[-1])
+    l2_by_date: dict[str, tuple[float, float]] = {}
+    for billing_month in bill_model.list_candidate_billing_months(first_date, last_date):
+        p_start, p_end = bill_model.billing_period(billing_month, meter_read_day)
+        period_dates = [d for d in usable_dates if p_start.isoformat() <= d <= p_end.isoformat()]
+        if not period_dates:
+            continue
+        ordered_buckets: list[Bucket] = []
+        for d_str in period_dates:
+            ordered_buckets.extend(profile_by_date[d_str])
+        ordered_buckets.sort(key=lambda b: b.bucket_at)
+        initial_soc = ordered_buckets[0].nichicon_soc if ordered_buckets[0].nichicon_soc is not None else 0.0
+        l2_by_date.update(simulate_l2_series(ordered_buckets, pv_ac_efficiency=1.0, initial_soc_pct=initial_soc))
+
+    days = []
+    for d_str in usable_dates:
+        d = date.fromisoformat(d_str)
+        billing_month = bill_model.billing_month_for_date(d, meter_read_day)
+        try:
+            buy_price, sell_fit, sell_post_fit, provisional, source_month = bill_model.per_kwh_prices(
+                tariff, billing_month
+            )
+        except KeyError:
+            # 暫定単価の出典すら無い（まだ1件も確定請求月が無い）場合はその日をスキップする。
+            continue
+
+        l0_totals, l1_totals = l0_l1_by_date[d_str]
+        l2_buy_sell = l2_by_date.get(d_str)
+
+        daily_row = daily_by_date.get(d_str) or {}
+        l3_buy_kwh = daily_row.get("buy_kwh")
+        l3_sell_kwh = daily_row.get("sell_kwh")
+        l3_available = l3_buy_kwh is not None and l3_sell_kwh is not None
+
+        days.append({
+            "date": d_str,
+            "billing_month": billing_month,
+            "layers": {
+                "L0": daily_layer_dict(True, l0_totals.buy_kwh, l0_totals.sell_kwh, buy_price, sell_fit, sell_post_fit),
+                "L1": daily_layer_dict(True, l1_totals.buy_kwh, l1_totals.sell_kwh, buy_price, sell_fit, sell_post_fit),
+                "L2": daily_layer_dict(
+                    l2_buy_sell is not None,
+                    l2_buy_sell[0] if l2_buy_sell else None,
+                    l2_buy_sell[1] if l2_buy_sell else None,
+                    buy_price, sell_fit, sell_post_fit,
+                ),
+                "L3": daily_layer_dict(
+                    l3_available, l3_buy_kwh, l3_sell_kwh, buy_price, sell_fit, sell_post_fit,
+                    extra={"source": "sensor"} if l3_available else None,
+                ),
+            },
+            "tariff_basis": "per_kwh_only",
+            "tariff_provisional": provisional,
+            "tariff_source_month": source_month,
+        })
+    return days
+
+
+def build_in_progress(
+    tariff: dict,
+    daily_by_date: dict,
+    profile_by_date: dict[str, list[Bucket]],
+    today: date,
+) -> dict | None:
+    """現在進行中の請求期間（todayを含む期間）の月途中集計（オーナー承認機能・2026-09-06）。
+    確定月（build_month_layers）と異なり、期間の全日が揃うのを待たず開始日〜最後に usable な
+    日までのデータで compute_bill する（段階制・容量拠出金込み、通常どおり）。単価が未確定
+    なら直近確定月の単価を暫定適用し tariff_provisional / tariff_source_month で明示する
+    （確定表示にのみ捏造禁止方針を適用し、月途中集計は明示ラベル付きで暫定単価を許容 —
+    オーナー承認済み）。何のデータも無ければ None を返す。
+    """
+    meter_read_day = tariff["meter_read_day"]
+    billing_month = bill_model.billing_month_for_date(today, meter_read_day)
+    start, end = bill_model.billing_period(billing_month, meter_read_day)
+    period_days = (end - start).days + 1
+    effective_end = min(end, today)
+
+    sell_fit = tariff["sell_price_yen_per_kwh"]["fit"]
+    sell_post_fit = tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"]
+    effective_tariff, provisional, source_month = bill_model.resolve_effective_tariff(tariff, billing_month)
+
+    # --- L3: センサー(daily.json)、開始日〜effective_endの範囲でusableな日のみ合算 ---
+    l3_buy_kwh, l3_present, _ = bill_model.sum_period(daily_by_date, start, effective_end, "buy_kwh")
+    l3_sell_kwh, _, _ = bill_model.sum_period(daily_by_date, start, effective_end, "sell_kwh")
+    if l3_present == 0:
+        l3_layer = unavailable_layer(
+            "measured",
+            bill_model.reason(bill_model.REASON_CODE_DAILY_MISSING, "計測データなし", "usage period内にdaily.jsonのデータが1日もありません"),
+        )
+    else:
+        try:
+            l3_bill = bill_model.compute_bill(effective_tariff, l3_buy_kwh, billing_month)
+            l3_layer = available_layer(
+                "measured", l3_buy_kwh, l3_sell_kwh, l3_bill.to_dict(),
+                l3_bill.total_yen - _round_yen(l3_sell_kwh * sell_fit),
+                l3_bill.total_yen - _round_yen(l3_sell_kwh * sell_post_fit),
+                extra={"buy_source": "sensor", "sell_source": "sensor"},
+            )
+        except KeyError as exc:
+            l3_layer = unavailable_layer(
+                "measured", bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc))
+            )
+
+    # --- L0/L1/L2: usableな日のみ範囲内で合算（連続シミュレーションはL2のみ） ---
+    period_profile_dates = sorted(
+        d for d in profile_by_date
+        if start.isoformat() <= d <= effective_end.isoformat() and day_is_usable(profile_by_date[d], date.fromisoformat(d))[0]
+    )
+    boundary_storage_kwh = None
+    if not period_profile_dates:
+        profile_reason = bill_model.reason(
+            bill_model.REASON_CODE_PROFILE_MISSING, "5分プロファイル未取得",
+            "usage period内にusableな5分プロファイルの日がありません",
+        )
+        l0_layer = unavailable_layer("estimated", profile_reason)
+        l1_layer = unavailable_layer("estimated", profile_reason)
+        l2_layer = unavailable_layer("estimated", profile_reason)
+    else:
+        ordered_buckets: list[Bucket] = []
+        for d_str in period_profile_dates:
+            ordered_buckets.extend(profile_by_date[d_str])
+        ordered_buckets.sort(key=lambda b: b.bucket_at)
+        resampled = resample_buckets(ordered_buckets, BUCKET_MINUTES)
+        l0_totals = simulate_l0(resampled)
+        l1_totals = simulate_l1(resampled, pv_ac_efficiency=1.0)
+        soc_start_pct = ordered_buckets[0].nichicon_soc if ordered_buckets[0].nichicon_soc is not None else 0.0
+        l2_totals, soc_end_pct = simulate_l2(resampled, pv_ac_efficiency=1.0, soc_start_pct=soc_start_pct)
+        try:
+            l0_layer = layer_dict(
+                "estimated", True, l0_totals.buy_kwh, l0_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit
+            )
+            l1_layer = layer_dict(
+                "estimated", True, l1_totals.buy_kwh, l1_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit
+            )
+            l2_layer = layer_dict(
+                "estimated", True, l2_totals.buy_kwh, l2_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit,
+                extra={"soc_start_pct": round(soc_start_pct, 1), "soc_end_pct": round(soc_end_pct, 1)},
+            )
+            boundary_storage_kwh = {
+                "nichicon_soc_start_pct": round(soc_start_pct, 1), "nichicon_soc_end_pct": round(soc_end_pct, 1),
+            }
+        except KeyError as exc:
+            tariff_reason = bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc))
+            l0_layer = unavailable_layer("estimated", tariff_reason)
+            l1_layer = unavailable_layer("estimated", tariff_reason)
+            l2_layer = unavailable_layer("estimated", tariff_reason)
+
+    covered_dates: set[str] = set()
+    for d in bill_model._daterange(start, effective_end):
+        d_str = d.isoformat()
+        if (daily_by_date.get(d_str) or {}).get("buy_kwh") is not None:
+            covered_dates.add(d_str)
+        if d_str in profile_by_date and day_is_usable(profile_by_date[d_str], d)[0]:
+            covered_dates.add(d_str)
+    if not covered_dates:
+        return None
+
+    return {
+        "billing_month": billing_month,
+        "status": "in_progress",
+        "usage_period": {"start": start.isoformat(), "end": end.isoformat(), "days": period_days},
+        "days_covered": len(covered_dates),
+        "period_end_actual": max(covered_dates),
+        "layers": {"L0": l0_layer, "L1": l1_layer, "L2": l2_layer, "L3": l3_layer},
+        "boundary_storage_kwh": boundary_storage_kwh,
+        "tariff_provisional": provisional,
+        "tariff_source_month": source_month,
+    }
+
+
 def build_layers(
     tariff: dict,
     daily_by_date: dict,
     official_sell_by_month: dict,
     official_buy_by_month: dict,
     profile_by_date: dict[str, list[Bucket]],
+    today: date | None = None,
+    profile_source: str = DEFAULT_PROFILE_SOURCE_LABEL,
 ) -> dict:
     candidate_months: set[str] = set()
     if daily_by_date:
@@ -682,6 +950,9 @@ def build_layers(
     # params.profile_since として出力する（無ければ null。日付のみで時間帯粒度は含まない）。
     profile_since = min(profile_by_date) if profile_by_date else None
 
+    daily_layers = build_daily_layers(tariff, daily_by_date, profile_by_date)
+    in_progress = build_in_progress(tariff, daily_by_date, profile_by_date, today or date.today())
+
     return {
         "params": {
             "battery_charge_kwh_per_100soc": BATTERY_CHARGE_KWH_PER_100SOC,
@@ -692,11 +963,20 @@ def build_layers(
             "sell_price_yen_per_kwh_fit": tariff["sell_price_yen_per_kwh"]["fit"],
             "sell_price_yen_per_kwh_post_fit": tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"],
             "profile_since": profile_since,
+            "profile_source": profile_source,
             "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）",
         },
         "months": months,
         "excluded_months": excluded,
         "cumulative": cumulative,
+        "daily": daily_layers,
+        "in_progress": in_progress,
+        "_note": (
+            "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を"
+            "暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスが"
+            "ある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator"
+            "（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。"
+        ),
     }
 
 
@@ -747,12 +1027,21 @@ def main() -> None:
         "--daily-load-out", type=Path, default=DEFAULT_DAILY_LOAD_OUT_PATH,
         help="出力先 daily_load.json のパス（bill_model.py の bill_l0_no_solar 用）",
     )
+    parser.add_argument(
+        "--today", type=str, default=None,
+        help="in_progress（月途中集計）の基準日('YYYY-MM-DD'、省略時は実行日）。テスト用。",
+    )
+    parser.add_argument(
+        "--profile-source", type=str, default=DEFAULT_PROFILE_SOURCE_LABEL,
+        help="params.profile_source に出力する説明文字列（Pi側 energy_profile_5min 投入後は明示的に変更する）",
+    )
     args = parser.parse_args()
 
     tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
     daily_by_date = bill_model.load_daily(args.daily) if args.daily.exists() else {}
     official_sell_by_month = bill_model.load_official_sell(args.official_sell)
     official_buy_by_month = bill_model.load_official_buy(args.official_buy)
+    today = date.fromisoformat(args.today) if args.today else date.today()
 
     rows = _read_profile_rows(args.profile)
     buckets = parse_profile_rows(rows)
@@ -761,12 +1050,18 @@ def main() -> None:
     if not profile_by_date:
         print("layer_model.py: 5分プロファイルが空のため L0/L1/L2 はすべて unavailable になります", file=sys.stderr)
 
-    result = build_layers(tariff, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date)
+    result = build_layers(
+        tariff, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
+        today=today, profile_source=args.profile_source,
+    )
     result["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote: {args.out} ({len(result['months'])} months, {len(result['excluded_months'])} excluded)")
+    print(
+        f"wrote: {args.out} ({len(result['months'])} months, {len(result['excluded_months'])} excluded, "
+        f"{len(result['daily'])} daily rows, in_progress={'yes' if result['in_progress'] else 'no'})"
+    )
 
     daily_load = {"days": build_daily_load(profile_by_date), "generated_at": result["generated_at"]}
     args.daily_load_out.parent.mkdir(parents=True, exist_ok=True)

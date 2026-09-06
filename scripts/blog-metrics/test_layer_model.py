@@ -802,6 +802,36 @@ class BuildLayersTest(unittest.TestCase):
             self.assertIn(key, excluded_2026_09["layer_reasons"])
             self.assertIsNotNone(excluded_2026_09["layer_reasons"][key])
 
+    def test_profile_since_is_first_usable_day_not_first_row(self):
+        # QA再レビュー(3回目) #2: 最古行(NULLチャネルを含む未整備期間)ではなく、
+        # 全チャネルがusable判定された最初の日をprofile_sinceにする。
+        # 最古行そのものはprofile_rows_sinceとして別出しする。
+        tariff = make_tariff()
+        early_day_1 = build_synthetic_golden_day_buckets(day="2026-04-13")
+        early_day_2 = build_synthetic_golden_day_buckets(day="2026-04-14")
+        for b in early_day_1 + early_day_2:
+            b.nichicon_soc = None  # データ未整備期間: ニチコン/DELTA列が丸ごとNULL
+        profile_by_date = {
+            "2026-04-13": early_day_1,
+            "2026-04-14": early_day_2,
+            "2026-08-29": build_synthetic_golden_day_buckets(day="2026-08-29"),
+            "2026-08-30": build_synthetic_golden_day_buckets(day="2026-08-30"),
+        }
+        result = lm.build_layers(tariff, {}, {}, {}, profile_by_date)
+        self.assertEqual(result["params"]["profile_rows_since"], "2026-04-13")
+        self.assertEqual(result["params"]["profile_since"], "2026-08-29")
+
+    def test_note_mentions_csv_bias_only_for_archive_csv_source(self):
+        # QA再レビュー(3回目) #1: 退避CSV由来のときだけ既知バイアス注記を出し、
+        # Pi実測(energy_profile_5min)由来のときは出さない（出典を明記した文言に切替）。
+        tariff = make_tariff()
+        csv_result = lm.build_layers(tariff, {}, {}, {}, {}, profile_source=lm.DEFAULT_PROFILE_SOURCE_LABEL)
+        self.assertIn("約+4.1%の既知バイアスがある", csv_result["_note"])
+        pi_source = "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）"
+        pi_result = lm.build_layers(tariff, {}, {}, {}, {}, profile_source=pi_source)
+        self.assertNotIn("約+4.1%の既知バイアスがある", pi_result["_note"])
+        self.assertIn(pi_source, pi_result["_note"])
+
 
 class BuildCumulativeTest(unittest.TestCase):
     """QA missing-test#8: 累計は「全4層available」の月のみを対象にする。"""

@@ -618,12 +618,27 @@
     section.style.display = hasAnyEstimatedLayer(layers) ? "" : "none";
   }
 
+  // QA再レビュー(3回目) #1: params.profile_source が退避CSV(archive_csv_simple_avg)由来の
+  // 間だけ既知バイアス(+4.1%)の注記を出す。本番Pi実測(energy_profile_5min)に切り替わった
+  // 後は、SSRの既定文言（退避CSV前提）のままだと誤解を招くため、出典を明記した文言に
+  // 差し替える（sourceが取得できない間はSSRの既定文言のまま何もしない）。
+  function renderProfileSourceNote(layers) {
+    var el = document.getElementById("metrics-profile-source-note");
+    if (!el) return;
+    var source = layers && layers.params && layers.params.profile_source;
+    if (!source || source.indexOf("archive_csv") !== -1) return;
+    el.innerHTML =
+      "5分プロファイルは本番Pi側の実測集計（" + escapeHtml(source) + "）を使用しています。" +
+      "退避済みCSV（単純平均集計）由来の既知バイアス（+4.1%）は本データには含まれません。";
+  }
+
   function init() {
     var daily = readJSON("metrics-daily-data");
     var monthly = readJSON("metrics-monthly-data");
     var bills = readJSON("metrics-bills-data");
     var layers = readJSON("metrics-layers-data");
     renderLayerSummary(layers);
+    renderProfileSourceNote(layers);
     renderInProgressCard(layers);
     renderDailyLayersChart(layers);
     toggleLayerChartSection(layers);

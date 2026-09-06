@@ -292,13 +292,17 @@ else
         fi
     }
     PROFILE_SQL="SELECT bucket_at, solar_w, buy_w, sell_w, nichicon_pv_w, nichicon_battery_w, nichicon_soc, eco_ac_in_w, eco_ac_out_w, power_n, nichicon_n, ecoflow_n FROM energy_profile_5min ORDER BY bucket_at;"
+    # QA再レビュー(3回目) #1: --profile-source未指定だとlayer_model.py既定の
+    # archive_csv_simple_avg（暫定）のままになり、既にPi実測(energy_profile_5min)に
+    # 切り替わっていても退避CSVの既知バイアス注記が出続けてしまうため明示的に渡す。
     printf '%s\n' "${PROFILE_SQL}" | run_sql_csv | python3 "${SCRIPT_DIR}/layer_model.py" \
         --tariff "${TARIFF_JSON}" \
         --daily "${OUT_DIR}/daily.json" \
         --official-sell "${OUT_DIR}/official_sell.json" \
         --official-buy "${OUT_DIR}/official_buy.json" \
         --out "${OUT_DIR}/layers.json" \
-        --daily-load-out "${CACHE_DIR}/daily_load.json"
+        --daily-load-out "${CACHE_DIR}/daily_load.json" \
+        --profile-source "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）"
 fi
 
 # --- bill_model.py（QA #10: aggregate.sh から呼ばれておらず bills.json が古くなる問題を修正） ---

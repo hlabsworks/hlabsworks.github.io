@@ -1166,9 +1166,17 @@ def build_layers(
 
     cumulative = _build_cumulative(months)
 
-    # QA #7: ダッシュボードのハードコード日付をやめ、入力プロファイルの最古バケット日を
-    # params.profile_since として出力する（無ければ null。日付のみで時間帯粒度は含まない）。
-    profile_since = min(profile_by_date) if profile_by_date else None
+    # QA再レビュー(3回目) #2: params.profile_since は入力プロファイルの「最古行」（NULL列を
+    # 含みうる、まだデータ整備中の日を含む）ではなく、全チャネルがusable判定された最初の日に
+    # する（読者向け「今そろっているデータ（○○〜）」表記が実態と乖離しないよう）。
+    # 最古行そのものは参考情報として profile_rows_since に別出しする。
+    profile_rows_since = min(profile_by_date) if profile_by_date else None
+    profile_since = None
+    for d_str in sorted(profile_by_date):
+        resolution = resolve_day_buckets(profile_by_date[d_str], date.fromisoformat(d_str))
+        if resolution.buckets is not None:
+            profile_since = d_str
+            break
 
     daily_layers = build_daily_layers(tariff, daily_by_date, profile_by_date)
     in_progress = build_in_progress(tariff, daily_by_date, profile_by_date, today or date.today())
@@ -1183,6 +1191,7 @@ def build_layers(
             "sell_price_yen_per_kwh_fit": tariff["sell_price_yen_per_kwh"]["fit"],
             "sell_price_yen_per_kwh_post_fit": tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"],
             "profile_since": profile_since,
+            "profile_rows_since": profile_rows_since,
             "profile_source": profile_source,
             "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）",
         },
@@ -1191,13 +1200,26 @@ def build_layers(
         "cumulative": cumulative,
         "daily": daily_layers,
         "in_progress": in_progress,
-        "_note": (
+        "_note": _profile_source_note(profile_source),
+    }
+
+
+def _profile_source_note(profile_source: str) -> str:
+    """params.profile_source に応じて_noteの文言を出し分ける（QA再レビュー(3回目) #1）。
+    退避済みCSV(archive_csv_simple_avg、単純平均集計)由来のときだけ既知バイアス(+4.1%)の
+    注記を出す。本番Pi側 energy_profile_5min（dt加重）に切り替わった後もバイアス注記を
+    出し続けると読者に誤った印象を与えるため、出典を明記した文言に切り替える。"""
+    if "archive_csv" in profile_source:
+        return (
             "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を"
             "暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスが"
             "ある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator"
             "（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。"
-        ),
-    }
+        )
+    return (
+        f"5分プロファイルは本番Pi側の実測集計（{profile_source}）を使用しています。"
+        "退避済みCSV（単純平均集計）由来の既知バイアス（+4.1%）は本データには含まれません。"
+    )
 
 
 def _build_cumulative(months: list[dict]) -> dict:

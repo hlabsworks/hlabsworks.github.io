@@ -7,8 +7,9 @@
     "pv_ac_efficiency": 1.0,
     "sell_price_yen_per_kwh_fit": 16.0,
     "sell_price_yen_per_kwh_post_fit": 8.0,
-    "profile_since": "2026-08-27",
-    "profile_source": "archive_csv_simple_avg（暫定）",
+    "profile_since": "2026-08-29",
+    "profile_rows_since": "2026-04-13",
+    "profile_source": "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）",
     "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）"
   },
   "months": [
@@ -320,8 +321,8 @@
         },
         "L3": {
           "reason_code": "daily_missing",
-          "reason_label": "計測データ欠測（26日）",
-          "reason_detail": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 26/30 日"
+          "reason_label": "計測データ欠測（24日）",
+          "reason_detail": "usage period 2026-09-02..2026-10-01 に daily.json 欠測 24/30 日"
         }
       }
     }
@@ -337,24 +338,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 21.787,
+          "buy_kwh": 21.53,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 905,
-          "net_cost_post_fit_yen": 905
+          "net_cost_fit_yen": 895,
+          "net_cost_post_fit_yen": 895
         },
         "L1": {
           "available": true,
-          "buy_kwh": 15.716,
-          "sell_kwh": 1.949,
-          "net_cost_fit_yen": 622,
-          "net_cost_post_fit_yen": 638
+          "buy_kwh": 15.588,
+          "sell_kwh": 1.953,
+          "net_cost_fit_yen": 617,
+          "net_cost_post_fit_yen": 632
         },
         "L2": {
           "available": true,
-          "buy_kwh": 11.589,
-          "sell_kwh": 0.528,
-          "net_cost_fit_yen": 473,
-          "net_cost_post_fit_yen": 477
+          "buy_kwh": 11.457,
+          "sell_kwh": 0.531,
+          "net_cost_fit_yen": 468,
+          "net_cost_post_fit_yen": 472
         },
         "L3": {
           "available": true,
@@ -368,8 +369,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 3,
-      "interpolated_slots": 1
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "date": "2026-08-30",
@@ -377,24 +378,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 16.712,
+          "buy_kwh": 16.112,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 695,
-          "net_cost_post_fit_yen": 695
+          "net_cost_fit_yen": 670,
+          "net_cost_post_fit_yen": 670
         },
         "L1": {
           "available": true,
-          "buy_kwh": 11.199,
-          "sell_kwh": 1.195,
-          "net_cost_fit_yen": 446,
-          "net_cost_post_fit_yen": 456
+          "buy_kwh": 10.733,
+          "sell_kwh": 1.205,
+          "net_cost_fit_yen": 427,
+          "net_cost_post_fit_yen": 436
         },
         "L2": {
           "available": true,
-          "buy_kwh": 10.504,
-          "sell_kwh": 0.383,
-          "net_cost_fit_yen": 430,
-          "net_cost_post_fit_yen": 433
+          "buy_kwh": 10.058,
+          "sell_kwh": 0.414,
+          "net_cost_fit_yen": 411,
+          "net_cost_post_fit_yen": 415
         },
         "L3": {
           "available": true,
@@ -408,8 +409,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 5,
-      "interpolated_slots": 2
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "date": "2026-08-31",
@@ -417,24 +418,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 23.36,
+          "buy_kwh": 22.338,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 971,
-          "net_cost_post_fit_yen": 971
+          "net_cost_fit_yen": 928,
+          "net_cost_post_fit_yen": 928
         },
         "L1": {
           "available": true,
-          "buy_kwh": 10.833,
-          "sell_kwh": 26.119,
-          "net_cost_fit_yen": 32,
-          "net_cost_post_fit_yen": 241
+          "buy_kwh": 10.754,
+          "sell_kwh": 26.205,
+          "net_cost_fit_yen": 28,
+          "net_cost_post_fit_yen": 237
         },
         "L2": {
           "available": true,
-          "buy_kwh": 3.883,
-          "sell_kwh": 15.693,
-          "net_cost_fit_yen": -90,
-          "net_cost_post_fit_yen": 36
+          "buy_kwh": 3.79,
+          "sell_kwh": 15.787,
+          "net_cost_fit_yen": -95,
+          "net_cost_post_fit_yen": 31
         },
         "L3": {
           "available": true,
@@ -448,8 +449,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 11,
-      "interpolated_slots": 2
+      "interpolated_buckets": 5,
+      "interpolated_slots": 1
     },
     {
       "date": "2026-09-01",
@@ -457,24 +458,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 26.76,
+          "buy_kwh": 26.15,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 1112,
-          "net_cost_post_fit_yen": 1112
+          "net_cost_fit_yen": 1087,
+          "net_cost_post_fit_yen": 1087
         },
         "L1": {
           "available": true,
-          "buy_kwh": 13.383,
-          "sell_kwh": 34.082,
-          "net_cost_fit_yen": 11,
-          "net_cost_post_fit_yen": 284
+          "buy_kwh": 13.367,
+          "sell_kwh": 33.459,
+          "net_cost_fit_yen": 20,
+          "net_cost_post_fit_yen": 288
         },
         "L2": {
           "available": true,
-          "buy_kwh": 4.572,
-          "sell_kwh": 26.129,
-          "net_cost_fit_yen": -228,
-          "net_cost_post_fit_yen": -19
+          "buy_kwh": 4.573,
+          "sell_kwh": 25.504,
+          "net_cost_fit_yen": -218,
+          "net_cost_post_fit_yen": -14
         },
         "L3": {
           "available": true,
@@ -497,24 +498,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 37.603,
+          "buy_kwh": 36.61,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 1563,
-          "net_cost_post_fit_yen": 1563
+          "net_cost_fit_yen": 1521,
+          "net_cost_post_fit_yen": 1521
         },
         "L1": {
           "available": true,
-          "buy_kwh": 14.844,
-          "sell_kwh": 24.692,
-          "net_cost_fit_yen": 222,
-          "net_cost_post_fit_yen": 419
+          "buy_kwh": 14.854,
+          "sell_kwh": 24.621,
+          "net_cost_fit_yen": 223,
+          "net_cost_post_fit_yen": 420
         },
         "L2": {
           "available": true,
-          "buy_kwh": 3.064,
-          "sell_kwh": 14.27,
-          "net_cost_fit_yen": -101,
-          "net_cost_post_fit_yen": 13
+          "buy_kwh": 3.085,
+          "sell_kwh": 14.211,
+          "net_cost_fit_yen": -99,
+          "net_cost_post_fit_yen": 15
         },
         "L3": {
           "available": true,
@@ -537,24 +538,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 31.588,
+          "buy_kwh": 31.281,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 1313,
-          "net_cost_post_fit_yen": 1313
+          "net_cost_fit_yen": 1300,
+          "net_cost_post_fit_yen": 1300
         },
         "L1": {
           "available": true,
-          "buy_kwh": 18.674,
-          "sell_kwh": 9.589,
-          "net_cost_fit_yen": 623,
-          "net_cost_post_fit_yen": 699
+          "buy_kwh": 18.776,
+          "sell_kwh": 9.564,
+          "net_cost_fit_yen": 627,
+          "net_cost_post_fit_yen": 704
         },
         "L2": {
           "available": true,
-          "buy_kwh": 12.062,
-          "sell_kwh": 1.689,
-          "net_cost_fit_yen": 474,
-          "net_cost_post_fit_yen": 488
+          "buy_kwh": 12.151,
+          "sell_kwh": 1.654,
+          "net_cost_fit_yen": 479,
+          "net_cost_post_fit_yen": 492
         },
         "L3": {
           "available": true,
@@ -568,8 +569,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 3,
-      "interpolated_slots": 1
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "date": "2026-09-04",
@@ -577,24 +578,24 @@
       "layers": {
         "L0": {
           "available": true,
-          "buy_kwh": 23.024,
+          "buy_kwh": 22.648,
           "sell_kwh": 0.0,
-          "net_cost_fit_yen": 957,
-          "net_cost_post_fit_yen": 957
+          "net_cost_fit_yen": 941,
+          "net_cost_post_fit_yen": 941
         },
         "L1": {
           "available": true,
-          "buy_kwh": 14.478,
-          "sell_kwh": 6.821,
-          "net_cost_fit_yen": 493,
-          "net_cost_post_fit_yen": 547
+          "buy_kwh": 14.356,
+          "sell_kwh": 6.826,
+          "net_cost_fit_yen": 487,
+          "net_cost_post_fit_yen": 542
         },
         "L2": {
           "available": true,
-          "buy_kwh": 10.32,
-          "sell_kwh": 1.923,
-          "net_cost_fit_yen": 398,
-          "net_cost_post_fit_yen": 414
+          "buy_kwh": 10.203,
+          "sell_kwh": 1.931,
+          "net_cost_fit_yen": 393,
+          "net_cost_post_fit_yen": 409
         },
         "L3": {
           "available": true,
@@ -626,50 +627,50 @@
       "L0": {
         "kind": "estimated",
         "available": true,
-        "buy_kwh": 92.215,
+        "buy_kwh": 90.538,
         "sell_kwh": 0.0,
         "bill": {
-          "buy_kwh": 92.215,
+          "buy_kwh": 90.538,
           "basic_fee_yen": 0,
-          "energy_charge_yen": 2489,
-          "fuel_adjustment_yen": 957,
-          "renewable_levy_yen": 385,
+          "energy_charge_yen": 2444,
+          "fuel_adjustment_yen": 939,
+          "renewable_levy_yen": 378,
           "capacity_contribution_yen": 213,
-          "total_yen": 4044
+          "total_yen": 3975
         },
-        "net_cost_fit_yen": 4044,
-        "net_cost_post_fit_yen": 4044
+        "net_cost_fit_yen": 3975,
+        "net_cost_post_fit_yen": 3975
       },
       "L1": {
         "kind": "estimated",
         "available": true,
-        "buy_kwh": 47.997,
-        "sell_kwh": 41.102,
+        "buy_kwh": 47.986,
+        "sell_kwh": 41.011,
         "bill": {
-          "buy_kwh": 47.997,
+          "buy_kwh": 47.986,
           "basic_fee_yen": 0,
           "energy_charge_yen": 1295,
           "fuel_adjustment_yen": 498,
           "renewable_levy_yen": 200,
           "capacity_contribution_yen": 213,
-          "total_yen": 2207
+          "total_yen": 2206
         },
-        "net_cost_fit_yen": 1549,
+        "net_cost_fit_yen": 1550,
         "net_cost_post_fit_yen": 1878
       },
       "L2": {
         "kind": "estimated",
         "available": true,
-        "buy_kwh": 25.446,
-        "sell_kwh": 17.881,
+        "buy_kwh": 25.439,
+        "sell_kwh": 17.796,
         "bill": {
-          "buy_kwh": 25.446,
+          "buy_kwh": 25.439,
           "basic_fee_yen": 0,
-          "energy_charge_yen": 687,
+          "energy_charge_yen": 686,
           "fuel_adjustment_yen": 264,
           "renewable_levy_yen": 106,
           "capacity_contribution_yen": 213,
-          "total_yen": 1270
+          "total_yen": 1269
         },
         "net_cost_fit_yen": 984,
         "net_cost_post_fit_yen": 1127,
@@ -702,9 +703,9 @@
     },
     "tariff_provisional": true,
     "tariff_source_month": "2026-08",
-    "interpolated_buckets": 3,
-    "interpolated_slots": 1
+    "interpolated_buckets": 0,
+    "interpolated_slots": 0
   },
-  "_note": "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスがある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。",
-  "generated_at": "2026-09-06 10:58:03"
+  "_note": "5分プロファイルは本番Pi側の実測集計（pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜））を使用しています。退避済みCSV（単純平均集計）由来の既知バイアス（+4.1%）は本データには含まれません。",
+  "generated_at": "2026-09-07 07:20:29"
 }

@@ -92,6 +92,6 @@
       "billed_yen": 3661.0
     }
   ],
-  "generated_at": "2026-09-05 23:56:04",
+  "generated_at": "2026-09-07 07:20:26",
   "source_note": "Japan電力 請求明細PDF（pdftotext抽出）の実使用量(usage_kwh)・請求総額。供給地点特定番号・検針前指示数等の契約識別情報は含まない。"
 }

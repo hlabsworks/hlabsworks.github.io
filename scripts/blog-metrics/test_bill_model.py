@@ -446,7 +446,9 @@ class BuildMonthRecordTest(unittest.TestCase):
         self.assertIsNone(record["bill_l0_no_solar"])
         l0_reason = record["l0_unavailable_reason"]
         self.assertEqual(l0_reason["reason_code"], bill_model.REASON_CODE_PERIOD_INCOMPLETE)
-        self.assertIn("計測データ欠測", l0_reason["reason_label"])
+        # QA再レビュー #14: period_incomplete(5分プロファイル由来)はdaily_missing
+        # (daily.jsonセンサー日次欠測)の「計測データ欠測」と区別し「5分プロファイル欠落」にする。
+        self.assertIn("5分プロファイル欠落", l0_reason["reason_label"])
         self.assertIn("欠測", l0_reason["reason_detail"])
         self.assertNotIn("load_kwh", l0_reason["reason_label"])
         self.assertNotIn("usage period", l0_reason["reason_label"])

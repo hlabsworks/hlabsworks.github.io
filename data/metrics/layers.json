@@ -277,17 +277,17 @@
       "layer_reasons": {
         "L0": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/31日（2026-08-02〜2026-08-28）"
         },
         "L1": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/31日（2026-08-02〜2026-08-28）"
         },
         "L2": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/31日（2026-08-02〜2026-08-28）"
         },
         "L3": {
@@ -302,17 +302,17 @@
       "layer_reasons": {
         "L0": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/30日（2026-09-05〜2026-10-01）"
         },
         "L1": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/30日（2026-09-05〜2026-10-01）"
         },
         "L2": {
           "reason_code": "period_incomplete",
-          "reason_label": "計測データ欠測（27日）",
+          "reason_label": "5分プロファイル欠落（27日）",
           "reason_detail": "5分プロファイル欠測 27/30日（2026-09-05〜2026-10-01）"
         },
         "L3": {
@@ -365,7 +365,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 2
+      "interpolated_buckets": 3,
+      "interpolated_slots": 1
     },
     {
       "date": "2026-08-30",
@@ -404,7 +405,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 4
+      "interpolated_buckets": 5,
+      "interpolated_slots": 2
     },
     {
       "date": "2026-08-31",
@@ -443,7 +445,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 9
+      "interpolated_buckets": 11,
+      "interpolated_slots": 2
     },
     {
       "date": "2026-09-01",
@@ -482,7 +485,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "date": "2026-09-02",
@@ -521,7 +525,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     },
     {
       "date": "2026-09-03",
@@ -560,7 +565,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 2
+      "interpolated_buckets": 3,
+      "interpolated_slots": 1
     },
     {
       "date": "2026-09-04",
@@ -599,7 +605,8 @@
       "tariff_basis": "per_kwh_only",
       "tariff_provisional": true,
       "tariff_source_month": "2026-08",
-      "interpolated_buckets": 0
+      "interpolated_buckets": 0,
+      "interpolated_slots": 0
     }
   ],
   "in_progress": {
@@ -610,8 +617,8 @@
       "end": "2026-10-01",
       "days": 30
     },
-    "days_covered": 4,
-    "period_end_actual": "2026-09-05",
+    "days_covered": 3,
+    "period_end_actual": "2026-09-04",
     "layers": {
       "L0": {
         "kind": "estimated",
@@ -669,19 +676,19 @@
       "L3": {
         "kind": "measured",
         "available": true,
-        "buy_kwh": 20.763,
-        "sell_kwh": 12.336,
+        "buy_kwh": 15.92,
+        "sell_kwh": 10.038,
         "bill": {
-          "buy_kwh": 20.763,
+          "buy_kwh": 15.92,
           "basic_fee_yen": 0,
-          "energy_charge_yen": 560,
-          "fuel_adjustment_yen": 215,
-          "renewable_levy_yen": 86,
+          "energy_charge_yen": 429,
+          "fuel_adjustment_yen": 165,
+          "renewable_levy_yen": 66,
           "capacity_contribution_yen": 213,
-          "total_yen": 1075
+          "total_yen": 874
         },
-        "net_cost_fit_yen": 878,
-        "net_cost_post_fit_yen": 976,
+        "net_cost_fit_yen": 713,
+        "net_cost_post_fit_yen": 794,
         "buy_source": "sensor",
         "sell_source": "sensor"
       }
@@ -692,8 +699,9 @@
     },
     "tariff_provisional": true,
     "tariff_source_month": "2026-08",
-    "interpolated_buckets": 2
+    "interpolated_buckets": 3,
+    "interpolated_slots": 1
   },
   "_note": "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスがある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。",
-  "generated_at": "2026-09-06 10:13:21"
+  "generated_at": "2026-09-06 10:44:38"
 }

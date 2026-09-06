@@ -355,8 +355,8 @@
     el.innerHTML =
       "<div class=\"metrics-in-progress-card\">" +
       "<p>" + badges.join(" ") + "</p>" +
-      "<p>請求月 " + escapeHtml(ip.billing_month) + "（" + ip.usage_period.start + "〜" + ip.period_end_actual +
-      "、" + ip.days_covered + "/" + ip.usage_period.days + "日分）</p>" +
+      "<p>請求月 " + escapeHtml(ip.billing_month) + "（" + escapeHtml(ip.usage_period.start) + "〜" + escapeHtml(ip.period_end_actual) +
+      "、" + escapeHtml(ip.days_covered) + "/" + escapeHtml(ip.usage_period.days) + "日分）</p>" +
       "<ul>" +
       "<li>L0（太陽光・蓄電池なし、推定）: " + inProgressAmountText(l0) + "</li>" +
       "<li>L1（太陽光のみ、推定）: " + inProgressAmountText(l1) + "</li>" +
@@ -367,13 +367,50 @@
       "</div>";
   }
 
-  // オーナー承認機能（2026-09-06）: 08-28〜の日次4層系列（円/日、per_kwh_only簡易換算）。
+  // オーナー承認機能（2026-09-06）: layers.params.profile_since〜の日次4層系列
+  // （円/日、per_kwh_only簡易換算）。QA再レビュー #8: 開始日のハードコード表記は
+  // list.html側もlayers.json由来の値（profile_since）に統一済み。
   var dailyLayerChartInstance = null;
 
-  function renderDailyLayersChart(layers) {
+  // QA再レビュー #7: 日次系列に暫定単価を適用している日があれば見出し横にバッジを出す
+  // （daily[].tariff_source_month由来。最新日を採用し、途中で単価確定境界をまたいでいても
+  // 「今この瞬間、直近日がどの単価を参照しているか」だけを簡潔に示す）。
+  function renderDailyLayersBadge(daily) {
+    var el = document.getElementById("metrics-daily-layers-badge");
+    if (!el) return;
+    if (!daily || daily.length === 0) {
+      el.innerHTML = "";
+      return;
+    }
+    var latest = daily[daily.length - 1];
+    if (!latest.tariff_provisional) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML = badge("暫定単価（" + escapeHtml(latest.tariff_source_month) + " の単価を適用）");
+  }
+
+  // QA再レビュー #11: 他カード（例: metrics-in-progress-card）と同様、データが無い間は
+  // 空状態の文言を出す（canvasを空のまま放置しない）。
+  function renderDailyLayersEmptyState(daily) {
+    var el = document.getElementById("metrics-daily-layers-empty");
     var canvas = document.getElementById("chart-daily-layers");
-    if (!canvas || !window.Chart || !layers || !layers.daily || layers.daily.length === 0) return;
-    var daily = layers.daily;
+    if (!el) return;
+    if (daily && daily.length > 0) {
+      el.innerHTML = "";
+      if (canvas) canvas.style.display = "";
+      return;
+    }
+    el.innerHTML = "<p>日次の4層推移を表示するためのデータがまだありません。</p>";
+    if (canvas) canvas.style.display = "none";
+  }
+
+  function renderDailyLayersChart(layers) {
+    var daily = layers && layers.daily;
+    renderDailyLayersBadge(daily);
+    renderDailyLayersEmptyState(daily);
+    var canvas = document.getElementById("chart-daily-layers");
+    if (!canvas || !window.Chart || !daily || daily.length === 0) return;
     var datasets = ["L0", "L1", "L2", "L3"].map(function (key) {
       return {
         label: LAYER_NAMES[key],
@@ -396,13 +433,50 @@
       data: { labels: daily.map(function (d) { return d.date; }), datasets: datasets },
       options: {
         responsive: true,
-        plugins: { legend: { position: "bottom" } },
+        plugins: {
+          legend: { position: "bottom" },
+          // QA再レビュー #12: interpolated_buckets/slotsをツールチップで開示する
+          // （時刻粒度は出さず、暦日単位の補間量のみ）。
+          tooltip: {
+            callbacks: {
+              afterBody: function (items) {
+                if (!items || items.length === 0) return "";
+                var d = daily[items[0].dataIndex];
+                if (!d || !d.interpolated_slots) return "";
+                return "補間スロット数: " + d.interpolated_slots + "（チャネル値数: " + d.interpolated_buckets + "）";
+              },
+            },
+          },
+        },
         scales: {
           x: { ticks: { maxTicksLimit: 14 } },
           y: { title: { display: true, text: "円/日（簡易per_kwh_only換算、買電額 − 売電収入）" } },
         },
       },
     });
+  }
+
+  // QA再レビュー #12: ツールチップだけだと読者が気づきにくいため、補間が発生した日の
+  // 一覧を開示表の下に小表として常設する（捏造しているわけではないが、補間量を明示する）。
+  function renderDailyInterpolationTable(layers) {
+    var el = document.getElementById("metrics-daily-interpolation-table");
+    if (!el) return;
+    var daily = layers && layers.daily;
+    var interpolatedDays = (daily || []).filter(function (d) { return d.interpolated_slots > 0; });
+    if (interpolatedDays.length === 0) {
+      el.innerHTML = "";
+      return;
+    }
+    var rows = interpolatedDays.map(function (d) {
+      return "<tr><td>" + escapeHtml(d.date) + "</td><td>" + escapeHtml(d.interpolated_slots) +
+        "</td><td>" + escapeHtml(d.interpolated_buckets) + "</td></tr>";
+    }).join("");
+    el.innerHTML =
+      "<p class=\"metrics-notes\">補間が発生した日（1日あたりチャネルごと欠落3個までを線形補間、DDR §0既知のノイズ対策）:</p>" +
+      "<table>" +
+      "<thead><tr><th>日付</th><th>補間スロット数</th><th>補間したチャネル値数</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody>" +
+      "</table>";
   }
 
   function renderLayerSummary(layers) {
@@ -462,7 +536,11 @@
 
   // QA #8: coverage / uncertainty / boundary_storage(SOC) / max_export_w / buy_source を
   // 脚注表として開示する（DDR §2.7「注記で開示」）。
-  function disclosureRowHtml(billingMonthLabel, coverageFraction, l2, l3, maxExportW, uncertainty, interpolatedBuckets) {
+  // QA再レビュー #10: coverageTextは呼び出し側で確定月用(パーセント)/in_progress用
+  // (N/M日「経過分」)を作り分けて渡す（両者を混同させないため、本関数はテキストをそのまま出す）。
+  // QA再レビュー #6: interpolatedSlots（欠けていた時刻スロットの実数）と
+  // interpolatedBuckets（補間したチャネル値の延べ数）を併記する。
+  function disclosureRowHtml(billingMonthLabel, coverageText, l2, l3, maxExportW, uncertainty, interpolatedSlots, interpolatedBuckets) {
     var socText = l2 && l2.available ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%" : "―";
     var uncertaintyText = uncertainty && uncertainty.L1
       ? yen(uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L1.net_cost_fit_yen_max)
@@ -473,32 +551,36 @@
         (l3.sell_source === "tepco_official" ? "公式メーター" : "センサー計測")
       : "―";
     return "<tr>" +
-      "<td>" + billingMonthLabel + "</td>" +
-      "<td>" + (coverageFraction * 100).toFixed(1) + "%</td>" +
+      "<td>" + escapeHtml(billingMonthLabel) + "</td>" +
+      "<td>" + escapeHtml(coverageText) + "</td>" +
       "<td>" + socText + "</td>" +
       "<td>" + (maxExportW !== null && maxExportW !== undefined ? Math.round(maxExportW) + " W" : "―") + "</td>" +
       "<td>" + uncertaintyText + "</td>" +
       "<td>" + buySourceText + "</td>" +
-      "<td>" + (interpolatedBuckets || 0) + "</td>" +
+      "<td>" + (interpolatedSlots || 0) + "（" + (interpolatedBuckets || 0) + "）</td>" +
       "</tr>";
   }
 
-  // QA #8 + オーナー承認機能（2026-09-06）: in_progress（月途中集計）の行と「補間バケット数」
-  // 列を追加する（coverage = days_covered / 期間日数。5分バケットの欠落は1日3個まで
-  // 線形補間して埋めている、DDR §0既知のノイズ対策）。
+  // QA #8 + オーナー承認機能（2026-09-06）: in_progress（月途中集計）の行と「補間スロット数
+  // （チャネル値数）」列を追加する（coverage = days_covered / 期間日数。5分バケットの欠落は
+  // 1日3個まで線形補間して埋めている、DDR §0既知のノイズ対策）。
   function renderLayerDisclosureTable(layers) {
     var el = document.getElementById("metrics-layer-disclosure");
     if (!el) return;
     var monthRows = (layers && layers.months ? layers.months : []).map(function (m) {
       return disclosureRowHtml(
-        m.billing_month, m.coverage, m.layers.L2, m.layers.L3, m.max_export_w, m.uncertainty, m.interpolated_buckets
+        m.billing_month, (m.coverage * 100).toFixed(1) + "%", m.layers.L2, m.layers.L3, m.max_export_w,
+        m.uncertainty, m.interpolated_slots, m.interpolated_buckets
       );
     });
     var ip = layers && layers.in_progress;
     if (ip) {
+      // QA再レビュー #10: in_progress行は確定月の品質coverage(%)と混同しないよう
+      // 「N/M日（経過分）」表記にする（percentageにしない）。
+      var ipCoverageText = ip.days_covered + "/" + ip.usage_period.days + "日（経過分）";
       monthRows.push(disclosureRowHtml(
-        ip.billing_month + "（途中）", ip.days_covered / ip.usage_period.days, ip.layers.L2, ip.layers.L3, null, null,
-        ip.interpolated_buckets
+        ip.billing_month + "（途中）", ipCoverageText, ip.layers.L2, ip.layers.L3, null, null,
+        ip.interpolated_slots, ip.interpolated_buckets
       ));
     }
     if (monthRows.length === 0) {
@@ -510,7 +592,7 @@
       "<thead><tr><th>請求月</th><th>5分プロファイル coverage</th>" +
       "<th>蓄電池SOC（期間開始→終了、注記のみ・金額補正なし）</th><th>最大逆潮流推定(L1/L2)</th>" +
       "<th>不確かさ帯（バケット5/15/30分×効率1.00/0.95、net_cost_fit_yen L1 / L2）</th>" +
-      "<th>L3買電・売電の出典</th><th>補間バケット数</th></tr></thead>" +
+      "<th>L3買電・売電の出典</th><th>補間スロット数（チャネル値数）</th></tr></thead>" +
       "<tbody>" + monthRows.join("") + "</tbody>" +
       "</table>";
   }
@@ -547,6 +629,7 @@
     renderLayerToggle(layers);
     renderLayerCumulativeTable(layers);
     renderLayerDisclosureTable(layers);
+    renderDailyInterpolationTable(layers);
     renderSummary(monthly, bills);
     renderMonthlyEnergyChart(monthly);
     renderMonthlySavingChart(monthly);

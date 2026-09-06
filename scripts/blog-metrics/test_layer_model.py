@@ -908,7 +908,23 @@ class BuildDailyLayersTest(unittest.TestCase):
         self.assertEqual(len(days), 1)
         entry = days[0]
         self.assertTrue(entry["layers"]["L0"]["available"])
-        self.assertEqual(entry["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS))
+        # QA再レビュー #4/#6: nichicon_socも補間対象のため REQUIRED_LOAD_FIELDS(7)+soc(1)=8。
+        # interpolated_slots は欠けているスロットが1個だけなので1。
+        self.assertEqual(entry["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS) + 1)
+        self.assertEqual(entry["interpolated_slots"], 1)
+
+    def test_day_skipped_when_no_confirmed_tariff_source(self):
+        # QA再レビュー #13: per_kwh_prices の KeyError（暫定単価の出典すら無い）で日を
+        # 黙って捨てず、bill_model.reason(...) を伴う警告をstderrに出してからスキップする。
+        tariff = make_tariff(fuel_cost_adjustment_yen_per_kwh={}, capacity_contribution_yen_per_month={})
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            days = lm.build_daily_layers(tariff, {}, {"2026-09-01": buckets})
+        self.assertEqual(days, [])  # 単価が全く確定していないため日次系列は空になる
+        output = stderr.getvalue()
+        self.assertIn("2026-09-01", output)
+        self.assertIn("料金表の設定が不足しています", output)
 
 
 class BuildInProgressTest(unittest.TestCase):
@@ -956,17 +972,68 @@ class BuildInProgressTest(unittest.TestCase):
         expected_bill = bill_model.compute_bill(effective_tariff, result["layers"]["L3"]["buy_kwh"], "2026-10")
         self.assertEqual(result["layers"]["L3"]["bill"]["total_yen"], expected_bill.total_yen)
 
-    def test_confirmed_month_build_month_layers_unaffected_by_provisional_helpers(self):
-        # 確定月(build_month_layers)は resolve_effective_tariff を経由しないため、暫定単価の
-        # 出典が存在していても混入しない（tariff未確定ならこれまでどおり除外される）。
-        tariff = make_tariff()
-        tariff["fuel_cost_adjustment_yen_per_kwh"] = {}  # 2026-09自体を未確定にする
-        tariff["capacity_contribution_yen_per_month"] = {}
+    def test_confirmed_month_ignores_available_provisional_source(self):
+        # QA再レビュー #3: 旧テストは燃料費調整・容量拠出金を全月分消していたため、
+        # build_month_layers が誤って resolve_effective_tariff 経由の暫定単価を適用する
+        # ように変異(mutation)しても、フォールバック元の確定月自体が存在せず結局
+        # KeyErrorになるので「たまたま」パスしてしまう無効なテストだった。
+        # 2026-08は確定のまま残し2026-09だけ未確定にすることで、直近確定月(2026-08)への
+        # 暫定フォールバックが実在する状態を作り、build_month_layers（確定月表示）が
+        # それに絶対に頼ってはいけない、という不変条件を検出できるようにする。
+        tariff = make_tariff(
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+            capacity_contribution_yen_per_month={"2026-08": 213},
+        )
         daily = _full_month_daily("2026-09")
         record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date={})
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertFalse(record["layers"][key]["available"], f"{key} should be unavailable")
         l3 = record["layers"]["L3"]
-        self.assertFalse(l3["available"])
         self.assertEqual(l3["unavailable_reason"]["reason_code"], "tariff_missing")
+
+    def test_in_progress_excludes_partial_today(self):
+        # QA再レビュー #2: today(当日)はaggregate.shが部分行を出力するため、profileと
+        # daily.json双方にtoday分のデータが揃っていても常に除外する。
+        today = date(2026, 9, 20)
+        tariff = make_tariff()
+        profile_by_date = {
+            "2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02"),
+            today.isoformat(): build_synthetic_golden_day_buckets(day=today.isoformat()),
+        }
+        daily_by_date = {
+            "2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            today.isoformat(): {"date": today.isoformat(), "buy_kwh": 1.0, "sell_kwh": 0.5},
+        }
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=today)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["days_covered"], 1)
+        self.assertEqual(result["period_end_actual"], "2026-09-02")
+        self.assertEqual(result["layers"]["L3"]["buy_kwh"], 1.0)
+
+    def test_in_progress_layers_cover_identical_day_span(self):
+        # QA再レビュー #1: L0〜L2はusableなprofile日のみ、L3はdaily.jsonの全日を独立に
+        # 合算していたため窓がずれていた（実データでL0=3日、L3=4日）。修正後は同一の
+        # effective_endに基づく同一の日集合をL0〜L2/L3双方が使うことを確認する。
+        tariff = make_tariff()
+        profile_by_date = {
+            "2026-09-02": build_synthetic_golden_day_buckets(day="2026-09-02"),
+            "2026-09-03": build_synthetic_golden_day_buckets(day="2026-09-03"),
+            # 09-04以降はprofile欠測（daily.jsonだけ先行して存在する状態を意図的に作る）
+        }
+        daily_by_date = {
+            "2026-09-02": {"date": "2026-09-02", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            "2026-09-03": {"date": "2026-09-03", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            "2026-09-04": {"date": "2026-09-04", "buy_kwh": 1.0, "sell_kwh": 0.5},
+            "2026-09-05": {"date": "2026-09-05", "buy_kwh": 1.0, "sell_kwh": 0.5},
+        }
+        result = lm.build_in_progress(tariff, daily_by_date, profile_by_date, today=date(2026, 9, 20))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["period_end_actual"], "2026-09-03")
+        self.assertEqual(result["days_covered"], 2)
+        # 修正前ならL3は09-02〜09-05の4日分(buy_kwh=4.0)を合算してしまっていたが、
+        # 修正後はL0〜L2と同じ09-02〜09-03の2日分(buy_kwh=2.0)だけを合算する。
+        self.assertEqual(result["layers"]["L3"]["buy_kwh"], 2.0)
+        self.assertTrue(result["layers"]["L0"]["available"])
 
     def test_status_field_is_in_progress_not_confirmed(self):
         tariff = make_tariff()
@@ -981,8 +1048,10 @@ class BuildInProgressTest(unittest.TestCase):
 # E. 品質ゲート（DDR §5-E）
 # ---------------------------------------------------------------------------
 class ResolveDayBucketsTest(unittest.TestCase):
-    """オーナー承認機能（2026-09-06）: 1日3バケットまでの欠落は線形補間して usable にする
-    （DDR §0既知のノイズ対策。nichicon_realtime_historyは300秒瞬時値でジッタが常態）。"""
+    """オーナー承認機能（2026-09-06、QA再レビュー同日）: 1日3バケットまでの欠落は線形補間して
+    usable にする（DDR §0既知のノイズ対策。nichicon_realtime_historyは300秒瞬時値でジッタが
+    常態）。resolve_day_buckets() は DayResolution(buckets, reason_detail,
+    interpolated_values, interpolated_slots) を返す。"""
 
     def _golden_day(self):
         return build_synthetic_golden_day_buckets(day="2026-09-01")
@@ -990,44 +1059,59 @@ class ResolveDayBucketsTest(unittest.TestCase):
     def test_single_middle_gap_is_interpolated_and_usable(self):
         buckets = self._golden_day()
         removed = buckets.pop(150)  # 中間の1バケットを丸ごと欠落させる
-        resolved, reason, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertIsNotNone(resolved)
-        self.assertIsNone(reason)
-        self.assertEqual(len(resolved), lm.DAY_BUCKETS)
-        self.assertGreater(n_interp, 0)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        self.assertIsNone(r.reason_detail)
+        self.assertEqual(len(r.buckets), lm.DAY_BUCKETS)
+        self.assertGreater(r.interpolated_values, 0)
+        self.assertGreater(r.interpolated_slots, 0)
         usable, usable_reason = lm.day_is_usable(buckets, date(2026, 9, 1))
         self.assertTrue(usable)
         self.assertIsNone(usable_reason)
         # 補間されたバケットも他のバケットと同様に恒等式を計算できる(Noneが残っていない)。
-        interpolated_bucket = next(b for b in resolved if b.bucket_at == removed.bucket_at)
+        interpolated_bucket = next(b for b in r.buckets if b.bucket_at == removed.bucket_at)
         self.assertIsNotNone(interpolated_bucket.load_true_w())
+
+    def test_three_gaps_in_one_channel_is_still_usable(self):
+        # QA再レビュー #9: 境界値テスト。INTERPOLATION_MAX_GAP(3)ちょうどの欠落は補間される。
+        # INTERPOLATION_MAX_GAPを2に変更すると本テストは失敗する（境界を検出するための設計）。
+        buckets = self._golden_day()
+        for i in (100, 101, 102):
+            buckets[i] = make_bucket(buckets[i].bucket_at, eco_ac_in_w=None)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        self.assertEqual(r.interpolated_values, 3)
+        self.assertEqual(r.interpolated_slots, 3)
+        self.assertLessEqual(3, lm.INTERPOLATION_MAX_GAP)  # 境界値であることの前提を明記
 
     def test_four_gaps_in_one_channel_remains_unusable(self):
         buckets = self._golden_day()
         for i in (100, 101, 102, 103):
             buckets[i] = make_bucket(buckets[i].bucket_at, eco_ac_in_w=None)
-        resolved, reason, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertIsNone(resolved)
-        self.assertIn("バケット欠落", reason)
-        self.assertEqual(n_interp, 0)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNone(r.buckets)
+        self.assertIn("バケット欠落", r.reason_detail)
+        self.assertEqual(r.interpolated_values, 0)
+        self.assertEqual(r.interpolated_slots, 0)
 
     def test_leading_gap_uses_nearest_neighbor(self):
         buckets = self._golden_day()
         buckets[0] = make_bucket(buckets[0].bucket_at, nichicon_battery_w=None)
-        resolved, reason, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertIsNotNone(resolved)
-        self.assertEqual(n_interp, 1)
-        first = sorted(resolved, key=lambda b: b.bucket_at)[0]
-        second = sorted(resolved, key=lambda b: b.bucket_at)[1]
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        self.assertEqual(r.interpolated_values, 1)
+        self.assertEqual(r.interpolated_slots, 1)
+        first = sorted(r.buckets, key=lambda b: b.bucket_at)[0]
+        second = sorted(r.buckets, key=lambda b: b.bucket_at)[1]
         # 先頭の欠落は最近傍(2番目のバケット)の値で埋める。
         self.assertEqual(first.nichicon_battery_w, second.nichicon_battery_w)
 
     def test_trailing_gap_uses_nearest_neighbor(self):
         buckets = self._golden_day()
         buckets[-1] = make_bucket(buckets[-1].bucket_at, sell_w=None)
-        resolved, reason, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertIsNotNone(resolved)
-        ordered = sorted(resolved, key=lambda b: b.bucket_at)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        ordered = sorted(r.buckets, key=lambda b: b.bucket_at)
         self.assertEqual(ordered[-1].sell_w, ordered[-2].sell_w)
 
     def test_energy_conservation_holds_after_interpolation(self):
@@ -1035,9 +1119,9 @@ class ResolveDayBucketsTest(unittest.TestCase):
         # が各バケットで成り立つことを確認する。
         buckets = self._golden_day()
         buckets.pop(200)
-        resolved, _, _ = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        resampled = lm.resample_buckets(sorted(resolved, key=lambda b: b.bucket_at), lm.BUCKET_MINUTES)
-        soc_pct = resolved[0].nichicon_soc if resolved[0].nichicon_soc is not None else 50.0
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        resampled = lm.resample_buckets(sorted(r.buckets, key=lambda b: b.bucket_at), lm.BUCKET_MINUTES)
+        soc_pct = r.buckets[0].nichicon_soc if r.buckets[0].nichicon_soc is not None else 50.0
         for dt_h, row in resampled:
             step = lm._simulate_l2_step(row, dt_h, soc_pct, pv_ac_efficiency=1.0)
             balance = step.pv_total_w - step.charge_taken_w + step.buy_w + step.discharge_w - step.load_w - step.sell_w
@@ -1046,24 +1130,64 @@ class ResolveDayBucketsTest(unittest.TestCase):
 
     def test_interpolated_buckets_count_matches_missing_channels(self):
         buckets = self._golden_day()
-        buckets.pop(50)  # 1バケット行が丸ごと欠落 → REQUIRED_LOAD_FIELDS(7個)分カウントされる
-        resolved, _, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertEqual(n_interp, len(lm.REQUIRED_LOAD_FIELDS))
+        buckets.pop(50)  # 1バケット行が丸ごと欠落 → REQUIRED_LOAD_FIELDS(7)+nichicon_soc(1)=8個
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertEqual(r.interpolated_values, len(lm.REQUIRED_LOAD_FIELDS) + 1)
+        self.assertEqual(r.interpolated_slots, 1)  # 欠けているのは1スロットだけ
 
     def test_zero_gap_day_returns_identical_result_to_before(self):
         # 回帰: 欠落0の日は元のバケット列がそのまま返り、補間件数は0。
         buckets = self._golden_day()
-        resolved, reason, n_interp = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
-        self.assertIsNone(reason)
-        self.assertEqual(n_interp, 0)
-        self.assertEqual(len(resolved), len(buckets))
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNone(r.reason_detail)
+        self.assertEqual(r.interpolated_values, 0)
+        self.assertEqual(r.interpolated_slots, 0)
+        self.assertEqual(len(r.buckets), len(buckets))
         self.assertEqual(
-            [b.load_true_w() for b in sorted(resolved, key=lambda b: b.bucket_at)],
+            [b.load_true_w() for b in sorted(r.buckets, key=lambda b: b.bucket_at)],
             [b.load_true_w() for b in sorted(buckets, key=lambda b: b.bucket_at)],
         )
         usable, usable_reason = lm.day_is_usable(buckets, date(2026, 9, 1))
         self.assertTrue(usable)
         self.assertIsNone(usable_reason)
+
+    def test_soc_gap_beyond_limit_makes_day_unusable(self):
+        # QA再レビュー #4: nichicon_socの欠落もmax_gapに含める。socだけ4個欠落していても不採用。
+        buckets = self._golden_day()
+        for i in (10, 11, 12, 13):
+            buckets[i] = make_bucket(buckets[i].bucket_at, nichicon_soc=None)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNone(r.buckets)
+        self.assertIn("バケット欠落", r.reason_detail)
+
+    def test_soc_interpolation_is_counted_in_interpolated_buckets(self):
+        # QA再レビュー #4: nichicon_soc単独の欠落(1個、許容内)も補間数に算入される。
+        buckets = self._golden_day()
+        buckets[10] = make_bucket(buckets[10].bucket_at, nichicon_soc=None)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNotNone(r.buckets)
+        self.assertEqual(r.interpolated_values, 1)
+        self.assertEqual(r.interpolated_slots, 1)
+        resolved_bucket = sorted(r.buckets, key=lambda b: b.bucket_at)[10]
+        self.assertIsNotNone(resolved_bucket.nichicon_soc)
+
+    def test_extra_off_slot_row_makes_day_unusable(self):
+        # QA再レビュー #5: 想定外時刻（生成スロット集合外）の行が混入していると不採用にする
+        # （行数超過を防ぐため、代わりに正規の1バケットを削って総数は288に保つ）。
+        buckets = self._golden_day()[:-1]  # 287件にしておく
+        buckets.append(make_bucket("2026-09-01 24:00"))  # 想定外の時刻（生成スロット集合外）
+        self.assertEqual(len(buckets), lm.DAY_BUCKETS)
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNone(r.buckets)
+        self.assertIn("想定外の時刻", r.reason_detail)
+
+    def test_row_count_over_288_makes_day_unusable(self):
+        # QA再レビュー #5: 288を超える行数（重複ではなく単純な水増し）も不採用にする。
+        buckets = self._golden_day()
+        buckets.append(make_bucket("2026-09-02 00:00"))  # 翌日の正規スロットだが総数が289になる
+        r = lm.resolve_day_buckets(buckets, date(2026, 9, 1))
+        self.assertIsNone(r.buckets)
+        self.assertIn("バケット行数超過", r.reason_detail)
 
 
 class MissingDaysReasonTest(unittest.TestCase):
@@ -1079,7 +1203,9 @@ class MissingDaysReasonTest(unittest.TestCase):
     def test_partial_days_missing_is_period_incomplete(self):
         r = lm._missing_days_reason(["2026-08-02"], total_days=31)
         self.assertEqual(r["reason_code"], "period_incomplete")
-        self.assertEqual(r["reason_label"], "計測データ欠測（1日）")
+        # QA再レビュー #14: period_incomplete(5分プロファイル欠落)はbill_model.pyの
+        # daily_missing(センサー日次欠測=「計測データ欠測」)と区別するラベルにする。
+        self.assertEqual(r["reason_label"], "5分プロファイル欠落（1日）")
         self.assertIn("2026-08-02", r["reason_detail"])
         self.assertNotIn("2026-08-02", r["reason_label"])
 
@@ -1140,7 +1266,7 @@ class QualityGateTest(unittest.TestCase):
         l0_reason = record["layers"]["L0"]["unavailable_reason"]
         # 1日だけ欠測(31日中)なので profile_missing ではなく period_incomplete。
         self.assertEqual(l0_reason["reason_code"], "period_incomplete")
-        self.assertEqual(l0_reason["reason_label"], "計測データ欠測（1日）")
+        self.assertEqual(l0_reason["reason_label"], "5分プロファイル欠落（1日）")
         self.assertIn("5分プロファイル欠測", l0_reason["reason_detail"])
         self.assertIn("1/31", l0_reason["reason_detail"])
         self.assertIn("2026-08-31", l0_reason["reason_detail"])
@@ -1183,7 +1309,8 @@ class QualityGateTest(unittest.TestCase):
         record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date)
         self.assertTrue(record["layers"]["L0"]["available"])
         self.assertEqual(record["coverage"], 1.0)
-        self.assertEqual(record["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS))
+        # QA再レビュー #4/#6: nichicon_socも補間対象のため REQUIRED_LOAD_FIELDS(7)+soc(1)=8。
+        self.assertEqual(record["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS) + 1)
 
     def test_uncertainty_band_differs_across_pv_ac_efficiency(self):
         # QA missing-test#9: 不確かさ帯がpv_ac_efficiency 1.00/0.95で異なる（min!=max）。

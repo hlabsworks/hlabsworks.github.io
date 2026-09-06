@@ -16,10 +16,13 @@ consumption_kwh を一切使わず、下記の恒等式（DDR §1）で真の負
 
 日次ゲート（DDR §3・§0既知のノイズ、オーナー承認機能・2026-09-06）: nichicon_realtime_history
 は300秒瞬時値のためジッタで5分バケットを1個落とすのは常態。resolve_day_buckets()が、
-1日あたりチャネルごとの欠落が INTERPOLATION_MAX_GAP(3)個以下なら前後の実測値で線形補間して
-埋める（先頭/末尾の欠落は最近傍値）。4個以上の欠落・bucket_at重複・プロファイル自体が無い
-場合は当該日を不採用のまま（period_incomplete/profile_missing）にし、捏造しない。補間した
-バケット数は各レコードの interpolated_buckets に記録する。
+1日あたりチャネル（nichicon_socを含む）ごとの欠落スロット数が INTERPOLATION_MAX_GAP(3)個
+以下なら前後の実測値で線形補間して埋める（先頭/末尾の欠落は最近傍値）。いずれかのチャネルで
+4個以上の欠落・バケット行数超過・想定外時刻のバケット混入・bucket_at重複・プロファイル自体が
+無い場合は当該日を不採用のまま（period_incomplete/profile_missing）にし、捏造しない。
+補間結果は各レコードの interpolated_buckets（補間したチャネル値の合計数）と
+interpolated_slots（補間が発生した時刻スロットの実数、QA再レビュー2026-09-06 #6で追加）に
+記録する。
 
 層の定義（オーナー決定 2026-09-05）:
   L0 = 太陽光・蓄電池・本システムなし（推定、buy_L0 = load_true 全量買電）
@@ -240,35 +243,66 @@ def _linear_interpolate(values: list[float | None]) -> list[float]:
     return result
 
 
-def resolve_day_buckets(buckets: list[Bucket] | None, d: date) -> tuple[list[Bucket] | None, str | None, int]:
-    """暦日dの5分プロファイルを解決する（オーナー承認機能・2026-09-06、DDR §0既知のノイズ
-    対策）。バケット行の欠落（288未満）と各チャネルの欠測(None)を数え、
-    REQUIRED_LOAD_FIELDS のいずれのチャネルも欠落が INTERPOLATION_MAX_GAP(3)個以下なら、
-    前後の有効値で線形補間して288バケット全てを埋める（先頭/末尾の欠落は最近傍値）。
-    いずれかのチャネルで欠落が4個以上、bucket_atが重複、またはプロファイル自体が無い
-    場合は None を返す（部分的な積算による過小評価を避け、捏造しない）。
+@dataclass
+class DayResolution:
+    """resolve_day_buckets() の戻り値（QA再レビュー2026-09-06 #6対応）。
 
-    戻り値: (解決済み288バケット|None, 却下理由の詳細文字列|None, 補間したバケット数の合計)。
+    interpolated_values: 補間したチャネル値(欠測セル)の合計数。1バケット行が丸ごと
+      欠落していると REQUIRED_LOAD_FIELDS(7)+nichicon_soc(1) = 8 とカウントされる。
+    interpolated_slots: 補間が発生した時刻スロット(バケット)の実数。同じスロットで
+      複数チャネルが欠けていても1として数える（「補間バケット数」という表記が実際には
+      チャネル値数だったため、スロット数を別途持たせて区別する）。
+    """
+
+    buckets: list[Bucket] | None
+    reason_detail: str | None
+    interpolated_values: int
+    interpolated_slots: int
+
+
+def resolve_day_buckets(buckets: list[Bucket] | None, d: date) -> DayResolution:
+    """暦日dの5分プロファイルを解決する（オーナー承認機能・2026-09-06、DDR §0既知のノイズ
+    対策）。バケット行の欠落（288未満）・行数超過・想定外時刻の行・各チャネルの欠測(None)
+    （nichicon_socを含む全チャネル、QA再レビュー #4）を数え、いずれのチャネルも欠落が
+    INTERPOLATION_MAX_GAP(3)個以下なら、前後の有効値で線形補間して288バケット全てを埋める
+    （先頭/末尾の欠落は最近傍値）。いずれかのチャネルで欠落が4個以上、バケット行数が288を
+    超過、想定外時刻のバケットが混入、bucket_atが重複、またはプロファイル自体が無い場合は
+    resolution.buckets=None にする（部分的な積算による過小評価を避け、捏造しない）。
+
     欠落ゼロの日は元のバケット列をそのまま返す（回帰: 既存動作と完全に同じ結果になる）。
     """
     expected = expected_bucket_count(d)
     if not buckets:
-        return None, "5分プロファイルデータなし", 0
+        return DayResolution(None, "5分プロファイルデータなし", 0, 0)
 
     # bucket_at が重複していると、行数は288でも実際には異なる時刻が欠落している
     # （重複分で頭数が水増しされる）。補間の対象外とし従来どおり不採用にする。
     distinct_times = {b.bucket_at for b in buckets}
     if len(distinct_times) != len(buckets):
         duplicated = len(buckets) - len(distinct_times)
-        return None, f"bucket_at重複 {duplicated}件（実際の時刻種別 {len(distinct_times)}/{expected}）", 0
+        return DayResolution(
+            None, f"bucket_at重複 {duplicated}件（実際の時刻種別 {len(distinct_times)}/{expected}）", 0, 0
+        )
 
-    by_time = {b.bucket_at: b for b in buckets}
+    # QA再レビュー #5: 行数超過（水増し）は補間の対象外。想定外の時刻（生成スロット集合外）の
+    # 行が混入している場合も同様（データ破損の可能性があり、捏造しないため不採用にする）。
+    if len(buckets) > expected:
+        return DayResolution(None, f"バケット行数超過 {len(buckets)}/{expected}", 0, 0)
+
     slots: list[str] = []
     cursor = f"{d.isoformat()} 00:00"
     for _ in range(expected):
         slots.append(cursor)
         cursor = _next_bucket_at(cursor, BUCKET_MINUTES)
+    slot_set = set(slots)
 
+    off_slot = sorted({b.bucket_at for b in buckets} - slot_set)
+    if off_slot:
+        return DayResolution(
+            None, f"想定外の時刻のバケットが{len(off_slot)}件あります（例: {off_slot[0]}）", 0, 0
+        )
+
+    by_time = {b.bucket_at: b for b in buckets}
     channels = REQUIRED_LOAD_FIELDS + ("nichicon_soc",)
     raw: dict[str, list[float | None]] = {ch: [] for ch in channels}
     for slot in slots:
@@ -276,23 +310,27 @@ def resolve_day_buckets(buckets: list[Bucket] | None, d: date) -> tuple[list[Buc
         for ch in channels:
             raw[ch].append(getattr(b, ch) if b is not None else None)
 
-    gap_counts = {ch: sum(1 for v in raw[ch] if v is None) for ch in REQUIRED_LOAD_FIELDS}
-    soc_gap = sum(1 for v in raw["nichicon_soc"] if v is None)
+    # QA再レビュー #4: nichicon_soc も他チャネルと同じ ≤3 ゲートの対象にする
+    # （以前は soc の欠落数を集計はしていたが閾値判定・補間数に含めていなかった）。
+    gap_counts = {ch: sum(1 for v in raw[ch] if v is None) for ch in channels}
     max_gap = max(gap_counts.values())
-    if max_gap == 0 and soc_gap == 0:
-        return list(buckets), None, 0  # 完全一致（回帰: 従来どおり元のリストをそのまま返す）
+    if max_gap == 0:
+        return DayResolution(list(buckets), None, 0, 0)  # 完全一致（回帰: 元のリストをそのまま返す）
     if max_gap > INTERPOLATION_MAX_GAP:
-        return None, f"バケット欠落 最大{max_gap}件/{expected}（許容{INTERPOLATION_MAX_GAP}件を超過）", 0
+        return DayResolution(
+            None, f"バケット欠落 最大{max_gap}件/{expected}（許容{INTERPOLATION_MAX_GAP}件を超過）", 0, 0
+        )
 
-    interpolated_total = 0
+    interpolated_values = 0
+    interpolated_slot_indices: set[int] = set()
     filled: dict[str, list[float]] = {}
     for ch in channels:
-        n_missing = sum(1 for v in raw[ch] if v is None)
-        if n_missing == 0:
+        missing_indices = [i for i, v in enumerate(raw[ch]) if v is None]
+        if not missing_indices:
             filled[ch] = raw[ch]  # type: ignore[assignment]
             continue
-        if ch in gap_counts:  # REQUIRED_LOAD_FIELDS分のみ集計対象にカウントする
-            interpolated_total += n_missing
+        interpolated_values += len(missing_indices)
+        interpolated_slot_indices.update(missing_indices)
         filled[ch] = _linear_interpolate(raw[ch])
 
     resolved = [
@@ -305,15 +343,15 @@ def resolve_day_buckets(buckets: list[Bucket] | None, d: date) -> tuple[list[Buc
         )
         for i, slot in enumerate(slots)
     ]
-    return resolved, None, interpolated_total
+    return DayResolution(resolved, None, interpolated_values, len(interpolated_slot_indices))
 
 
 def day_is_usable(buckets: list[Bucket] | None, d: date) -> tuple[bool, str | None]:
     """暦日dの5分プロファイルが（補間を含めて）usableかどうかを判定する。実際の
     （補間済み）バケット列が必要な呼び出し元は resolve_day_buckets を直接使うこと
     （ロジックの二重実装を避けるため、本関数はそちらに委譲する）。"""
-    resolved, reason_detail, _ = resolve_day_buckets(buckets, d)
-    return resolved is not None, reason_detail
+    resolution = resolve_day_buckets(buckets, d)
+    return resolution.buckets is not None, resolution.reason_detail
 
 
 def _dt_hours(bucket_minutes: int) -> float:
@@ -644,12 +682,15 @@ def _missing_days_detail(missing_days: list[str], total_days: int) -> str:
 
 def _missing_days_reason(missing_days: list[str], total_days: int) -> dict:
     """QA読者向け対応（2026-09-06）: 全日欠測（プロファイル自体が無い）と一部欠測を
-    reason_code で区別する（profile_missing vs period_incomplete）。"""
+    reason_code で区別する（profile_missing vs period_incomplete）。QA再レビュー #14:
+    period_incomplete は5分プロファイル由来の欠落であり、bill_model.py の daily_missing
+    （daily.jsonのセンサー日次欠測）と混同しないよう label を「5分プロファイル欠落」にする
+    （daily_missing側は「計測データ欠測」のまま）。"""
     detail = _missing_days_detail(missing_days, total_days)
     if len(missing_days) >= total_days:
         return bill_model.reason(bill_model.REASON_CODE_PROFILE_MISSING, "5分プロファイル未取得", detail)
     return bill_model.reason(
-        bill_model.REASON_CODE_PERIOD_INCOMPLETE, f"計測データ欠測（{len(missing_days)}日）", detail
+        bill_model.REASON_CODE_PERIOD_INCOMPLETE, f"5分プロファイル欠落（{len(missing_days)}日）", detail
     )
 
 
@@ -710,12 +751,12 @@ def build_month_layers(
     for d in days_in_period:
         d_str = d.isoformat()
         day_buckets = profile_by_date.get(d_str)
-        resolved_buckets, _, n_interpolated = resolve_day_buckets(day_buckets, d)
-        if resolved_buckets is None:
+        resolution = resolve_day_buckets(day_buckets, d)
+        if resolution.buckets is None:
             missing_days.append(d_str)
         else:
-            all_buckets.extend(resolved_buckets)
-            month_interpolated_buckets += n_interpolated
+            all_buckets.extend(resolution.buckets)
+            month_interpolated_buckets += resolution.interpolated_values
 
     coverage = 1.0 - (len(missing_days) / total_days) if total_days else 0.0
 
@@ -801,11 +842,11 @@ def build_daily_load(profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
     for d_str in sorted(profile_by_date):
         buckets = profile_by_date[d_str]
         d = date.fromisoformat(d_str)
-        resolved_buckets, _, _ = resolve_day_buckets(buckets, d)
-        if resolved_buckets is None:
+        resolution = resolve_day_buckets(buckets, d)
+        if resolution.buckets is None:
             days.append({"date": d_str, "load_kwh": None})
             continue
-        load_wh = sum(b.load_true_w() * _dt_hours(BUCKET_MINUTES) for b in resolved_buckets)
+        load_wh = sum(b.load_true_w() * _dt_hours(BUCKET_MINUTES) for b in resolution.buckets)
         days.append({"date": d_str, "load_kwh": round(load_wh / 1000.0, 3)})
     return days
 
@@ -824,12 +865,14 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
 
     # 1日3バケットまでの欠落は線形補間して埋める（オーナー承認機能・2026-09-06）。
     resolved_by_date: dict[str, list[Bucket]] = {}
-    interpolated_by_date: dict[str, int] = {}
+    interpolated_values_by_date: dict[str, int] = {}
+    interpolated_slots_by_date: dict[str, int] = {}
     for d_str, buckets in profile_by_date.items():
-        resolved, _, n_interp = resolve_day_buckets(buckets, date.fromisoformat(d_str))
-        if resolved is not None:
-            resolved_by_date[d_str] = resolved
-            interpolated_by_date[d_str] = n_interp
+        resolution = resolve_day_buckets(buckets, date.fromisoformat(d_str))
+        if resolution.buckets is not None:
+            resolved_by_date[d_str] = resolution.buckets
+            interpolated_values_by_date[d_str] = resolution.interpolated_values
+            interpolated_slots_by_date[d_str] = resolution.interpolated_slots
 
     usable_dates = sorted(resolved_by_date)
     if not usable_dates:
@@ -866,8 +909,17 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
             buy_price, sell_fit, sell_post_fit, provisional, source_month = bill_model.per_kwh_prices(
                 tariff, billing_month
             )
-        except KeyError:
-            # 暫定単価の出典すら無い（まだ1件も確定請求月が無い）場合はその日をスキップする。
+        except KeyError as exc:
+            # QA再レビュー #13: 暫定単価の出典すら無い（まだ1件も確定請求月が無い）場合、
+            # 黙って捨てずreason付きでstderrに警告してからその日をスキップする。
+            skip_reason = bill_model.reason(
+                bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc)
+            )
+            print(
+                f"layer_model.py: {d_str}（請求月{billing_month}）を日次系列からスキップします: "
+                f"{skip_reason['reason_label']}（{skip_reason['reason_detail']}）",
+                file=sys.stderr,
+            )
             continue
 
         l0_totals, l1_totals = l0_l1_by_date[d_str]
@@ -898,7 +950,8 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
             "tariff_basis": "per_kwh_only",
             "tariff_provisional": provisional,
             "tariff_source_month": source_month,
-            "interpolated_buckets": interpolated_by_date.get(d_str, 0),
+            "interpolated_buckets": interpolated_values_by_date.get(d_str, 0),
+            "interpolated_slots": interpolated_slots_by_date.get(d_str, 0),
         })
     return days
 
@@ -909,24 +962,63 @@ def build_in_progress(
     profile_by_date: dict[str, list[Bucket]],
     today: date,
 ) -> dict | None:
-    """現在進行中の請求期間（todayを含む期間）の月途中集計（オーナー承認機能・2026-09-06）。
-    確定月（build_month_layers）と異なり、期間の全日が揃うのを待たず開始日〜最後に usable な
-    日までのデータで compute_bill する（段階制・容量拠出金込み、通常どおり）。単価が未確定
-    なら直近確定月の単価を暫定適用し tariff_provisional / tariff_source_month で明示する
-    （確定表示にのみ捏造禁止方針を適用し、月途中集計は明示ラベル付きで暫定単価を許容 —
-    オーナー承認済み）。何のデータも無ければ None を返す。
+    """現在進行中の請求期間（todayを含む期間）の月途中集計（オーナー承認機能・2026-09-06、
+    QA再レビュー2026-09-06 #1/#2で窓のずれを修正）。確定月（build_month_layers）と異なり、
+    期間の全日が揃うのを待たず開始日〜effective_endまでのデータで compute_bill する
+    （段階制・容量拠出金込み、通常どおり）。単価が未確定なら直近確定月の単価を暫定適用し
+    tariff_provisional / tariff_source_month で明示する（確定表示にのみ捏造禁止方針を適用し、
+    月途中集計は明示ラベル付きで暫定単価を許容 — オーナー承認済み）。
+
+    effective_end の決め方（QA再レビュー #1）: L0〜L2は5分プロファイルがusableな日のみ、
+    L3はdaily.jsonにある日のみを別々に合算すると、両者の「as of」日付がずれて
+    （例: L0は3日分、L3は4日分）読者を混乱させる。そこで
+    effective_end = min(期間内で最後にusableなprofile日, 期間内でdaily.jsonに買電がある
+    最後の日, today−1日) を1つに決め、L3のsum_periodとL0〜L2のprofile集計の両方に
+    同じ日集合[start, effective_end]を使う。today自体は当日の部分行（aggregate.shが
+    書き出す途中経過値）を含むため常に除外する（QA再レビュー #2）。
+    何のデータも無ければ None を返す。
     """
     meter_read_day = tariff["meter_read_day"]
     billing_month = bill_model.billing_month_for_date(today, meter_read_day)
     start, end = bill_model.billing_period(billing_month, meter_read_day)
     period_days = (end - start).days + 1
-    effective_end = min(end, today)
+
+    # QA再レビュー #2: 当日(today)は部分日なので常に除外する。
+    raw_upper_bound = min(end, today - timedelta(days=1))
+    if raw_upper_bound < start:
+        return None  # 請求期間が始まったばかりで、まだ完了した日が1日も無い
 
     sell_fit = tariff["sell_price_yen_per_kwh"]["fit"]
     sell_post_fit = tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"]
     effective_tariff, provisional, source_month = bill_model.resolve_effective_tariff(tariff, billing_month)
 
-    # --- L3: センサー(daily.json)、開始日〜effective_endの範囲でusableな日のみ合算 ---
+    # [start, raw_upper_bound] の範囲で、profileがusableな日を先に全て解決しておく
+    # （effective_end決定とL0〜L2集計の両方で使い回す。二重に補間計算しない）。
+    resolved_by_date: dict[str, list[Bucket]] = {}
+    interpolated_values_by_date: dict[str, int] = {}
+    interpolated_slots_by_date: dict[str, int] = {}
+    for d in bill_model._daterange(start, raw_upper_bound):
+        d_str = d.isoformat()
+        if d_str not in profile_by_date:
+            continue
+        resolution = resolve_day_buckets(profile_by_date[d_str], d)
+        if resolution.buckets is not None:
+            resolved_by_date[d_str] = resolution.buckets
+            interpolated_values_by_date[d_str] = resolution.interpolated_values
+            interpolated_slots_by_date[d_str] = resolution.interpolated_slots
+
+    last_usable_profile_date = date.fromisoformat(max(resolved_by_date)) if resolved_by_date else None
+
+    last_daily_date = None
+    for d in bill_model._daterange(start, raw_upper_bound):
+        if (daily_by_date.get(d.isoformat()) or {}).get("buy_kwh") is not None:
+            last_daily_date = d  # _daterangeは昇順なので最後の代入が最新日になる
+
+    effective_end = min(
+        c for c in (raw_upper_bound, last_usable_profile_date, last_daily_date) if c is not None
+    )
+
+    # --- L3: センサー(daily.json)、開始日〜effective_endの範囲で合算（L0〜L2と同じ窓）---
     l3_buy_kwh, l3_present, _ = bill_model.sum_period(daily_by_date, start, effective_end, "buy_kwh")
     l3_sell_kwh, _, _ = bill_model.sum_period(daily_by_date, start, effective_end, "sell_kwh")
     if l3_present == 0:
@@ -948,18 +1040,10 @@ def build_in_progress(
                 "measured", bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc))
             )
 
-    # --- L0/L1/L2: usableな日のみ範囲内で合算（連続シミュレーションはL2のみ）。
-    # 1日3バケットまでの欠落は線形補間して埋める（オーナー承認機能・2026-09-06）。---
-    resolved_period_profile: dict[str, list[Bucket]] = {}
-    period_interpolated_buckets = 0
-    for d_str in sorted(profile_by_date):
-        if not (start.isoformat() <= d_str <= effective_end.isoformat()):
-            continue
-        resolved, _, n_interp = resolve_day_buckets(profile_by_date[d_str], date.fromisoformat(d_str))
-        if resolved is not None:
-            resolved_period_profile[d_str] = resolved
-            period_interpolated_buckets += n_interp
-    period_profile_dates = sorted(resolved_period_profile)
+    # --- L0/L1/L2: [start, effective_end] の範囲（L3と同じ窓）で合算（連続シミュレーションはL2のみ）---
+    period_profile_dates = sorted(d for d in resolved_by_date if d <= effective_end.isoformat())
+    period_interpolated_values = sum(interpolated_values_by_date[d] for d in period_profile_dates)
+    period_interpolated_slots = sum(interpolated_slots_by_date[d] for d in period_profile_dates)
     boundary_storage_kwh = None
     if not period_profile_dates:
         profile_reason = bill_model.reason(
@@ -972,7 +1056,7 @@ def build_in_progress(
     else:
         ordered_buckets: list[Bucket] = []
         for d_str in period_profile_dates:
-            ordered_buckets.extend(resolved_period_profile[d_str])
+            ordered_buckets.extend(resolved_by_date[d_str])
         ordered_buckets.sort(key=lambda b: b.bucket_at)
         resampled = resample_buckets(ordered_buckets, BUCKET_MINUTES)
         l0_totals = simulate_l0(resampled)
@@ -999,12 +1083,15 @@ def build_in_progress(
             l1_layer = unavailable_layer("estimated", tariff_reason)
             l2_layer = unavailable_layer("estimated", tariff_reason)
 
+    # QA再レビュー #1: days_covered/period_end_actual も effective_end（L3・L0〜L2で共通の
+    # 窓）から導出する（従来はここでも独自に日付集合を再計算しており、上のeffective_end決定と
+    # 別のロジックになっていた）。
     covered_dates: set[str] = set()
     for d in bill_model._daterange(start, effective_end):
         d_str = d.isoformat()
         if (daily_by_date.get(d_str) or {}).get("buy_kwh") is not None:
             covered_dates.add(d_str)
-        if d_str in resolved_period_profile:
+        if d_str in resolved_by_date:
             covered_dates.add(d_str)
     if not covered_dates:
         return None
@@ -1014,12 +1101,13 @@ def build_in_progress(
         "status": "in_progress",
         "usage_period": {"start": start.isoformat(), "end": end.isoformat(), "days": period_days},
         "days_covered": len(covered_dates),
-        "period_end_actual": max(covered_dates),
+        "period_end_actual": effective_end.isoformat(),
         "layers": {"L0": l0_layer, "L1": l1_layer, "L2": l2_layer, "L3": l3_layer},
         "boundary_storage_kwh": boundary_storage_kwh,
         "tariff_provisional": provisional,
         "tariff_source_month": source_month,
-        "interpolated_buckets": period_interpolated_buckets,
+        "interpolated_buckets": period_interpolated_values,
+        "interpolated_slots": period_interpolated_slots,
     }
 
 

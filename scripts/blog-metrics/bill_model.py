@@ -509,9 +509,12 @@ def build_month_record(
         )
     elif load_missing > 0:
         bill_l0 = None
+        # QA再レビュー #14: daily_load.json(load_kwh)は5分プロファイル由来のため、
+        # daily.jsonセンサー日次欠測(REASON_CODE_DAILY_MISSING)の「計測データ欠測」と
+        # 混同しないよう「5分プロファイル欠落」にする。
         l0_unavailable_reason = reason(
             REASON_CODE_PERIOD_INCOMPLETE,
-            f"計測データ欠測（{load_missing}日）",
+            f"5分プロファイル欠落（{load_missing}日）",
             f"usage period {start.isoformat()}..{end.isoformat()} に復元負荷(load_kwh) 欠測 {load_missing}/{total_days} 日",
         )
     else:

@@ -14,6 +14,13 @@ consumption_kwh を一切使わず、下記の恒等式（DDR §1）で真の負
   load_true(t) = solar_w(t) + nichicon_pv_w(t) − nichicon_battery_w(t)
                + buy_w(t) − sell_w(t) + eco_ac_out_w(t) − eco_ac_in_w(t)
 
+日次ゲート（DDR §3・§0既知のノイズ、オーナー承認機能・2026-09-06）: nichicon_realtime_history
+は300秒瞬時値のためジッタで5分バケットを1個落とすのは常態。resolve_day_buckets()が、
+1日あたりチャネルごとの欠落が INTERPOLATION_MAX_GAP(3)個以下なら前後の実測値で線形補間して
+埋める（先頭/末尾の欠落は最近傍値）。4個以上の欠落・bucket_at重複・プロファイル自体が無い
+場合は当該日を不採用のまま（period_incomplete/profile_missing）にし、捏造しない。補間した
+バケット数は各レコードの interpolated_buckets に記録する。
+
 層の定義（オーナー決定 2026-09-05）:
   L0 = 太陽光・蓄電池・本システムなし（推定、buy_L0 = load_true 全量買電）
   L1 = 太陽光のみ 9.4kW 全量（推定、DDR §2.3）
@@ -203,25 +210,110 @@ def expected_bucket_count(d: date) -> int:
     return DAY_BUCKETS
 
 
-def day_is_usable(buckets: list[Bucket] | None, d: date) -> tuple[bool, str | None]:
-    """暦日dの5分プロファイルが「欠測バケットゼロ」で揃っているかを判定する（DDR §3
-    「欠測バケットはNone、その日を欠測日にカウント（捏造しない）」を字義通り解釈:
-    1バケットでも欠測なら当日は不採用。部分的な積算による過小評価を避けるため）。"""
-    if not buckets:
-        return False, "5分プロファイルデータなし"
+# DDR §0既知のノイズ対策（オーナー承認機能・2026-09-06）: nichicon_realtime_history は
+# 300秒瞬時値のため、ジッタで5分バケットを1個落とすのは常態（DDRの言う「隣接サンプル
+# 線形補間」対策そのもの）。1日あたりチャネルごとの欠落が INTERPOLATION_MAX_GAP 個以下
+# なら前後の有効値で線形補間して埋める（先頭/末尾の欠落は最近傍値）。それを超える場合は
+# 従来どおり当日を不採用にし、捏造しない。
+INTERPOLATION_MAX_GAP = 3
+
+
+def _linear_interpolate(values: list[float | None]) -> list[float]:
+    """Noneの穴を前後の既知値で線形補間して埋める（先頭/末尾の穴は最近傍値で埋める）。
+    全欠測の場合は防御的に0.0で埋める（呼び出し側で事前にゲートしているため通常は
+    到達しない）。"""
+    n = len(values)
+    result: list[float] = list(values)  # type: ignore[assignment]
+    known = [i for i, v in enumerate(values) if v is not None]
+    if not known:
+        return [0.0] * n
+    for i in range(0, known[0]):
+        result[i] = values[known[0]]
+    for i in range(known[-1] + 1, n):
+        result[i] = values[known[-1]]
+    for a, b in zip(known, known[1:]):
+        if b - a <= 1:
+            continue
+        va, vb = values[a], values[b]
+        for i in range(a + 1, b):
+            result[i] = va + (vb - va) * (i - a) / (b - a)
+    return result
+
+
+def resolve_day_buckets(buckets: list[Bucket] | None, d: date) -> tuple[list[Bucket] | None, str | None, int]:
+    """暦日dの5分プロファイルを解決する（オーナー承認機能・2026-09-06、DDR §0既知のノイズ
+    対策）。バケット行の欠落（288未満）と各チャネルの欠測(None)を数え、
+    REQUIRED_LOAD_FIELDS のいずれのチャネルも欠落が INTERPOLATION_MAX_GAP(3)個以下なら、
+    前後の有効値で線形補間して288バケット全てを埋める（先頭/末尾の欠落は最近傍値）。
+    いずれかのチャネルで欠落が4個以上、bucket_atが重複、またはプロファイル自体が無い
+    場合は None を返す（部分的な積算による過小評価を避け、捏造しない）。
+
+    戻り値: (解決済み288バケット|None, 却下理由の詳細文字列|None, 補間したバケット数の合計)。
+    欠落ゼロの日は元のバケット列をそのまま返す（回帰: 既存動作と完全に同じ結果になる）。
+    """
     expected = expected_bucket_count(d)
-    if len(buckets) != expected:
-        return False, f"バケット数不足 {len(buckets)}/{expected}"
-    # 追加テストb: bucket_at が重複していると、行数は288でも実際には異なる時刻が
-    # 欠落している（重複分で頭数が水増しされる）。件数一致だけでなく重複が無いことも確認する。
+    if not buckets:
+        return None, "5分プロファイルデータなし", 0
+
+    # bucket_at が重複していると、行数は288でも実際には異なる時刻が欠落している
+    # （重複分で頭数が水増しされる）。補間の対象外とし従来どおり不採用にする。
     distinct_times = {b.bucket_at for b in buckets}
-    if len(distinct_times) != expected:
+    if len(distinct_times) != len(buckets):
         duplicated = len(buckets) - len(distinct_times)
-        return False, f"bucket_at重複 {duplicated}件（実際の時刻種別 {len(distinct_times)}/{expected}）"
-    for b in buckets:
-        if b.load_true_w() is None:
-            return False, "一部フィールド欠測"
-    return True, None
+        return None, f"bucket_at重複 {duplicated}件（実際の時刻種別 {len(distinct_times)}/{expected}）", 0
+
+    by_time = {b.bucket_at: b for b in buckets}
+    slots: list[str] = []
+    cursor = f"{d.isoformat()} 00:00"
+    for _ in range(expected):
+        slots.append(cursor)
+        cursor = _next_bucket_at(cursor, BUCKET_MINUTES)
+
+    channels = REQUIRED_LOAD_FIELDS + ("nichicon_soc",)
+    raw: dict[str, list[float | None]] = {ch: [] for ch in channels}
+    for slot in slots:
+        b = by_time.get(slot)
+        for ch in channels:
+            raw[ch].append(getattr(b, ch) if b is not None else None)
+
+    gap_counts = {ch: sum(1 for v in raw[ch] if v is None) for ch in REQUIRED_LOAD_FIELDS}
+    soc_gap = sum(1 for v in raw["nichicon_soc"] if v is None)
+    max_gap = max(gap_counts.values())
+    if max_gap == 0 and soc_gap == 0:
+        return list(buckets), None, 0  # 完全一致（回帰: 従来どおり元のリストをそのまま返す）
+    if max_gap > INTERPOLATION_MAX_GAP:
+        return None, f"バケット欠落 最大{max_gap}件/{expected}（許容{INTERPOLATION_MAX_GAP}件を超過）", 0
+
+    interpolated_total = 0
+    filled: dict[str, list[float]] = {}
+    for ch in channels:
+        n_missing = sum(1 for v in raw[ch] if v is None)
+        if n_missing == 0:
+            filled[ch] = raw[ch]  # type: ignore[assignment]
+            continue
+        if ch in gap_counts:  # REQUIRED_LOAD_FIELDS分のみ集計対象にカウントする
+            interpolated_total += n_missing
+        filled[ch] = _linear_interpolate(raw[ch])
+
+    resolved = [
+        Bucket(
+            bucket_at=slot,
+            solar_w=filled["solar_w"][i], buy_w=filled["buy_w"][i], sell_w=filled["sell_w"][i],
+            nichicon_pv_w=filled["nichicon_pv_w"][i], nichicon_battery_w=filled["nichicon_battery_w"][i],
+            nichicon_soc=filled["nichicon_soc"][i],
+            eco_ac_in_w=filled["eco_ac_in_w"][i], eco_ac_out_w=filled["eco_ac_out_w"][i],
+        )
+        for i, slot in enumerate(slots)
+    ]
+    return resolved, None, interpolated_total
+
+
+def day_is_usable(buckets: list[Bucket] | None, d: date) -> tuple[bool, str | None]:
+    """暦日dの5分プロファイルが（補間を含めて）usableかどうかを判定する。実際の
+    （補間済み）バケット列が必要な呼び出し元は resolve_day_buckets を直接使うこと
+    （ロジックの二重実装を避けるため、本関数はそちらに委譲する）。"""
+    resolved, reason_detail, _ = resolve_day_buckets(buckets, d)
+    return resolved is not None, reason_detail
 
 
 def _dt_hours(bucket_minutes: int) -> float:
@@ -614,14 +706,16 @@ def build_month_layers(
     days_in_period = [start + timedelta(days=i) for i in range(total_days)]
     missing_days: list[str] = []
     all_buckets: list[Bucket] = []
+    month_interpolated_buckets = 0
     for d in days_in_period:
         d_str = d.isoformat()
         day_buckets = profile_by_date.get(d_str)
-        usable, _ = day_is_usable(day_buckets, d)
-        if not usable:
+        resolved_buckets, _, n_interpolated = resolve_day_buckets(day_buckets, d)
+        if resolved_buckets is None:
             missing_days.append(d_str)
         else:
-            all_buckets.extend(day_buckets)
+            all_buckets.extend(resolved_buckets)
+            month_interpolated_buckets += n_interpolated
 
     coverage = 1.0 - (len(missing_days) / total_days) if total_days else 0.0
 
@@ -695,29 +789,32 @@ def build_month_layers(
         "boundary_storage_kwh": boundary_storage_kwh,
         "max_export_w": round(max_export_w, 1) if max_export_w is not None else None,
         "uncertainty": uncertainty,
+        "interpolated_buckets": month_interpolated_buckets,
     }
 
 
 def build_daily_load(profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
     """暦日ごとの復元負荷 kWh（bill_model.py の bill_l0_no_solar 用。時間帯粒度は含まない）。
-    day_is_usable が false の日（欠測バケットあり）は load_kwh=None にする（捏造しない）。"""
+    resolve_day_buckets が解決できない日（欠落が許容量を超える）は load_kwh=None にする
+    （捏造しない）。1日3バケットまでの欠落は線形補間して埋める（オーナー承認機能・2026-09-06）。"""
     days = []
     for d_str in sorted(profile_by_date):
         buckets = profile_by_date[d_str]
         d = date.fromisoformat(d_str)
-        usable, _ = day_is_usable(buckets, d)
-        if not usable:
+        resolved_buckets, _, _ = resolve_day_buckets(buckets, d)
+        if resolved_buckets is None:
             days.append({"date": d_str, "load_kwh": None})
             continue
-        load_wh = sum(b.load_true_w() * _dt_hours(BUCKET_MINUTES) for b in buckets)
+        load_wh = sum(b.load_true_w() * _dt_hours(BUCKET_MINUTES) for b in resolved_buckets)
         days.append({"date": d_str, "load_kwh": round(load_wh / 1000.0, 3)})
     return days
 
 
 def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
-    """usableな各日についてL0/L1/L2(推定)とL3(センサー実測)の日次buy/sell kWhと
-    円換算(per_kwh_only)を算出する（オーナー承認機能・2026-09-06: 請求期間が全日揃うまで
-    待たず、今ある分(08-28〜)を見せる）。暦日単位の集計のみで時間帯粒度は含まない。
+    """usableな各日（1日3バケットまでの欠落は resolve_day_buckets が線形補間して埋める。
+    オーナー承認機能・2026-09-06、DDR §0既知のノイズ対策）についてL0/L1/L2(推定)と
+    L3(センサー実測)の日次buy/sell kWhと円換算(per_kwh_only)を算出する（請求期間が全日
+    揃うまで待たず、今ある分(08-28〜)を見せる）。暦日単位の集計のみで時間帯粒度は含まない。
     層ごとに独立して available/unavailable を判定する（1層でも欠ければ他層も隠す、では
     「今ある分を見せたい」という目的に反するため）。
     """
@@ -725,16 +822,23 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
     if not profile_by_date:
         return []
 
-    usable_dates = sorted(
-        d for d in profile_by_date if day_is_usable(profile_by_date[d], date.fromisoformat(d))[0]
-    )
+    # 1日3バケットまでの欠落は線形補間して埋める（オーナー承認機能・2026-09-06）。
+    resolved_by_date: dict[str, list[Bucket]] = {}
+    interpolated_by_date: dict[str, int] = {}
+    for d_str, buckets in profile_by_date.items():
+        resolved, _, n_interp = resolve_day_buckets(buckets, date.fromisoformat(d_str))
+        if resolved is not None:
+            resolved_by_date[d_str] = resolved
+            interpolated_by_date[d_str] = n_interp
+
+    usable_dates = sorted(resolved_by_date)
     if not usable_dates:
         return []
 
     # L0/L1は状態を持たないため日ごとに独立計算する。
     l0_l1_by_date: dict[str, tuple[LayerTotals, LayerTotals]] = {}
     for d_str in usable_dates:
-        buckets = sorted(profile_by_date[d_str], key=lambda b: b.bucket_at)
+        buckets = sorted(resolved_by_date[d_str], key=lambda b: b.bucket_at)
         resampled = resample_buckets(buckets, BUCKET_MINUTES)
         l0_l1_by_date[d_str] = (simulate_l0(resampled), simulate_l1(resampled, pv_ac_efficiency=1.0))
 
@@ -749,7 +853,7 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
             continue
         ordered_buckets: list[Bucket] = []
         for d_str in period_dates:
-            ordered_buckets.extend(profile_by_date[d_str])
+            ordered_buckets.extend(resolved_by_date[d_str])
         ordered_buckets.sort(key=lambda b: b.bucket_at)
         initial_soc = ordered_buckets[0].nichicon_soc if ordered_buckets[0].nichicon_soc is not None else 0.0
         l2_by_date.update(simulate_l2_series(ordered_buckets, pv_ac_efficiency=1.0, initial_soc_pct=initial_soc))
@@ -794,6 +898,7 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
             "tariff_basis": "per_kwh_only",
             "tariff_provisional": provisional,
             "tariff_source_month": source_month,
+            "interpolated_buckets": interpolated_by_date.get(d_str, 0),
         })
     return days
 
@@ -843,11 +948,18 @@ def build_in_progress(
                 "measured", bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc))
             )
 
-    # --- L0/L1/L2: usableな日のみ範囲内で合算（連続シミュレーションはL2のみ） ---
-    period_profile_dates = sorted(
-        d for d in profile_by_date
-        if start.isoformat() <= d <= effective_end.isoformat() and day_is_usable(profile_by_date[d], date.fromisoformat(d))[0]
-    )
+    # --- L0/L1/L2: usableな日のみ範囲内で合算（連続シミュレーションはL2のみ）。
+    # 1日3バケットまでの欠落は線形補間して埋める（オーナー承認機能・2026-09-06）。---
+    resolved_period_profile: dict[str, list[Bucket]] = {}
+    period_interpolated_buckets = 0
+    for d_str in sorted(profile_by_date):
+        if not (start.isoformat() <= d_str <= effective_end.isoformat()):
+            continue
+        resolved, _, n_interp = resolve_day_buckets(profile_by_date[d_str], date.fromisoformat(d_str))
+        if resolved is not None:
+            resolved_period_profile[d_str] = resolved
+            period_interpolated_buckets += n_interp
+    period_profile_dates = sorted(resolved_period_profile)
     boundary_storage_kwh = None
     if not period_profile_dates:
         profile_reason = bill_model.reason(
@@ -860,7 +972,7 @@ def build_in_progress(
     else:
         ordered_buckets: list[Bucket] = []
         for d_str in period_profile_dates:
-            ordered_buckets.extend(profile_by_date[d_str])
+            ordered_buckets.extend(resolved_period_profile[d_str])
         ordered_buckets.sort(key=lambda b: b.bucket_at)
         resampled = resample_buckets(ordered_buckets, BUCKET_MINUTES)
         l0_totals = simulate_l0(resampled)
@@ -892,7 +1004,7 @@ def build_in_progress(
         d_str = d.isoformat()
         if (daily_by_date.get(d_str) or {}).get("buy_kwh") is not None:
             covered_dates.add(d_str)
-        if d_str in profile_by_date and day_is_usable(profile_by_date[d_str], d)[0]:
+        if d_str in resolved_period_profile:
             covered_dates.add(d_str)
     if not covered_dates:
         return None
@@ -907,6 +1019,7 @@ def build_in_progress(
         "boundary_storage_kwh": boundary_storage_kwh,
         "tariff_provisional": provisional,
         "tariff_source_month": source_month,
+        "interpolated_buckets": period_interpolated_buckets,
     }
 
 

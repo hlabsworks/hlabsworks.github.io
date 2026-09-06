@@ -462,7 +462,7 @@
 
   // QA #8: coverage / uncertainty / boundary_storage(SOC) / max_export_w / buy_source を
   // 脚注表として開示する（DDR §2.7「注記で開示」）。
-  function disclosureRowHtml(billingMonthLabel, coverageFraction, l2, l3, maxExportW, uncertainty) {
+  function disclosureRowHtml(billingMonthLabel, coverageFraction, l2, l3, maxExportW, uncertainty, interpolatedBuckets) {
     var socText = l2 && l2.available ? l2.soc_start_pct + "% → " + l2.soc_end_pct + "%" : "―";
     var uncertaintyText = uncertainty && uncertainty.L1
       ? yen(uncertainty.L1.net_cost_fit_yen_min) + "〜" + yen(uncertainty.L1.net_cost_fit_yen_max)
@@ -479,21 +479,26 @@
       "<td>" + (maxExportW !== null && maxExportW !== undefined ? Math.round(maxExportW) + " W" : "―") + "</td>" +
       "<td>" + uncertaintyText + "</td>" +
       "<td>" + buySourceText + "</td>" +
+      "<td>" + (interpolatedBuckets || 0) + "</td>" +
       "</tr>";
   }
 
-  // QA #8 + オーナー承認機能（2026-09-06）: in_progress（月途中集計）の行も追加する
-  // （coverage = days_covered / 期間日数）。
+  // QA #8 + オーナー承認機能（2026-09-06）: in_progress（月途中集計）の行と「補間バケット数」
+  // 列を追加する（coverage = days_covered / 期間日数。5分バケットの欠落は1日3個まで
+  // 線形補間して埋めている、DDR §0既知のノイズ対策）。
   function renderLayerDisclosureTable(layers) {
     var el = document.getElementById("metrics-layer-disclosure");
     if (!el) return;
     var monthRows = (layers && layers.months ? layers.months : []).map(function (m) {
-      return disclosureRowHtml(m.billing_month, m.coverage, m.layers.L2, m.layers.L3, m.max_export_w, m.uncertainty);
+      return disclosureRowHtml(
+        m.billing_month, m.coverage, m.layers.L2, m.layers.L3, m.max_export_w, m.uncertainty, m.interpolated_buckets
+      );
     });
     var ip = layers && layers.in_progress;
     if (ip) {
       monthRows.push(disclosureRowHtml(
-        ip.billing_month + "（途中）", ip.days_covered / ip.usage_period.days, ip.layers.L2, ip.layers.L3, null, null
+        ip.billing_month + "（途中）", ip.days_covered / ip.usage_period.days, ip.layers.L2, ip.layers.L3, null, null,
+        ip.interpolated_buckets
       ));
     }
     if (monthRows.length === 0) {
@@ -505,7 +510,7 @@
       "<thead><tr><th>請求月</th><th>5分プロファイル coverage</th>" +
       "<th>蓄電池SOC（期間開始→終了、注記のみ・金額補正なし）</th><th>最大逆潮流推定(L1/L2)</th>" +
       "<th>不確かさ帯（バケット5/15/30分×効率1.00/0.95、net_cost_fit_yen L1 / L2）</th>" +
-      "<th>L3買電・売電の出典</th></tr></thead>" +
+      "<th>L3買電・売電の出典</th><th>補間バケット数</th></tr></thead>" +
       "<tbody>" + monthRows.join("") + "</tbody>" +
       "</table>";
   }

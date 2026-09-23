@@ -7,8 +7,8 @@
  * 生成物）を読む。日次・月次の集計値のみを扱い、時間帯別の値やデバイス個体情報はそもそも
  * 埋め込まれていない。
  *
- * layers.json は4層（L0=太陽光・蓄電池なし/L1=太陽光のみ/L2=太陽光+蓄電池/L3=全部導入）の
- * 請求期間ベース比較（docs/design/20260905_layer-model-ddr.md、SolarChargeControllerリポジトリ）。
+ * layers.json は4層（L0=太陽光・蓄電池なし/L1=太陽光のみ/L2=太陽光+蓄電池のみ/
+ * L3=SolarChargeController導入）の請求期間ベース比較。詳細は /metrics/methodology/ 参照。
  * L0〜L2は推定、L3のみ実測。available:false の層は描画しない（捏造しない）。
  */
 (function () {
@@ -278,8 +278,8 @@
   var LAYER_NAMES = {
     L0: "L0 太陽光・蓄電池なし（推定）",
     L1: "L1 太陽光のみ（推定）",
-    L2: "L2 太陽光+蓄電池（推定）",
-    L3: "L3 全部導入（実測）",
+    L2: "L2 太陽光＋蓄電池のみ（推定）",
+    L3: "L3 SolarChargeController 導入（実測）",
   };
   var LAYER_COLORS = { L0: "#c9484f", L1: "#f4a92b", L2: "#3fa66b", L3: "#4d8fd6" };
   var layerChartMetric = "net_cost_fit_yen"; // "net_cost_fit_yen" | "net_cost_post_fit_yen"
@@ -352,6 +352,16 @@
     var deltaText = (l0 && l0.available && l3 && l3.available)
       ? yen(l0[layerChartMetric] - l3[layerChartMetric])
       : "―";
+    // オーナー決定2026-09-23: 主指標にL0→L3（導入前後の差）だけでなくL2→L3
+    // （SolarChargeController自体の導入効果）も併記する。
+    var l2l3Available = l2 && l2.available && l3 && l3.available;
+    var l2l3Delta = l2l3Available ? (l2[layerChartMetric] - l3[layerChartMetric]) : null;
+    var l2l3DeltaText = l2l3Available ? yen(l2l3Delta) : "―";
+    // オーナー決定2026-09-23: net_costがL3>L2（＝l2l3Deltaが負）のときだけ、曇天日の
+    // 充放電ロス・系統充電が実測に含まれる旨を1文で示す（数字は曲げない・補正しない）。
+    var cloudyNote = (l2l3Available && l2l3Delta < 0)
+      ? "<p class=\"metrics-notes\">日照が少ない月は、ポータブル電源の充放電ロスと曇天日の系統充電が実測に含まれるため、蓄電池のみの推定を上回ることがあります。</p>"
+      : "";
     // オーナー決定2026-09-20: usable日は連続でなくてよいため、「経過日数(days_elapsed)の
     // うちusable日数(days_covered)、除外N日」の形で明示する（非連続の日を「〜」で
     // 繋げると連続しているように誤読されるため）。
@@ -366,10 +376,12 @@
       "<ul>" +
       "<li>L0（太陽光・蓄電池なし、推定）: " + inProgressAmountText(l0) + "</li>" +
       "<li>L1（太陽光のみ、推定）: " + inProgressAmountText(l1) + "</li>" +
-      "<li>L2（＋蓄電池、推定）: " + inProgressAmountText(l2) + "</li>" +
-      "<li>L3（全部導入、実測）: " + inProgressAmountText(l3) + "</li>" +
-      "<li>節約額（L0→L3、ここまでの途中集計）: " + deltaText + "</li>" +
+      "<li>L2（太陽光＋蓄電池のみ、推定）: " + inProgressAmountText(l2) + "</li>" +
+      "<li>L3（SolarChargeController 導入、実測）: " + inProgressAmountText(l3) + "</li>" +
+      "<li>節約額（L0→L3、導入前後の差、ここまでの途中集計）: " + deltaText + "</li>" +
+      "<li>節約額（L2→L3、SolarChargeController 導入自体の効果、ここまでの途中集計）: " + l2l3DeltaText + "</li>" +
       "</ul>" +
+      cloudyNote +
       "</div>";
   }
 
@@ -495,6 +507,9 @@
       return;
     }
     var savingPerMonthYen = cumulative.saving_yen_fit / cumulative.months_included;
+    // オーナー決定2026-09-23: 主指標にL0→L3（導入前後の差）だけでなくL2→L3
+    // （SolarChargeController自体の導入効果）も併記する。
+    var savingL2L3Yen = cumulative.net_cost_fit_yen.L2 - cumulative.net_cost_fit_yen.L3;
     // オーナー決定2026-09-20: 累計にusable日90〜100%未満の「scaled」月が混じっている場合、
     // L0〜L2が日数比換算の推定値であることを開示する（L3は各月とも実測のまま）。
     var scaledNote = cumulative.includes_scaled_months
@@ -504,11 +519,13 @@
       : "";
     el.innerHTML =
       "<p>" +
-      "太陽光・蓄電池・ポータブル電源を導入したことで、直近" + cumulative.months_included + "請求月の合計で<strong>" +
+      "太陽光・蓄電池・SolarChargeControllerを導入したことで、直近" + cumulative.months_included + "請求月の合計で<strong>" +
       yen(cumulative.saving_yen_fit) + "</strong>節約できています" +
       "（太陽光・蓄電池が無かった場合の反実仮想 " + yen(cumulative.net_cost_fit_yen.L0) +
       " → 実際の請求(FIT実態) " + yen(cumulative.net_cost_fit_yen.L3) + "）。" +
       "1請求期間あたり平均 " + yen(savingPerMonthYen) + " のペースです。" +
+      "うち、SolarChargeController自体の導入効果（太陽光＋蓄電池のみからの差、L2→L3）は<strong>" +
+      yen(savingL2L3Yen) + "</strong>です。" +
       "</p>" + scaledNote;
   }
 
@@ -534,17 +551,21 @@
         "<td>" + yen(l2.net_cost_fit_yen) + "</td>" +
         "<td>" + yen(l3.net_cost_fit_yen) + "</td>" +
         "<td>" + yen(l0.net_cost_fit_yen - l3.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l2.net_cost_fit_yen - l3.net_cost_fit_yen) + "</td>" +
         "</tr>";
     }).join("");
     var c = cumulative.net_cost_fit_yen;
+    // オーナー決定2026-09-23: 主指標にL0→L3（導入前後の差）だけでなくL2→L3
+    // （SolarChargeController自体の導入効果）も併記する。
     el.innerHTML =
       "<table>" +
       "<thead><tr><th>請求月</th><th>L0（なし、推定）</th><th>L1（太陽光のみ、推定）</th>" +
-      "<th>L2（＋蓄電池、推定）</th><th>L3（全部導入、実測）</th><th>節約額(L0→L3)</th></tr></thead>" +
+      "<th>L2（太陽光＋蓄電池のみ、推定）</th><th>L3（SolarChargeController 導入、実測）</th>" +
+      "<th>節約額(L0→L3)</th><th>導入効果(L2→L3)</th></tr></thead>" +
       "<tbody>" + rows + "</tbody>" +
       "<tfoot><tr><th>累計（" + escapeHtml(cumulative.months_included) + "請求月）</th><th>" + yen(c.L0) +
       "</th><th>" + yen(c.L1) + "</th><th>" + yen(c.L2) + "</th><th>" + yen(c.L3) +
-      "</th><th>" + yen(cumulative.saving_yen_fit) + "</th></tr></tfoot>" +
+      "</th><th>" + yen(cumulative.saving_yen_fit) + "</th><th>" + yen(c.L2 - c.L3) + "</th></tr></tfoot>" +
       "</table>";
   }
 

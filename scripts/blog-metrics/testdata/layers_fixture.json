@@ -11,7 +11,7 @@
     "profile_rows_since": "2026-07-02",
     "profile_source": "synthetic_test_fixture",
     "month_usable_fraction_threshold": 0.9,
-    "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）"
+    "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）"
   },
   "months": [
     {
@@ -132,31 +132,6 @@
     }
   ],
   "excluded_months": [
-    {
-      "billing_month": "2026-07",
-      "layer_reasons": {
-        "L0": {
-          "reason_code": "profile_missing",
-          "reason_label": "5分プロファイル未取得",
-          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
-        },
-        "L1": {
-          "reason_code": "profile_missing",
-          "reason_label": "5分プロファイル未取得",
-          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
-        },
-        "L2": {
-          "reason_code": "profile_missing",
-          "reason_label": "5分プロファイル未取得",
-          "reason_detail": "5分プロファイル欠測 30/30日（2026-06-02〜2026-07-01）"
-        },
-        "L3": {
-          "reason_code": "daily_missing",
-          "reason_label": "計測データ欠測（30日）",
-          "reason_detail": "usage period 2026-06-02..2026-07-01 に daily.json 欠測 30/30 日"
-        }
-      }
-    },
     {
       "billing_month": "2026-09",
       "layer_reasons": {
@@ -1442,5 +1417,5 @@
   ],
   "in_progress": null,
   "_note": "5分プロファイルは本番Pi側の実測集計（synthetic_test_fixture）を使用しています。退避済みCSV（単純平均集計）由来の既知バイアス（+4.1%）は本データには含まれません。",
-  "generated_at": "2026-09-23 09:04:24"
+  "generated_at": "2026-09-23 10:07:37"
 }

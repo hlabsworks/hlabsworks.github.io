@@ -546,6 +546,53 @@ class BuildBillsTest(unittest.TestCase):
                 self.assertNotIn(internal_name, m["reason_label"])
 
 
+class BuildBillsPublishSinceTest(unittest.TestCase):
+    """オーナー決定2026-09-23: 全チャネルが揃う日付(publish_since)より前が請求期間開始の
+    請求月を months/excluded_months から除外する。"""
+
+    def _daily_row(self, d: str, buy=1.0, solar=10.0, sell=5.0) -> dict:
+        return {"date": d, "buy_kwh": buy, "solar_kwh": solar, "sell_kwh": sell}
+
+    def _full_two_months_daily(self) -> dict:
+        # 2026-08(2026-07-02〜2026-08-01)・2026-09(2026-08-02〜2026-09-01)を両方全日揃える。
+        from datetime import timedelta
+
+        tariff_start, _ = bill_model.billing_period("2026-08", meter_read_day=2)
+        _, tariff_end = bill_model.billing_period("2026-09", meter_read_day=2)
+        daily = {}
+        d = tariff_start
+        while d <= tariff_end:
+            daily[d.isoformat()] = self._daily_row(d.isoformat())
+            d += timedelta(days=1)
+        return daily
+
+    def test_month_starting_before_publish_since_is_excluded(self):
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213, "2026-09": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-07": 8.69, "2026-08": -3.50, "2026-09": -3.50},
+        )
+        daily = self._full_two_months_daily()
+        # 2026-09の請求期間開始日(2026-08-02)をpublish_sinceにすると、2026-08は期間開始が
+        # 前なので除外され、2026-09だけが残る。
+        result = bill_model.build_bills(tariff, daily, publish_since="2026-08-02")
+        billing_months = {m["billing_month"] for m in result["months"]}
+        excluded_months = {m["billing_month"] for m in result["excluded_months"]}
+        self.assertNotIn("2026-08", billing_months | excluded_months)
+        self.assertIn("2026-09", billing_months)
+
+    def test_none_publish_since_keeps_all_months(self):
+        # 回帰防止: publish_since省略時は従来どおりフィルタなし。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213, "2026-09": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-07": 8.69, "2026-08": -3.50, "2026-09": -3.50},
+        )
+        daily = self._full_two_months_daily()
+        result = bill_model.build_bills(tariff, daily)
+        billing_months = {m["billing_month"] for m in result["months"]}
+        self.assertIn("2026-08", billing_months)
+        self.assertIn("2026-09", billing_months)
+
+
 class LoadOfficialSellTest(unittest.TestCase):
     def test_missing_file_returns_empty_dict(self):
         result = bill_model.load_official_sell(Path("/nonexistent/official_sell.json"))

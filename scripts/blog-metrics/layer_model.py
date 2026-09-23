@@ -1230,7 +1230,15 @@ def build_layers(
     profile_by_date: dict[str, list[Bucket]],
     today: date | None = None,
     profile_source: str = DEFAULT_PROFILE_SOURCE_LABEL,
+    publish_since: str | None = None,
 ) -> dict:
+    """publish_since: 'YYYY-MM-DD'。指定した場合、請求期間の開始日がこれより前の請求月は
+    months/excluded_months/in_progress から除外し、daily は date>=publish_since の行のみに
+    絞る（オーナー決定2026-09-23: 全チャネルが揃う前の断片的な過去データを公開しない。
+    値そのものは変えず、公開する範囲だけを狭める「出力フィルタ」であり、L2のSOC連続性等の
+    内部計算は従来どおりフィルタ前の全履歴を使う）。省略時（None）は自動算出した
+    params.profile_since を使う（layer_model.py は本関数内で5分プロファイルの完全性から
+    profile_since を求められる唯一のスクリプトのため、これが既定の「公開開始日」になる）。"""
     candidate_months: set[str] = set()
     if daily_by_date:
         dates = sorted(date.fromisoformat(d) for d in daily_by_date)
@@ -1239,9 +1247,31 @@ def build_layers(
         pdates = sorted(date.fromisoformat(d) for d in profile_by_date)
         candidate_months.update(bill_model.list_candidate_billing_months(pdates[0], pdates[-1]))
 
+    meter_read_day = tariff["meter_read_day"]
+
+    # QA再レビュー(3回目) #2: params.profile_since は入力プロファイルの「最古行」（NULL列を
+    # 含みうる、まだデータ整備中の日を含む）ではなく、全チャネルがusable判定された最初の日に
+    # する（読者向け「今そろっているデータ（○○〜）」表記が実態と乖離しないよう）。
+    # 最古行そのものは参考情報として profile_rows_since に別出しする。
+    profile_rows_since = min(profile_by_date) if profile_by_date else None
+    profile_since = None
+    for d_str in sorted(profile_by_date):
+        resolution = resolve_day_buckets(profile_by_date[d_str], date.fromisoformat(d_str))
+        if resolution.buckets is not None:
+            profile_since = d_str
+            break
+
+    # オーナー決定2026-09-23: publish_since省略時は自動算出したprofile_sinceを「公開開始日」
+    # として採用する（全チャネルが揃う前の断片的な過去データを公開しない）。
+    effective_publish_since = publish_since if publish_since is not None else profile_since
+
     months = []
     excluded = []
     for billing_month in sorted(candidate_months):
+        if effective_publish_since is not None:
+            period_start, _period_end = bill_model.billing_period(billing_month, meter_read_day)
+            if period_start.isoformat() < effective_publish_since:
+                continue
         record = build_month_layers(
             tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date
         )
@@ -1258,20 +1288,19 @@ def build_layers(
 
     cumulative = _build_cumulative(months)
 
-    # QA再レビュー(3回目) #2: params.profile_since は入力プロファイルの「最古行」（NULL列を
-    # 含みうる、まだデータ整備中の日を含む）ではなく、全チャネルがusable判定された最初の日に
-    # する（読者向け「今そろっているデータ（○○〜）」表記が実態と乖離しないよう）。
-    # 最古行そのものは参考情報として profile_rows_since に別出しする。
-    profile_rows_since = min(profile_by_date) if profile_by_date else None
-    profile_since = None
-    for d_str in sorted(profile_by_date):
-        resolution = resolve_day_buckets(profile_by_date[d_str], date.fromisoformat(d_str))
-        if resolution.buckets is not None:
-            profile_since = d_str
-            break
-
     daily_layers = build_daily_layers(tariff, daily_by_date, profile_by_date)
+    if effective_publish_since is not None:
+        daily_layers = [d for d in daily_layers if d["date"] >= effective_publish_since]
+
     in_progress = build_in_progress(tariff, daily_by_date, profile_by_date, today or date.today())
+    if (
+        in_progress is not None
+        and effective_publish_since is not None
+        and in_progress["usage_period"]["start"] < effective_publish_since
+    ):
+        # 請求期間の開始が公開開始日より前の場合のみ隠す（実運用では publish_since は過去の
+        # 固定値のため、進行中の請求期間がここに該当することは通常ない。将来の防御的措置）。
+        in_progress = None
 
     return {
         "params": {
@@ -1286,7 +1315,7 @@ def build_layers(
             "profile_rows_since": profile_rows_since,
             "profile_source": profile_source,
             "month_usable_fraction_threshold": MONTH_USABLE_FRACTION_THRESHOLD,
-            "_source": "docs/design/20260905_layer-model-ddr.md §2.4（蓄電池パラメータ出典・実測較正済み）",
+            "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）",
         },
         "months": months,
         "excluded_months": excluded,
@@ -1304,9 +1333,9 @@ def _profile_source_note(profile_source: str) -> str:
     出し続けると読者に誤った印象を与えるため、出典を明記した文言に切り替える。"""
     if "archive_csv" in profile_source:
         return (
-            "5分プロファイルは退避済みCSV（energy-archive/solarchgctl/profile_5min/、単純平均集計）を"
+            "5分プロファイルは退避済みCSV（単純平均集計）を"
             "暫定的に使用しており、power_history由来チャンネル(solar_w/sell_w)に約+4.1%の既知バイアスが"
-            "ある（docs/design/20260905_layer-model-ddr.md §5-C参照）。Pi側 EnergyProfile5MinAggregator"
+            "ある。Pi側 EnergyProfile5MinAggregator"
             "（dt加重、V1.00.059実装済み）の本番投入・データ蓄積後にこの入力を置き換え、再検証する。"
         )
     return (
@@ -1379,6 +1408,12 @@ def main() -> None:
         "--profile-source", type=str, default=DEFAULT_PROFILE_SOURCE_LABEL,
         help="params.profile_source に出力する説明文字列（Pi側 energy_profile_5min 投入後は明示的に変更する）",
     )
+    parser.add_argument(
+        "--publish-since", type=str, default=None,
+        help="この日付('YYYY-MM-DD')より前が請求期間開始の請求月・この日付より前のdaily行を"
+        "months/excluded_months/daily/in_progressから除外する（省略時は自動算出した"
+        "params.profile_since を使う）",
+    )
     args = parser.parse_args()
 
     tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
@@ -1396,7 +1431,7 @@ def main() -> None:
 
     result = build_layers(
         tariff, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
-        today=today, profile_source=args.profile_source,
+        today=today, profile_source=args.profile_source, publish_since=args.publish_since,
     )
     result["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

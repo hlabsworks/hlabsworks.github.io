@@ -122,6 +122,7 @@ def main() -> None:
         "ecoflow_data_since": START.isoformat(),
         "nichicon_data_since": START.isoformat(),
         "power_history_since": START.isoformat(),
+        "publish_since": START.isoformat(),
     }
 
     (TESTDATA_DIR / "layers_fixture.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

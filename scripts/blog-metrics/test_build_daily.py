@@ -314,7 +314,10 @@ class BuildMetaTest(unittest.TestCase):
         self.assertAlmostEqual(meta["buy_price_yen_per_kwh"], 27.68, places=2)
         self.assertEqual(meta["sell_price_yen_per_kwh"], 16.0)
         self.assertEqual(meta["buy_sell_price_effective_month"], "2026-08")
-        self.assertIn("tariff.json", meta["buy_sell_price_source"])
+        self.assertIn("契約中の新電力プラン", meta["buy_sell_price_source"])
+        # 読者向け文言に社内ファイル名を出さない（オーナー決定2026-09-23）
+        self.assertNotIn("tariff.json", meta["buy_sell_price_source"])
+        self.assertIsNone(meta["publish_since"])
         # generated_at は 'YYYY-MM-DD HH:MM:SS' 形式で書けること（フォーマット崩れの検知）
         self.assertRegex(meta["generated_at"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
@@ -330,6 +333,45 @@ class EmptyInputTest(unittest.TestCase):
         daily_rows = build_daily.build_daily_rows([], tariff=make_tariff())
         self.assertEqual(daily_rows, [])
         self.assertEqual(build_daily.build_monthly_rows(daily_rows), [])
+
+
+class PublishSinceFilterTest(unittest.TestCase):
+    """オーナー決定2026-09-23: 全チャネルが揃う日付(publish_since)より前の断片的な日次・月次は
+    公開JSONに含めない。build_daily.py はmain()の--publish-sinceでdaily_rowsを絞り込む
+    （build_daily_rows自体は変えず、mainで呼ぶフィルタをここでは同じロジックで検証する）。"""
+
+    def _filtered_rows(self, records, publish_since):
+        rows = build_daily.build_daily_rows(records, tariff=make_tariff())
+        if publish_since:
+            rows = [r for r in rows if r["date"] >= publish_since]
+        return rows
+
+    def test_rows_before_publish_since_are_excluded(self):
+        records = [
+            make_daily_record("2026-08-27", solar=1.0, buy=0.0, sell=0.0),
+            make_daily_record("2026-08-28", solar=1.0, buy=0.0, sell=0.0),
+            make_daily_record("2026-08-29", solar=1.0, buy=0.0, sell=0.0),
+        ]
+        rows = self._filtered_rows(records, "2026-08-29")
+        self.assertEqual([r["date"] for r in rows], ["2026-08-29"])
+
+    def test_none_publish_since_keeps_all_rows(self):
+        records = [
+            make_daily_record("2026-08-27", solar=1.0, buy=0.0, sell=0.0),
+            make_daily_record("2026-08-29", solar=1.0, buy=0.0, sell=0.0),
+        ]
+        rows = self._filtered_rows(records, None)
+        self.assertEqual([r["date"] for r in rows], ["2026-08-27", "2026-08-29"])
+
+    def test_all_rows_before_publish_since_yields_empty_list(self):
+        # 失敗系: publish_sinceがすべての行より後の場合、クラッシュせず空配列になる。
+        records = [make_daily_record("2026-08-05", solar=1.0, buy=0.0, sell=0.0)]
+        rows = self._filtered_rows(records, "2099-01-01")
+        self.assertEqual(rows, [])
+
+    def test_meta_records_publish_since_value(self):
+        meta = build_daily.build_meta({}, make_tariff(), today=date(2026, 9, 23), publish_since="2026-08-29")
+        self.assertEqual(meta["publish_since"], "2026-08-29")
 
 
 if __name__ == "__main__":

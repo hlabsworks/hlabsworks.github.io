@@ -832,6 +832,77 @@ class BuildLayersTest(unittest.TestCase):
         self.assertNotIn("約+4.1%の既知バイアスがある", pi_result["_note"])
         self.assertIn(pi_source, pi_result["_note"])
 
+    def test_note_and_source_do_not_leak_private_repo_paths(self):
+        # オーナー決定2026-09-23: 公開JSONの_note/params._sourceに非公開repo(SolarChargeController
+        # / energy-archive)のパスを含めない（読者向けQAレビュー・list.htmlの同種修正と対）。
+        tariff = make_tariff()
+        result = lm.build_layers(tariff, {}, {}, {}, {}, profile_source=lm.DEFAULT_PROFILE_SOURCE_LABEL)
+        self.assertNotIn("docs/design", result["_note"])
+        self.assertNotIn("docs/design", result["params"]["_source"])
+        self.assertNotIn("energy-archive", result["_note"])
+
+
+class BuildLayersPublishSinceTest(unittest.TestCase):
+    """オーナー決定2026-09-23: 全チャネルが揃う日付(publish_since)より前の請求月・daily行を
+    公開JSON(months/excluded_months/daily/in_progress)から除外する。"""
+
+    def _two_month_setup(self):
+        # 2026-08(2026-07-02〜2026-08-01)と2026-09(2026-08-02〜2026-09-01)の2請求月分、
+        # daily/profileともに全日usableにする。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213, "2026-09": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50, "2026-09": -3.50},
+        )
+        daily = {}
+        daily.update(_full_month_daily("2026-08"))
+        daily.update(_full_month_daily("2026-09"))
+        profile_by_date = {}
+        d = date(2026, 7, 2)
+        end = date(2026, 9, 1)
+        while d <= end:
+            profile_by_date[d.isoformat()] = build_synthetic_golden_day_buckets(day=d.isoformat())
+            d += timedelta(days=1)
+        return tariff, daily, profile_by_date
+
+    def test_explicit_publish_since_drops_months_starting_before_cutoff(self):
+        tariff, daily, profile_by_date = self._two_month_setup()
+        # 2026-09の請求期間開始日(2026-08-02)以降をpublish_sinceにすると、2026-08は
+        # 期間開始が前なので除外され、2026-09だけが残る。
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, publish_since="2026-08-02")
+        billing_months = {m["billing_month"] for m in result["months"]}
+        excluded_months = {m["billing_month"] for m in result["excluded_months"]}
+        self.assertNotIn("2026-08", billing_months | excluded_months)
+        self.assertIn("2026-09", billing_months)
+
+    def test_publish_since_filters_daily_array(self):
+        tariff, daily, profile_by_date = self._two_month_setup()
+        # publish_sinceなしなら2026-08-02より前(2026-07台)の日次行が含まれることを確認してから、
+        # publish_since指定でそれらが落ちることを確認する。
+        unfiltered = lm.build_layers(tariff, daily, {}, {}, profile_by_date)
+        self.assertTrue(any(d["date"] < "2026-08-02" for d in unfiltered["daily"]))
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, publish_since="2026-08-02")
+        self.assertTrue(all(d["date"] >= "2026-08-02" for d in result["daily"]))
+
+    def test_publish_since_none_defaults_to_computed_profile_since(self):
+        # publish_sinceを省略すると、自動算出したparams.profile_sinceが公開開始日になる
+        # （このsetupは全日usableなので profile_since は最初の日 2026-07-02）。
+        tariff, daily, profile_by_date = self._two_month_setup()
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date)
+        self.assertEqual(result["params"]["profile_since"], "2026-07-02")
+        billing_months = {m["billing_month"] for m in result["months"]}
+        excluded_months = {m["billing_month"] for m in result["excluded_months"]}
+        # profile_since(2026-07-02)は2026-08の期間開始日と同じなので除外されない。
+        self.assertTrue({"2026-08", "2026-09"} <= (billing_months | excluded_months))
+
+    def test_in_progress_hidden_when_period_starts_before_publish_since(self):
+        tariff, daily, profile_by_date = self._two_month_setup()
+        # todayを2026-08-15にすると in_progress は billing_month 2026-09(開始2026-08-02)。
+        # publish_sinceをそれより後(2026-08-10)にすると in_progress は隠れる。
+        result = lm.build_layers(
+            tariff, daily, {}, {}, profile_by_date, today=date(2026, 8, 15), publish_since="2026-08-10",
+        )
+        self.assertIsNone(result["in_progress"])
+
 
 class BuildCumulativeTest(unittest.TestCase):
     """QA missing-test#8: 累計は「全4層available」の月のみを対象にする。"""

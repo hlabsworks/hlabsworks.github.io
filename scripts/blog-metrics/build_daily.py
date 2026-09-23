@@ -17,11 +17,16 @@ power_history 等への直接 SQL 集計を置き換える。日次のkWh積分�
     保存したファイル。キー: power_history_since, nichicon_data_since, ecoflow_data_since
   - --tariff PATH        tariff.json（電気料金の単価）
   - --today YYYY-MM-DD   meta.json の「現在の単価」表示に使う基準日（省略時は実行日。テスト用）
+  - --publish-since YYYY-MM-DD  この日付以降の行のみ daily.json/monthly.json に含める
+    （オーナー決定2026-09-23: 全チャネルが揃う日付より前の断片的な日次・月次は公開しない。
+    省略時（None）はフィルタなし・全履歴をそのまま出力する。aggregate.sh は
+    layer_model.py が自動算出した params.profile_since をこの値として渡す運用にする
+    （build_daily.py 自身は5分プロファイルを扱わないため profile_since を自己算出できない）。
 
 出力:
   - <out-dir>/daily.json
   - <out-dir>/monthly.json（daily.json を暦月で合算したもの）
-  - <out-dir>/meta.json
+  - <out-dir>/meta.json（publish_since を含む。--publish-since 省略時は null）
 
 設計方針:
   - 標準ライブラリ + bill_model.py（同ディレクトリ、layer_model.py とも共用）のみを使用する。
@@ -77,8 +82,8 @@ MONTHLY_SUM_KEYS = (
 )
 
 BUY_SELL_PRICE_SOURCE = (
-    "tariff.json（契約中の新電力の従量単価プラン、従量第1段階+燃料費調整+再エネ賦課金の簡易合算。"
-    "容量拠出金は未含・厳密な請求額再現は bills.json を参照。日ごとにその日が属する請求月の"
+    "契約中の新電力プランの単価表（従量第1段階+燃料費調整+再エネ賦課金の簡易合算。"
+    "容量拠出金は未含・厳密な請求額再現は下部の請求額再現表を参照。日ごとにその日が属する請求月の"
     "単価を適用する）"
 )
 
@@ -175,9 +180,13 @@ def build_monthly_rows(daily_rows: list[dict]) -> list[dict]:
     return monthly_rows
 
 
-def build_meta(meta_export: dict, tariff: dict, today: date | None = None) -> dict:
+def build_meta(meta_export: dict, tariff: dict, today: date | None = None, publish_since: str | None = None) -> dict:
     """meta.json を作る。単価表示は today（省略時は実行日）が属する請求月のものを使う
-    （ダッシュボードの「現在の単価」注記用。各日の saving_yen の単価とは独立した値）。"""
+    （ダッシュボードの「現在の単価」注記用。各日の saving_yen の単価とは独立した値）。
+
+    publish_since: --publish-since でdaily.json/monthly.jsonに適用したフィルタの下限日
+    （省略時null）をそのまま記録する。読者が「表示されている集計値はどの日以降か」を
+    確認できるようにするため（オーナー決定2026-09-23）。"""
     if today is None:
         today = date.today()
     meter_read_day = tariff["meter_read_day"]
@@ -194,6 +203,7 @@ def build_meta(meta_export: dict, tariff: dict, today: date | None = None) -> di
         "ecoflow_data_since": meta_export.get("ecoflow_data_since"),
         "nichicon_data_since": meta_export.get("nichicon_data_since"),
         "power_history_since": meta_export.get("power_history_since"),
+        "publish_since": publish_since,
     }
 
 
@@ -204,6 +214,10 @@ def main() -> None:
     parser.add_argument("--tariff", type=Path, default=DEFAULT_TARIFF_PATH, help="tariff.json のパス")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="daily.json/monthly.json/meta.json の出力先ディレクトリ")
     parser.add_argument("--today", type=str, default=None, help="meta.json の単価表示の基準日('YYYY-MM-DD'、省略時は実行日）。テスト用。")
+    parser.add_argument(
+        "--publish-since", type=str, default=None,
+        help="この日付('YYYY-MM-DD')以降の行のみ daily.json/monthly.json に含める（省略時はフィルタなし）",
+    )
     args = parser.parse_args()
 
     daily_export = json.loads(args.daily_export.read_text(encoding="utf-8"))
@@ -212,8 +226,10 @@ def main() -> None:
     today = date.fromisoformat(args.today) if args.today else None
 
     daily_rows = build_daily_rows(daily_export, tariff)
+    if args.publish_since:
+        daily_rows = [r for r in daily_rows if r["date"] >= args.publish_since]
     monthly_rows = build_monthly_rows(daily_rows)
-    meta = build_meta(meta_export, tariff, today=today)
+    meta = build_meta(meta_export, tariff, today=today, publish_since=args.publish_since)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "daily.json").write_text(json.dumps(daily_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

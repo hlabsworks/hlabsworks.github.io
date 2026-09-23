@@ -73,6 +73,7 @@ META_KEYS = {
     "generated_at", "buy_price_yen_per_kwh", "sell_price_yen_per_kwh",
     "buy_sell_price_effective_month", "buy_sell_price_source",
     "ecoflow_data_since", "nichicon_data_since", "power_history_since",
+    "publish_since",
 }
 BILLS_KEYS = {
     "_note", "area", "basic_fee_yen", "bill_actual", "bill_l0_no_solar",
@@ -121,6 +122,7 @@ DATE_VALUE_KEYS = {
     "date", "start", "end", "period_end_actual",
     "profile_since", "profile_rows_since",
     "power_history_since", "nichicon_data_since", "ecoflow_data_since",
+    "publish_since",
 }
 MONTH_VALUE_KEYS = {"month", "billing_month", "buy_sell_price_effective_month", "tariff_source_month"}
 
@@ -323,9 +325,15 @@ def gate7_no_time_of_day(data: object, relpath: str) -> None:
     walk_keys(data)
 
 
-def gate8_date_health(daily: list[dict], incoming: Path) -> None:
+def gate8_date_health(daily: list[dict], incoming: Path, allow_history_change: bool = False) -> None:
     """G8: daily.date が昇順・重複なし・未来日なし（JST）。前コミットより最終日が
-    過去／行数が減少していないこと（前コミットが無ければスキップ）。"""
+    過去／行数が減少していないこと（前コミットが無ければスキップ）。
+
+    行数減少チェックのみ --allow-history-change でスキップできる（最終日の後退は
+    allow_history_change の有無に関わらず常に拒否する。過去日の切り捨てだけを許可する
+    運用のため）。オーナー決定2026-09-23: publish_since 導入で公開範囲の下限日を初めて
+    設定する回だけ daily.json の行数が意図的に減る。以後は publish_since が動かないため
+    再発しない一度限りの移行措置。"""
     dates = [row["date"] for row in daily]
     if dates != sorted(dates):
         raise ValidationFailure("G8", "data/metrics/daily.json: date が昇順ではありません")
@@ -345,7 +353,7 @@ def gate8_date_health(daily: list[dict], incoming: Path) -> None:
     prev_last_date = prev_daily[-1]["date"]
     if dates and dates[-1] < prev_last_date:
         raise ValidationFailure("G8", f"data/metrics/daily.json: 最終日が前コミットより過去に後退しています ({dates[-1]} < {prev_last_date})")
-    if len(dates) < len(prev_daily):
+    if not allow_history_change and len(dates) < len(prev_daily):
         raise ValidationFailure("G8", f"data/metrics/daily.json: 行数が前コミットより減少しています ({len(dates)} < {len(prev_daily)})")
 
 
@@ -566,7 +574,7 @@ def validate(
     monthly = parsed["data/metrics/monthly.json"]
     meta = parsed["data/metrics/meta.json"]
 
-    gate8_date_health(daily, incoming)
+    gate8_date_health(daily, incoming, allow_history_change)
     gate9_history_immutability(daily, incoming, allow_history_change)
     gate10_physical_range(daily, monthly)
     gate11_anomaly(daily, monthly, incoming)

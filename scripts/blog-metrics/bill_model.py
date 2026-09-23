@@ -584,14 +584,24 @@ def build_bills(
     official_sell_by_month: dict | None = None,
     official_buy_by_month: dict | None = None,
     daily_load_by_date: dict | None = None,
+    publish_since: str | None = None,
 ) -> dict:
+    """publish_since: 'YYYY-MM-DD'。指定した場合、請求期間の開始日がこれより前の請求月は
+    months/excluded_months から除外する（オーナー決定2026-09-23: 全チャネルが揃う前の
+    断片的な過去データを公開しない。値そのものは変えず、公開する範囲だけを狭める）。
+    省略時（None）はフィルタなし。"""
     dates = sorted(date.fromisoformat(d) for d in daily_by_date)
     if not dates:
         return {"months": [], "excluded_months": [], "_note": BILLS_ROUNDING_NOTE}
 
+    meter_read_day = tariff["meter_read_day"]
     months = []
     excluded = []
     for billing_month in list_candidate_billing_months(dates[0], dates[-1]):
+        if publish_since is not None:
+            period_start, _period_end = billing_period(billing_month, meter_read_day)
+            if period_start.isoformat() < publish_since:
+                continue
         record = build_month_record(
             tariff, daily_by_date, billing_month, official_sell_by_month, official_buy_by_month, daily_load_by_date
         )
@@ -624,6 +634,11 @@ def main() -> None:
         help="layer_model.py の生成物(daily_load.json)のパス（無ければ bill_l0_no_solar は全月 null）",
     )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_PATH, help="出力先 bills.json のパス")
+    parser.add_argument(
+        "--publish-since", type=str, default=None,
+        help="この日付('YYYY-MM-DD')より前が請求期間開始の請求月を months/excluded_months から"
+        "除外する（省略時はフィルタなし）",
+    )
     args = parser.parse_args()
 
     tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
@@ -632,7 +647,10 @@ def main() -> None:
     official_buy_by_month = load_official_buy(args.official_buy)
     daily_load_by_date = load_daily_load(args.daily_load)
 
-    result = build_bills(tariff, daily_by_date, official_sell_by_month, official_buy_by_month, daily_load_by_date)
+    result = build_bills(
+        tariff, daily_by_date, official_sell_by_month, official_buy_by_month, daily_load_by_date,
+        publish_since=args.publish_since,
+    )
     result["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     result["tariff_source"] = {
         "retailer": tariff["retailer"],

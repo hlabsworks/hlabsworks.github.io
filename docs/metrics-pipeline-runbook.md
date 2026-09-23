@@ -224,3 +224,9 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
 これにより次回の `run-daily.sh` 実行では、それまで暫定単価を使っていた過去日の値が
 確定値に変わっても `validate_metrics.py` の G9(履歴不変性)に拒否されず1回だけ通過する
 （フラグは使用後に自動的に消費・削除される）。
+
+`publish_since`（公開範囲フィルタ、オーナー決定2026-09-23）を初めて導入してデプロイする回だけは、
+`daily.json` の行数が意図的に減るため G8(行数減少禁止)にも拒否される。`${STATE_DIR}/allow-history-once`
+フラグ（上記と同じ仕組み。`sudo -u <homelabの実行ユーザー名> touch /var/lib/blog-metrics/allow-history-once`）
+を該当デプロイの直前に1回だけ手動で置き、`--allow-history-change` を1回だけ適用すること
+（以後は `publish_since` が動かないため再発しない一度限りの移行措置）。

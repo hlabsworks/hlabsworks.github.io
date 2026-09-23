@@ -509,6 +509,26 @@ class Gate8Test(unittest.TestCase):
                 validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
             self.assertEqual(ctx.exception.gate, "G8")
 
+    def test_row_count_decrease_against_previous_commit_is_rejected(self):
+        # 最終日は維持したまま先頭の行だけ減らす（publish_since導入初回の移行と同型: 末尾は
+        # 後退しないが行数は減る）。
+        old_daily = make_daily_fixture()
+        new_daily = old_daily[1:]  # 先頭日を1件落とす。最終日は同じ。
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_commits(Path(tmp), old_daily=old_daily, new_daily=new_daily)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G8")
+
+    def test_row_count_decrease_is_allowed_with_history_change_flag(self):
+        # オーナー決定2026-09-23: publish_since導入の初回移行など、意図的な行数減少は
+        # --allow-history-change（G9と同じフラグ）で1回だけ許可する。
+        old_daily = make_daily_fixture()
+        new_daily = old_daily[1:]
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_commits(Path(tmp), old_daily=old_daily, new_daily=new_daily)
+            validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=True)
+
 
 class Gate9Test(unittest.TestCase):
     def test_changed_historic_value_is_rejected_without_flag(self):

@@ -84,6 +84,7 @@ STUBEOF
   cp "$BLOG_METRICS_SRC/validate_metrics.py" "$BUNDLE/validate_metrics.py"
   cp "$BLOG_METRICS_SRC/layer_model.py" "$BUNDLE/layer_model.py"
   cp "$BLOG_METRICS_SRC/bill_model.py" "$BUNDLE/bill_model.py"
+  cp "$BLOG_METRICS_SRC/delta_model.py" "$BUNDLE/delta_model.py"
   cp "$BLOG_METRICS_SRC/tariff.json" "$BUNDLE/inputs/tariff.json"
   cp "$REPO_ROOT/data/metrics/official_buy.json" "$BUNDLE/inputs/official_buy.json"
   cp "$REPO_ROOT/data/metrics/official_sell.json" "$BUNDLE/inputs/official_sell.json"

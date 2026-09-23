@@ -122,9 +122,21 @@ fetch_profile_csv() {
 
 DAILY_EXPORT_FILE="${TMP_DIR}/daily_export.json"
 META_EXPORT_FILE="${TMP_DIR}/meta_export.json"
+ECOFLOW_DAILY_FILE="${TMP_DIR}/ecoflow_daily.json"
 
 run_export daily > "${DAILY_EXPORT_FILE}"
 run_export meta > "${META_EXPORT_FILE}"
+
+# --- ecoflow_daily（L1S = 太陽光＋SolarChargeController試算の合わせ直し用SOC。DDR §4.2）。
+# L1Sは追加機能なので、Pi側のmetrics-export.shがまだecoflow_dailyに対応していない（古い版）
+# 場合でも既存4層を壊さないよう、失敗してもスクリプト全体は止めない
+# （L1Sはlayer_model.py側でecoflow_soc_missingとしてunavailableになるだけ）。
+if run_export ecoflow_daily > "${ECOFLOW_DAILY_FILE}" 2>"${TMP_DIR}/ecoflow_daily.err"; then
+    echo "aggregate.sh: ecoflow_daily 取得 OK"
+else
+    echo "aggregate.sh: 警告: ecoflow_daily の取得に失敗しました（Pi側 metrics-export.sh が未対応の可能性）。L1Sはecoflow_soc_missingになります: $(cat "${TMP_DIR}/ecoflow_daily.err" 2>/dev/null)" >&2
+    : > "${ECOFLOW_DAILY_FILE}"
+fi
 
 if [[ ! -s "${DAILY_EXPORT_FILE}" || ! -s "${META_EXPORT_FILE}" ]]; then
     echo "aggregate.sh: metrics-export.sh の daily/meta 出力が空です。接続・--export-cmd・--ssh-host/--local を確認してください。" >&2
@@ -190,7 +202,8 @@ printf '%s\n' "${PROFILE_CSV}" | python3 "${SCRIPT_DIR}/layer_model.py" \
     --official-buy "${OUT_DIR}/official_buy.json" \
     --out "${OUT_DIR}/layers.json" \
     --daily-load-out "${CACHE_DIR}/daily_load.json" \
-    --profile-source "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）"
+    --profile-source "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）" \
+    --ecoflow-daily "${ECOFLOW_DAILY_FILE}"
 
 # --- publish_since の解決（オーナー決定2026-09-23: 全チャネルが揃う日付より前の断片的な
 # データを公開しない）。layer_model.py が自動算出しlayers.jsonに書いたparams.profile_sinceを

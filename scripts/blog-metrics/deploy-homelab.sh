@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # deploy-homelab.sh — Mac からblog-metricsの実行スクリプト一式（aggregate.sh/build_daily.py/
-# validate_metrics.py/layer_model.py/bill_model.py/run-daily.sh + tariff.json/official_*.json
-# + systemd unit）を homelab の /opt/blog-metrics/ へ rsync するだけの配備スクリプト。
+# validate_metrics.py/layer_model.py/bill_model.py/delta_model.py/run-daily.sh +
+# tariff.json/official_*.json + systemd unit）を homelab の /opt/blog-metrics/ へ rsync するだけの
+# 配備スクリプト。
 #
 # 本スクリプト自身は blog-metrics.timer の有効化・起動は行わない（オーナーが判断の上、
 # 案内されたコマンドを手動実行する）。本スクリプト自体もこのタスクでは実行しない
@@ -83,6 +84,7 @@ cp "${SCRIPT_DIR}/build_daily.py" "${BUNDLE}/build_daily.py"
 cp "${SCRIPT_DIR}/validate_metrics.py" "${BUNDLE}/validate_metrics.py"
 cp "${SCRIPT_DIR}/layer_model.py" "${BUNDLE}/layer_model.py"
 cp "${SCRIPT_DIR}/bill_model.py" "${BUNDLE}/bill_model.py"
+cp "${SCRIPT_DIR}/delta_model.py" "${BUNDLE}/delta_model.py"
 cp "${SCRIPT_DIR}/run-daily.sh" "${BUNDLE}/run-daily.sh"
 NEW_TARIFF="${BUNDLE}/inputs/tariff.json"
 cp "${SCRIPT_DIR}/tariff.json" "${NEW_TARIFF}"

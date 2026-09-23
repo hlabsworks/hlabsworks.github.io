@@ -67,7 +67,7 @@
     <h2>月次の節約額試算（簡易・暦月集計）</h2>
     <canvas id="chart-monthly-saving" height="140"></canvas>
 
-    <h2>日次推移（{{ with site.Data.metrics.meta }}{{ .power_history_since }}{{ end }} 〜）</h2>
+    <h2>日次推移（{{ with site.Data.metrics.meta }}{{ .publish_since }}{{ end }} 〜）</h2>
     <canvas id="chart-daily-energy" height="140"></canvas>
 
     <h2>請求実績単価による請求額再現（請求期間ベース）</h2>
@@ -83,8 +83,7 @@
 
     {{- with site.Data.metrics.meta }}
     <p class="metrics-notes">
-      発電・買電・売電は {{ .power_history_since }} から、蓄電池（ニチコン）は {{ .nichicon_data_since }} から連続測定しています。
-      ポータブル電源（EcoFlow）は直近ローリング14日分（{{ .ecoflow_data_since }} 〜）のみ記録しています。<br>
+      公開データは、太陽光・蓄電池・ポータブル電源のすべての計測が揃った {{ .publish_since }} 以降に限定しています。<br>
       月次の節約額試算 = 自家消費分（太陽光発電 − 売電）× 買電単価 {{ .buy_price_yen_per_kwh }}円/kWh + 売電分 × 売電単価 {{ .sell_price_yen_per_kwh }}円/kWh
       （{{ .buy_sell_price_effective_month }} 時点、{{ .buy_sell_price_source }}）。<br>
       請求額再現の対象月の条件・売電買電の出典優先順位など詳細は<a href="/metrics/methodology/">計測と推定の方法</a>を参照してください。<br>

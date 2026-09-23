@@ -115,29 +115,41 @@ DELTA_UNIT_NOMINAL_WH: dict[str, float] = {
     "u4": 2048.0,  # DELTA3 Plus + エクストラ1
 }
 
-# 2026-09-24 較正: 2026-08-29〜2026-09-22（usable 22日）の実測5分プロファイル・
-# daily_ecoflow_summary（SN→u1〜u4置換済み、非公開データ）を calibrate_delta_model.py
-# （格子探索 η5×idle13×margin9×capacity_factor4=2340通り）にreplayさせた「中央値」の出力。
+# 2026-09-24 較正（QA指摘F6再較正、格子を拡大: η0.86〜0.98/idle0〜60/margin0〜600/
+# capacity_factor0.75〜1.00 = 7098通り）: 2026-08-29〜2026-09-22（usable 22日）の実測
+# 5分プロファイル・daily_ecoflow_summary（SN→u1〜u4置換済み、非公開データ）を
+# calibrate_delta_model.py にreplayさせた「中央値」の出力。
 # load_share は台ごとの放電量比（Σdischarge_kwh）から算出（旧DDR §2.3の暫定値から
 # u1/u3が入れ替わった。SNとu1〜u4の対応をオーナーの挙げた順で仮定していた旧値は誤りだった
 # 可能性がある。実際の容量降順に対する discharge_kwh 比で決め直した値がこちら）。
-# 較正メモ: charge_efficiency・tracking_margin_w・capacity_factor は候補グリッドの端に
-# 張り付いており（0.94=上限、400=上限、0.85=下限）、真の最適値がグリッド外にある可能性が
-# ある（ASSUMED、次回較正で候補範囲を広げて再確認する）。診断「接続中かつ買電中の延べ時間」
-# はsim 180.3h/meas 204.5h（誤差 -11.8%、許容±25%以内）。
-_DELTA_MODEL_CAPACITY_FACTOR = 0.85
+# 較正メモ: 初回較正(η0.86〜0.94/margin0〜400/cf0.85〜1.00)ではcharge_efficiency・
+# tracking_margin_w・capacity_factorの3つが候補範囲の端に張り付いたため範囲を広げて
+# 再較正した。広げた後もcharge_efficiencyだけは依然として上限(0.98)に張り付いている
+# （ASSUMED、AC結合インバータの往復効率としては現実的な上限に近いとみられるが、次回較正で
+# さらに候補を広げるか要検討）。margin・capacity_factorは範囲内に収まった
+# （margin=450、capacity_factor=0.90）。診断「接続中かつ買電中の延べ時間」は
+# sim 180.6h/meas 204.5h（誤差 -11.7%、許容±25%以内）。この較正期間(8/29〜9/22)と重なる
+# 月のreplayゲート判定はin-sample（同じデータで較正・検証している）。以降の新しい月は
+# out-of-sample。前半/後半（各11日、8/29〜9/10・9/11〜9/22）に分割した交差検証では
+# 両方向ともゲート合格（前半 ac_in+1.2%/buy-0.0%/sell-3.1%、後半 ac_in-1.5%/buy+0.7%/
+# sell+2.6%、VERIFIED）。同一単価で揃えたL1S−L1の差は前半-157.8円/後半-265.3円で、
+# 半期間での差は約107円/11日（L1Sの経済性は半期間でもマイナス側＝有利のまま安定していた。
+# 実行済みスクリプトはscripts/blog-metrics/内、非公開データはscratch。標準出力を引用）。
+_DELTA_MODEL_CAPACITY_FACTOR = 0.90
 _DELTA_MODEL_LOAD_SHARE = {"u1": 0.183, "u2": 0.420, "u3": 0.220, "u4": 0.177}
-_DELTA_MODEL_CHARGE_EFFICIENCY = 0.94
-_DELTA_MODEL_DISCHARGE_EFFICIENCY = 0.94
-_DELTA_MODEL_IDLE_W = 20.0
-_DELTA_MODEL_TRACKING_MARGIN_W = 400.0
+_DELTA_MODEL_CHARGE_EFFICIENCY = 0.98
+_DELTA_MODEL_DISCHARGE_EFFICIENCY = 0.98
+_DELTA_MODEL_IDLE_W = 25.0
+_DELTA_MODEL_TRACKING_MARGIN_W = 450.0
 _DELTA_MODEL_MAX_CHARGE_W = 1400.0  # ecoflow_device.max_charging_speed_w の本番値（オーナー値、全台同一）
 DELTA_MODEL_CALIBRATED_ON: str | None = "2026-09-24"
 DELTA_MODEL_SOURCE_NOTE = (
-    "2026-09-24較正: 2026-08-29〜2026-09-22の実測(22日) を "
-    "calibrate_delta_model.py（格子探索2340通り）にreplayさせた中央値。"
-    "charge_efficiency/tracking_margin_w/capacity_factorは候補範囲の端で、真の最適値が"
-    "範囲外の可能性がある（次回較正で候補を広げて再確認予定）。"
+    "2026-09-24較正（再較正、候補範囲拡大）: 2026-08-29〜2026-09-22の実測(22日)を "
+    "calibrate_delta_model.py（格子探索7098通り、η0.86〜0.98/idle0〜60/margin0〜600/"
+    "capacity_factor0.75〜1.00）にreplayさせた中央値。charge_efficiencyは依然として"
+    "候補範囲の上限(0.98)に張り付いており、真の最適値が範囲外の可能性がある"
+    "（次回較正でさらに候補を広げて再確認予定）。この較正期間と重なる月のreplayゲートは"
+    "in-sample、それ以降の月はout-of-sample。"
 )
 
 
@@ -691,6 +703,12 @@ def _simulate_delta_series(
     daily_wh: dict[str, list[float]] = {}
     states: list[delta_model.UnitState] | None = None
     initial_period_soc: float | None = None
+    # QA指摘2026-09-24 F10: 期間途中の合わせ直し（欠測ギャップをまたぐ箇所）のたびに
+    # 「直前の実際の状態 − 新しいアンカー値」の差をここへ積算する。最終的な
+    # boundary_delta_kwh は、これに末尾セグメント分（最終状態−最後に使ったアンカー）を
+    # 加えたものになる（従来の「開始アンカー→最終状態」の単一比較だけでは、期間途中で
+    # 何度も合わせ直しが起きた月の累積ドリフトを過小評価する）。
+    mid_period_boundary_delta_wh = 0.0
     prev_bucket_at: str | None = None
     dt_h = _dt_hours(BUCKET_MINUTES)
     max_export = 0.0
@@ -715,6 +733,12 @@ def _simulate_delta_series(
                     sim_ac_in_kwh=0.0, sim_buy_kwh=0.0, sim_sell_kwh=0.0,
                     meas_ac_in_kwh=0.0, meas_buy_kwh=0.0, meas_sell_kwh=0.0,
                     unserved_kwh=0.0, days=0, missing_anchor=True,
+                )
+            if states is not None:
+                # 最初のアンカーではなく、期間途中の合わせ直し（ギャップ）。直前までの
+                # 実際の状態と新アンカーとの差を積算する。
+                mid_period_boundary_delta_wh += sum(
+                    (states[i].soc_pct - anchor) / 100.0 * params.units[i].capacity_wh for i in range(len(states))
                 )
             states = delta_model.init_states(params, anchor)
             if initial_period_soc is None:
@@ -756,9 +780,10 @@ def _simulate_delta_series(
             unserved_kwh=0.0, days=0, missing_anchor=False,
         )
 
-    boundary_delta_wh = sum(
+    final_boundary_delta_wh = sum(
         (states[i].soc_pct - initial_period_soc) / 100.0 * params.units[i].capacity_wh for i in range(len(states))
     )
+    boundary_delta_wh = final_boundary_delta_wh + mid_period_boundary_delta_wh
     daily_kwh = {d: (v[0] / 1000.0, v[1] / 1000.0) for d, v in daily_wh.items()}
     return DeltaSeriesResult(
         daily_kwh=daily_kwh,
@@ -820,9 +845,12 @@ def _l1s_param_variants(base: delta_model.DeltaFleetParams) -> dict[str, delta_m
     参照）で、ゲート合格した格子探索の組の中でL1Sの電気代が最小・最大になった実際の組に
     置き換え済み（較正前は§5.4の暫定の相対倍率だった）。"""
     if DELTA_MODEL_CALIBRATED_ON is not None:
-        # 2026-09-24較正の出力（calibrate_delta_model.py、2026-08-29〜2026-09-22, gate_passing=226通り中）。
-        optimistic = _params_with_overrides(base, capacity_factor=0.85, eta=0.90, idle_w=10.0, margin_w=100.0)
-        pessimistic = _params_with_overrides(base, capacity_factor=0.85, eta=0.88, idle_w=20.0, margin_w=400.0)
+        # 2026-09-24再較正の出力（calibrate_delta_model.py、格子拡大後、2026-08-29〜2026-09-22、
+        # gate_passing=936通り中、cost_ofはl1sモードで選定。QA指摘2026-09-24 F6）。
+        # 悲観側（idle20/margin600/cf0.75/η0.86）はL1S電気代がL1を上回りうる
+        # （較正期間実測: 5,954.34円 > L1の5,867.50円、VERIFIED）。
+        optimistic = _params_with_overrides(base, capacity_factor=1.00, eta=0.96, idle_w=15.0, margin_w=200.0)
+        pessimistic = _params_with_overrides(base, capacity_factor=0.75, eta=0.86, idle_w=20.0, margin_w=600.0)
         return {"central": base, "optimistic": optimistic, "pessimistic": pessimistic}
 
     # 較正前の暫定フォールバック（DDR §5.4）: 楽観=容量大・効率高・待機小・マージン小
@@ -890,7 +918,9 @@ def _l1s_model_params_dict() -> dict:
     capacity_kwh_nominal = sum(DELTA_UNIT_NOMINAL_WH.values()) / 1000.0
     capacity_kwh_effective = sum(u.capacity_wh for u in DEFAULT_DELTA_FLEET_PARAMS.units) / 1000.0
     return {
-        "units": len(DEFAULT_DELTA_FLEET_PARAMS.units),
+        # QA指摘2026-09-24 F8: 汎用キー"units"は将来の台別出力（配列化）を素通しさせる
+        # allowlistの穴になりうるため、台数だけを表すことが明確な"unit_count"に改名する。
+        "unit_count": len(DEFAULT_DELTA_FLEET_PARAMS.units),
         "capacity_kwh_nominal": round(capacity_kwh_nominal, 3),
         "capacity_kwh_effective": round(capacity_kwh_effective, 3),
         "charge_efficiency": DEFAULT_DELTA_FLEET_PARAMS.charge_efficiency,
@@ -1841,7 +1871,9 @@ def _read_profile_rows(profile_path: Path | None) -> list[dict]:
 def load_ecoflow_daily(path: Path | None) -> dict[str, float]:
     """DDR §4.3。ecoflow_daily.json（[{"date":..., "soc_start_pct":...}, ...]、容量加重の
     合計SOCのみ・S/N/台別値は含まない）を読み、date->soc_start_pctの辞書にする。
-    省略時・空・JSON不正は{}として扱い、stderrに警告を出す（L1Sはecoflow_soc_missingになる）。"""
+    省略時・空・JSON不正・配列でない・行の型が不正・soc_start_pctが数値でない/0〜100の範囲外の
+    場合は例外を出さず、その行（またはファイル全体）を除外してstderrに警告を出す
+    （QA指摘2026-09-24 F1: 既存4層を止めない。不正行だけ捨て、他の正常な行は活かす）。"""
     if path is None:
         return {}
     if not path.exists():
@@ -1855,13 +1887,30 @@ def load_ecoflow_daily(path: Path | None) -> dict[str, float]:
     except json.JSONDecodeError as exc:
         print(f"layer_model.py: --ecoflow-daily {path} のJSONが不正です（{exc}）。空として扱います", file=sys.stderr)
         return {}
+    if not isinstance(rows, list):
+        print(
+            f"layer_model.py: --ecoflow-daily {path} の内容が配列ではありません（{type(rows).__name__}）。空として扱います",
+            file=sys.stderr,
+        )
+        return {}
     result: dict[str, float] = {}
-    for row in rows:
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            print(f"layer_model.py: --ecoflow-daily {path} の{i}行目がobjectではありません（{row!r}）。この行を除外します", file=sys.stderr)
+            continue
         d = row.get("date")
         pct = row.get("soc_start_pct")
-        if d is None or pct is None:
+        if not isinstance(d, str) or not d:
+            print(f"layer_model.py: --ecoflow-daily {path} の{i}行目のdateが不正です（{d!r}）。この行を除外します", file=sys.stderr)
             continue
-        result[d] = float(pct)
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            print(f"layer_model.py: --ecoflow-daily {path} の{d}行のsoc_start_pctが数値ではありません（{pct!r}）。この行を除外します", file=sys.stderr)
+            continue
+        pct = float(pct)
+        if not (0.0 <= pct <= 100.0):
+            print(f"layer_model.py: --ecoflow-daily {path} の{d}行のsoc_start_pctが0〜100の範囲外です（{pct!r}）。この行を除外します", file=sys.stderr)
+            continue
+        result[d] = pct
     return result
 
 

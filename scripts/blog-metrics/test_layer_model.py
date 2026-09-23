@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 from dataclasses import replace as dataclass_replace
 from datetime import date, timedelta
@@ -31,6 +32,12 @@ import delta_model as dm  # noqa: E402
 import layer_model as lm  # noqa: E402
 
 ARCHIVE_CSV_PATH = Path.home() / "Develop" / "energy-archive" / "solarchgctl" / "profile_5min" / "2026-08-27_to_now.csv"
+# L1S replay opt-in（DDR §7-8。QA指摘2026-09-24 F3）: ARCHIVE_CSV_PATHと同じprofile_5min
+# データに加え、SN→u1〜u4置換済みの容量加重日次SOC（本番ecoflow_dailyクエリと同じ形、
+# [{"date":..., "soc_start_pct":...}, ...]）が同じ命名規則のディレクトリにあるときだけ実行する。
+ECOFLOW_DAILY_ARCHIVE_PATH = (
+    Path.home() / "Develop" / "energy-archive" / "solarchgctl" / "ecoflow_daily" / "2026-08-28_to_now.json"
+)
 
 
 def make_bucket(bucket_at="2026-01-01 00:00", **overrides) -> lm.Bucket:
@@ -639,6 +646,85 @@ class GoldenDayRealDataOptInTest(unittest.TestCase):
         l2, _ = lm.simulate_l2(self.resampled, pv_ac_efficiency=1.0, soc_start_pct=soc_start)
         self.assertGreaterEqual(l0.buy_kwh, l1.buy_kwh)
         self.assertGreaterEqual(l1.buy_kwh, l2.buy_kwh)
+
+
+@unittest.skipUnless(
+    ARCHIVE_CSV_PATH.exists() and ECOFLOW_DAILY_ARCHIVE_PATH.exists(),
+    f"実データ opt-in テスト: {ARCHIVE_CSV_PATH} または {ECOFLOW_DAILY_ARCHIVE_PATH} が無いためスキップ"
+    "（private repo energy-archive 未取得、またはecoflow_daily較正データ未配置。QA指摘2026-09-24 F3）",
+)
+class DeltaReplayRealDataOptInTest(unittest.TestCase):
+    """DDR §7-8。非公開の5分プロファイルCSVとecoflow_daily相当のJSONが両方揃っているときだけ
+    実行する opt-in テスト（QA指摘2026-09-24 F3）。lm.DEFAULT_DELTA_FLEET_PARAMS
+    （較正済みの本番デフォルト）でreplayし、DDR §3.3の許容差（L1S_REPLAY_TOLERANCE）内に
+    収まることを確認する。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import csv
+
+        with ARCHIVE_CSV_PATH.open(encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        buckets = lm.parse_profile_rows(rows)
+        by_date = lm.group_by_date(buckets)
+        usable: dict[str, list] = {}
+        for d_str, day_buckets in by_date.items():
+            resolution = lm.resolve_day_buckets(day_buckets, date.fromisoformat(d_str))
+            if resolution.buckets is not None:
+                usable[d_str] = resolution.buckets
+        cls.ordered_buckets = []
+        for d in sorted(usable):
+            cls.ordered_buckets.extend(usable[d])
+        cls.ordered_buckets.sort(key=lambda b: b.bucket_at)
+
+        ecoflow_rows = json.loads(ECOFLOW_DAILY_ARCHIVE_PATH.read_text(encoding="utf-8"))
+        cls.soc_map = {r["date"]: float(r["soc_start_pct"]) for r in ecoflow_rows}
+
+    def test_replay_within_gate_tolerance(self):
+        replay = lm._simulate_delta_series(
+            self.ordered_buckets, lm.DEFAULT_DELTA_FLEET_PARAMS, self.soc_map, pv_ac_efficiency=1.0, mode="replay"
+        )
+        self.assertFalse(replay.missing_anchor)
+        l1s_replay, gate_ok = lm._l1s_replay_check(replay)
+        self.assertTrue(gate_ok, f"replayゲート不合格: {l1s_replay}")
+
+
+class DeltaModelCalibrationConsistencyTest(unittest.TestCase):
+    """QA指摘2026-09-24 F3: DEFAULT_DELTA_FLEET_PARAMSとDELTA_MODEL_SOURCE_NOTEの記載値が
+    ずれていないことを固定する（較正のたびに数値だけ更新してコメントの更新を忘れる事故を
+    検出する）。具体的な数値はハードコードせず、内部整合性だけを見る（次回較正で数値が
+    変わってもテストの意味が保たれるようにするため）。"""
+
+    def test_calibrated_on_appears_in_source_note_when_set(self):
+        if lm.DELTA_MODEL_CALIBRATED_ON is not None:
+            self.assertIn(lm.DELTA_MODEL_CALIBRATED_ON, lm.DELTA_MODEL_SOURCE_NOTE)
+
+    def test_charge_and_discharge_efficiency_match(self):
+        # DDR §3.3: ηは単一の候補軸（充電・放電で同じ値）として較正される。
+        self.assertEqual(
+            lm.DEFAULT_DELTA_FLEET_PARAMS.charge_efficiency, lm.DEFAULT_DELTA_FLEET_PARAMS.discharge_efficiency
+        )
+
+    def test_capacity_factor_is_uniform_across_units(self):
+        ratios = {
+            u.name: u.capacity_wh / lm.DELTA_UNIT_NOMINAL_WH[u.name] for u in lm.DEFAULT_DELTA_FLEET_PARAMS.units
+        }
+        values = list(ratios.values())
+        for v in values[1:]:
+            self.assertAlmostEqual(v, values[0], places=9, msg=f"capacity_factorが台ごとに揃っていません: {ratios}")
+
+    def test_load_share_sums_to_one(self):
+        total = sum(u.load_share for u in lm.DEFAULT_DELTA_FLEET_PARAMS.units)
+        self.assertAlmostEqual(total, 1.0, places=6)
+
+    def test_l1s_model_params_dict_matches_module_constants(self):
+        d = lm._l1s_model_params_dict()
+        self.assertEqual(d["calibrated_on"], lm.DELTA_MODEL_CALIBRATED_ON)
+        self.assertEqual(d["_source"], lm.DELTA_MODEL_SOURCE_NOTE)
+        self.assertEqual(d["charge_efficiency"], lm.DEFAULT_DELTA_FLEET_PARAMS.charge_efficiency)
+        self.assertEqual(d["discharge_efficiency"], lm.DEFAULT_DELTA_FLEET_PARAMS.discharge_efficiency)
+        self.assertEqual(d["idle_w_per_unit"], lm.DEFAULT_DELTA_FLEET_PARAMS.idle_w)
+        self.assertEqual(d["tracking_margin_w"], lm.DEFAULT_DELTA_FLEET_PARAMS.tracking_margin_w)
 
 
 # ---------------------------------------------------------------------------
@@ -1846,6 +1932,56 @@ class L1SCloudyDayTest(unittest.TestCase):
         self.assertGreaterEqual(l1s_buy - l1.buy_kwh, 0.9 * idle_energy_kwh)
 
 
+class DeltaSeriesBoundaryDeltaTest(unittest.TestCase):
+    """QA指摘2026-09-24 F10: boundary_delta_kwhは、期間開始→終了の単純差だけでなく、
+    期間途中の合わせ直し（ギャップ）のたびの増減も積算する。"""
+
+    def _params(self):
+        return dm.DeltaFleetParams(
+            units=(dm.DeltaUnitSpec("u1", "delta2", 1000.0, 1.0, 1400.0),),
+            charge_efficiency=0.9, discharge_efficiency=0.9, idle_w=0.0, tracking_margin_w=200.0,
+        )
+
+    def _idle_bucket(self, bucket_at: str, soc: float) -> lm.Bucket:
+        # load=0・surplus=0で何も起きない（SOCが変化しない）バケット。合わせ直しの
+        # 増減だけを純粋に見るための道具。
+        return lm.Bucket(
+            bucket_at=bucket_at, solar_w=0.0, buy_w=0.0, sell_w=0.0,
+            nichicon_pv_w=0.0, nichicon_battery_w=0.0, nichicon_soc=soc,
+            eco_ac_in_w=0.0, eco_ac_out_w=0.0,
+        )
+
+    def test_two_segment_gap_adds_mid_period_jump(self):
+        params = self._params()
+        buckets = [
+            self._idle_bucket("2026-09-01 00:00", 50.0),
+            self._idle_bucket("2026-09-03 00:00", 30.0),  # ギャップ→合わせ直し(50%→30%)
+        ]
+        soc_map = {"2026-09-01": 50.0, "2026-09-03": 30.0}
+        res = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="replay")
+        # 何も起きないダイナミクスのため、各セグメント内でSOCは不変。
+        # 旧実装（開始→終了の単純差）なら (30-50)/100*1000Wh = -0.2kWh になるところ、
+        # 途中の合わせ直し分 (+0.2kWh) が足し込まれて 0.0kWh になる。
+        self.assertAlmostEqual(res.boundary_delta_kwh, 0.0, places=6)
+
+    def test_three_segment_gaps_accumulate_each_jump(self):
+        params = self._params()
+        buckets = [
+            self._idle_bucket("2026-09-01 00:00", 50.0),
+            self._idle_bucket("2026-09-03 00:00", 40.0),  # 合わせ直し1: 50%→40%
+            self._idle_bucket("2026-09-05 00:00", 45.0),  # 合わせ直し2: 40%→45%
+        ]
+        soc_map = {"2026-09-01": 50.0, "2026-09-03": 40.0, "2026-09-05": 45.0}
+        res = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="replay")
+        capacity_wh = 1000.0
+        mid_period = (50.0 - 40.0) / 100.0 * capacity_wh + (40.0 - 45.0) / 100.0 * capacity_wh
+        final_only = (45.0 - 50.0) / 100.0 * capacity_wh
+        expected_kwh = (mid_period + final_only) / 1000.0
+        self.assertAlmostEqual(res.boundary_delta_kwh, expected_kwh, places=6)
+        # 参考: 旧実装（最終-最初のみ）は final_only/1000 = -0.05kWh になり、上記と一致しない。
+        self.assertNotAlmostEqual(res.boundary_delta_kwh, final_only / 1000.0, places=6)
+
+
 class L1SReplaySelfConsistencyTest(unittest.TestCase):
     """4. replayの自己整合: build_self_consistent_golden_periodの出力をreplay → 3つの誤差
     すべて < 1e-6、ゲート合格。"""
@@ -1863,6 +1999,31 @@ class L1SReplaySelfConsistencyTest(unittest.TestCase):
         self.assertEqual(l1s_replay["ac_in_error_pct"], 0.0)
         self.assertEqual(l1s_replay["buy_error_pct"], 0.0)
         self.assertEqual(l1s_replay["sell_error_pct"], 0.0)
+
+    def test_replay_identity_holds_on_mismatched_measurements(self):
+        # QA指摘2026-09-24 F4: replayのgrid_w恒等式は、実測eco_ac_inとシミュレーションが
+        # 一致しない（DELTAモデルが不正確な）合成データでも代数的に常に成り立つ
+        # （DDR §3.3「replayのgrid_w−(buy−sell)はac_in_sim−eco_ac_inに恒等的に一致する」の
+        # 直接検証）。eco_ac_inを実測の1.3倍にし、buy/sellも任意の値にする。
+        params = _l1s_test_params()
+        buckets = [
+            make_bucket(
+                bucket_at="2026-09-01 00:00", solar_w=300.0, buy_w=123.0, sell_w=7.0,
+                nichicon_pv_w=50.0, nichicon_battery_w=-20.0, nichicon_soc=50.0,
+                eco_ac_out_w=200.0, eco_ac_in_w=200.0 * 1.3,
+            ),
+            make_bucket(
+                bucket_at="2026-09-01 00:05", solar_w=10.0, buy_w=500.0, sell_w=0.0,
+                nichicon_pv_w=0.0, nichicon_battery_w=100.0, nichicon_soc=51.0,
+                eco_ac_out_w=50.0, eco_ac_in_w=50.0 * 1.3,
+            ),
+        ]
+        soc_map = {"2026-09-01": 60.0}
+        replay = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="replay")
+        self.assertFalse(replay.missing_anchor)
+        lhs = (replay.sim_buy_kwh - replay.sim_sell_kwh) - (replay.meas_buy_kwh - replay.meas_sell_kwh)
+        rhs = replay.sim_ac_in_kwh + replay.unserved_kwh - replay.meas_ac_in_kwh
+        self.assertAlmostEqual(lhs, rhs, places=6)
 
 
 class L1SReplayDetectionPowerTest(unittest.TestCase):
@@ -1926,6 +2087,65 @@ class L1SAnchorTest(unittest.TestCase):
             record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
         self.assertTrue(record["layers"]["L1S"]["available"])
 
+    def test_other_layers_unchanged_when_l1s_enabled(self):
+        # QA指摘2026-09-24 F9: soc_mapが実際に機能する（L1Sがavailableになる）本物のケースと
+        # ecoflow_soc_by_date=None（省略）を比較し、L0〜L3のdictが完全に一致することを
+        # 確認する（L1Sが有効になってもならなくても他層への副作用が無いことの強い検証。
+        # 空dict{}同士の比較よりも「実際に使われるsoc_map」で比較する方が検出力が高い）。
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        params = _l1s_test_params()
+        buckets, soc_map = build_self_consistent_golden_period(start.isoformat(), end.isoformat(), params, 50.0)
+        profile_by_date = lm.group_by_date(buckets)
+        with _patched_default_delta_fleet_params(params):
+            record_with_soc = lm.build_month_layers(
+                tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map
+            )
+            record_without_soc = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date)
+
+        self.assertTrue(record_with_soc["layers"]["L1S"]["available"])
+        self.assertFalse(record_without_soc["layers"]["L1S"]["available"])
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertEqual(record_with_soc["layers"][key], record_without_soc["layers"][key])
+
+    def test_reanchor_uses_anchor_after_gap(self):
+        # QA指摘2026-09-24 F9: 欠測日（5分の連続性が切れる箇所）をまたいだ再開日は、
+        # 欠測前の状態を引きずらずecoflow_soc_by_dateの値（例: 80%）から再開する。
+        # 同じ入力でアンカー値だけを変えて結果が変わることで、実際にその値が
+        # 使われていることを検証する（80%は緊急モード閾値(10%)を超えるため未接続のまま
+        # 電池残量で賄いac_in=0、5%は緊急モードで強制接続され系統から供給されac_in>0）。
+        params = _l1s_test_params()
+        b1 = make_bucket(
+            bucket_at="2026-09-01 00:00", solar_w=0.0, buy_w=0.0, sell_w=0.0,
+            nichicon_pv_w=0.0, nichicon_battery_w=0.0, nichicon_soc=50.0,
+            eco_ac_out_w=0.0, eco_ac_in_w=0.0,
+        )
+        b2 = make_bucket(
+            bucket_at="2026-09-03 00:00", solar_w=0.0, buy_w=0.0, sell_w=0.0,  # 09-02が欠測(ギャップ)
+            nichicon_pv_w=0.0, nichicon_battery_w=0.0, nichicon_soc=50.0,
+            eco_ac_out_w=300.0, eco_ac_in_w=0.0,
+        )
+        buckets = [b1, b2]
+
+        result_high = lm._simulate_delta_series(
+            buckets, params, {"2026-09-01": 50.0, "2026-09-03": 80.0}, pv_ac_efficiency=1.0, mode="replay"
+        )
+        result_low = lm._simulate_delta_series(
+            buckets, params, {"2026-09-01": 50.0, "2026-09-03": 5.0}, pv_ac_efficiency=1.0, mode="replay"
+        )
+        self.assertFalse(result_high.missing_anchor)
+        self.assertFalse(result_low.missing_anchor)
+        self.assertAlmostEqual(result_high.sim_ac_in_kwh, 0.0, places=6)
+        self.assertGreater(result_low.sim_ac_in_kwh, 0.0)
+        self.assertNotAlmostEqual(result_high.sim_ac_in_kwh, result_low.sim_ac_in_kwh, places=6)
+
+        # 再開日(09-03)のアンカーが無ければ、期間全体がmissing_anchorになる（値を作らない）。
+        result_missing = lm._simulate_delta_series(
+            buckets, params, {"2026-09-01": 50.0}, pv_ac_efficiency=1.0, mode="replay"
+        )
+        self.assertTrue(result_missing.missing_anchor)
+
 
 class L1SContractTest(unittest.TestCase):
     """7. 契約: scaled月の付与・in_progressの日集合・daily[]のL1S・uncertainty.L1S・
@@ -1977,21 +2197,49 @@ class L1SContractTest(unittest.TestCase):
             days = lm.build_daily_layers(tariff, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
         self.assertGreater(len(days), 0)
         l1s_day = days[0]["layers"]["L1S"]
-        self.assertIn(l1s_day["available"], (True, False))
+        # QA指摘2026-09-24 F9: assertIn(x, (True, False))は常に真になる弱い検証だった。
+        # 自己整合な合成月はreplayゲートに合格するはずなので、実際の値(True)で検証する。
+        self.assertTrue(l1s_day["available"])
         self.assertNotIn("hourly", days[0])
         self.assertNotIn("soc_start_pct", l1s_day)
 
     def test_in_progress_l1s_shares_day_set_with_other_layers(self):
+        # QA指摘2026-09-24 F9: 「available in (True, False)」的な弱い検証ではなく、
+        # L0〜L3と同じ日集合を使っていることをexcluded_dates（実際にusable_datesの補集合を
+        # 表す唯一の公開フィールド）の完全一致で検証する。欠測日を1つ作り、
+        # excluded_datesが空でない（=実際に検出力のある比較になっている）ことも確認する。
         tariff = make_tariff()
         daily = _full_month_daily("2026-09")
         params, soc_map, profile_by_date, start, end = self._full_self_consistent_month()
-        today = start + timedelta(days=5)  # 請求期間"2026-09"の途中（endの翌日にするとbilling_monthが次月にずれる）
+        missing_date = (start + timedelta(days=3)).isoformat()
+        profile_by_date.pop(missing_date, None)  # 欠測日を1つ作る（startは請求期間の開始日）
+        today = start + timedelta(days=10)
         with _patched_default_delta_fleet_params(params):
             ip = lm.build_in_progress(tariff, daily, profile_by_date, today, ecoflow_soc_by_date=soc_map)
         self.assertIsNotNone(ip)
         self.assertTrue(ip["layers"]["L1S"]["available"])
-        self.assertEqual(ip["layers"]["L1S"]["buy_kwh"] > 0, True)
+        self.assertGreater(len(ip["excluded_dates"]), 0)
+        for key in ("L0", "L1", "L2"):
+            self.assertEqual(ip["layers"]["L1S"]["excluded_dates"], ip["layers"][key]["excluded_dates"])
+        self.assertEqual(ip["layers"]["L1S"]["excluded_dates"], ip["excluded_dates"])
+        self.assertIn(missing_date, {e["date"] for e in ip["excluded_dates"]})
         self.assertIn("l1s_replay", ip)
+
+    def test_in_progress_l1s_excluded_dates_equal_l1(self):
+        # QA指摘2026-09-24 F9（専用テスト）。上のテストと同じ不変条件をL1単独と比較する形で
+        # 固定する（「4層(L0〜L3)は必ず同一日集合」という既存の不変条件をL1Sにも広げたことの
+        # 直接的な回帰防止）。
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        params, soc_map, profile_by_date, start, end = self._full_self_consistent_month()
+        profile_by_date.pop((start + timedelta(days=3)).isoformat(), None)
+        profile_by_date.pop((start + timedelta(days=4)).isoformat(), None)
+        today = start + timedelta(days=10)
+        with _patched_default_delta_fleet_params(params):
+            ip = lm.build_in_progress(tariff, daily, profile_by_date, today, ecoflow_soc_by_date=soc_map)
+        self.assertIsNotNone(ip)
+        self.assertGreater(len(ip["layers"]["L1"]["excluded_dates"]), 0)
+        self.assertEqual(ip["layers"]["L1S"]["excluded_dates"], ip["layers"]["L1"]["excluded_dates"])
 
     def test_cumulative_includes_l1s_only_when_all_full_months_available(self):
         tariff = make_tariff()
@@ -2012,9 +2260,83 @@ class L1SContractTest(unittest.TestCase):
         tariff = make_tariff()
         result = lm.build_layers(tariff, {}, {}, {}, {})
         l1s_model = result["params"]["l1s_model"]
-        self.assertIsInstance(l1s_model["units"], int)  # 台数のみ（台ごとのload_share等は無い）
-        for forbidden in ("load_share", "soc", "units_detail", "u1", "u2", "u3", "u4"):
+        # QA指摘2026-09-24 F8: 汎用キー"units"は将来の台別出力を素通しさせうるため
+        # "unit_count"に改名した。旧キー"units"は存在しないこと。
+        self.assertIsInstance(l1s_model["unit_count"], int)  # 台数のみ（台ごとのload_share等は無い）
+        for forbidden in ("units", "load_share", "soc", "units_detail", "u1", "u2", "u3", "u4"):
             self.assertNotIn(forbidden, l1s_model)
+
+
+# ---------------------------------------------------------------------------
+# QA指摘 2026-09-24 F1: load_ecoflow_daily の異常入力耐性
+# ---------------------------------------------------------------------------
+class LoadEcoflowDailyTest(unittest.TestCase):
+    """不正な--ecoflow-dailyの入力でも例外を出さず、不正行だけ除外してL0〜L3を止めない。"""
+
+    def _write(self, tmp_dir: str, text: str) -> Path:
+        p = Path(tmp_dir) / "ecoflow_daily.json"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_missing_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "does_not_exist.json"
+            self.assertEqual(lm.load_ecoflow_daily(path), {})
+
+    def test_none_path_returns_empty(self):
+        self.assertEqual(lm.load_ecoflow_daily(None), {})
+
+    def test_empty_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "")
+            self.assertEqual(lm.load_ecoflow_daily(path), {})
+
+    def test_malformed_json_returns_empty_not_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "{not valid json")
+            self.assertEqual(lm.load_ecoflow_daily(path), {})
+
+    def test_json_object_instead_of_array_returns_empty_not_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, json.dumps({"a": 1}))
+            self.assertEqual(lm.load_ecoflow_daily(path), {})
+
+    def test_json_string_instead_of_array_returns_empty_not_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, json.dumps("x"))
+            self.assertEqual(lm.load_ecoflow_daily(path), {})
+
+    def test_out_of_range_soc_is_excluded_but_other_rows_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [
+                {"date": "2026-09-01", "soc_start_pct": 50.0},
+                {"date": "2026-09-02", "soc_start_pct": 150.0},  # 範囲外(0〜100外) → 除外
+                {"date": "2026-09-03", "soc_start_pct": -5.0},  # 範囲外 → 除外
+            ]
+            path = self._write(tmp, json.dumps(rows))
+            result = lm.load_ecoflow_daily(path)
+            self.assertEqual(result, {"2026-09-01": 50.0})
+
+    def test_non_numeric_soc_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [{"date": "2026-09-01", "soc_start_pct": "x"}, {"date": "2026-09-02", "soc_start_pct": 40.0}]
+            path = self._write(tmp, json.dumps(rows))
+            result = lm.load_ecoflow_daily(path)
+            self.assertEqual(result, {"2026-09-02": 40.0})
+
+    def test_non_object_row_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = ["not-an-object", {"date": "2026-09-02", "soc_start_pct": 40.0}]
+            path = self._write(tmp, json.dumps(rows))
+            result = lm.load_ecoflow_daily(path)
+            self.assertEqual(result, {"2026-09-02": 40.0})
+
+    def test_missing_date_row_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [{"soc_start_pct": 40.0}, {"date": "2026-09-02", "soc_start_pct": 40.0}]
+            path = self._write(tmp, json.dumps(rows))
+            result = lm.load_ecoflow_daily(path)
+            self.assertEqual(result, {"2026-09-02": 40.0})
 
 
 if __name__ == "__main__":

@@ -109,7 +109,7 @@ LAYERS_KEYS = {
     "unavailable_reason", "uncertainty", "usage_period",
     # L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §5.7）
     "l1s_model", "l1s_replay", "ac_in_error_pct", "buy_error_pct", "sell_error_pct",
-    "units", "capacity_kwh_nominal", "capacity_kwh_effective", "charge_efficiency",
+    "unit_count", "capacity_kwh_nominal", "capacity_kwh_effective", "charge_efficiency",
     "discharge_efficiency", "idle_w_per_unit", "tracking_margin_w", "speedup_threshold_w",
     "full_soc_pct", "emergency_soc_pct", "emergency_exit_soc_pct",
     "replay_tolerance_ac_in_pct", "replay_tolerance_buy_pct", "replay_tolerance_sell_pct",

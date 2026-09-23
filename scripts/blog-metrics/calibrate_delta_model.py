@@ -43,11 +43,15 @@ import bill_model  # noqa: E402
 import delta_model as dm  # noqa: E402
 import layer_model as lm  # noqa: E402
 
-# --- 格子探索の候補（DDR §3.3の候補数と一致させる: 5×13×9×4 = 2340通り） -------------------
-ETA_CANDIDATES: tuple[float, ...] = (0.86, 0.88, 0.90, 0.92, 0.94)
+# --- 格子探索の候補 -----------------------------------------------------------------------
+# QA指摘2026-09-24 F6: 2026-09-24較正でcharge_efficiency/tracking_margin_w/capacity_factorが
+# いずれも候補範囲の端に張り付いた（0.94=上限、400=上限、0.85=下限）ため、真の最適値が
+# 範囲外にある疑いがあり、候補を広げて再較正する（η 0.86〜0.98、capacity_factor 0.75〜1.00、
+# margin 0〜600）。idle_wは端に付いていなかったため据え置き。7×13×13×6 = 7098通り。
+ETA_CANDIDATES: tuple[float, ...] = tuple(round(0.86 + 0.02 * i, 2) for i in range(7))  # 0.86,...,0.98 (7)
 IDLE_CANDIDATES: tuple[float, ...] = tuple(float(w) for w in range(0, 65, 5))  # 0,5,...,60 (13)
-MARGIN_CANDIDATES: tuple[float, ...] = tuple(float(w) for w in range(0, 450, 50))  # 0,50,...,400 (9)
-CAPACITY_FACTOR_CANDIDATES: tuple[float, ...] = (0.85, 0.90, 0.95, 1.00)
+MARGIN_CANDIDATES: tuple[float, ...] = tuple(float(w) for w in range(0, 650, 50))  # 0,50,...,600 (13)
+CAPACITY_FACTOR_CANDIDATES: tuple[float, ...] = tuple(round(0.75 + 0.05 * i, 2) for i in range(6))  # 0.75,...,1.00 (6)
 
 UNIT_ORDER: tuple[str, ...] = ("u1", "u2", "u3", "u4")
 
@@ -366,24 +370,35 @@ def run_calibration(profile_path: Path, ecoflow_unit_daily_path: Path, since: st
 
     # 楽観/悲観: ゲート合格した組の中でL1S電気代（期間合計をtariff.jsonの直近確定単価で近似）が
     # 最小・最大になる組。tariff.json は既存のものを再利用する（二重実装しない）。
+    # QA指摘2026-09-24 F6: 較正はreplayモード（実測ニチコン込みの余剰）でDELTAモデル自体の
+    # 精度を検証するが、楽観/悲観として選ぶべきなのは「L1S（太陽光＋SCC、蓄電池なし想定）」
+    # モードでの電気代であり、replayモードのbuy/sellをそのまま使うのは対象が違う。
+    # l1sモードで再シミュレートしてから電気代を求める。
     tariff = json.loads((SCRIPT_DIR / "tariff.json").read_text(encoding="utf-8"))
     billing_months = sorted(
         {bill_model.billing_month_for_date(date.fromisoformat(d), tariff["meter_read_day"]) for d in usable_dates}
     )
     pricing_month = billing_months[-1] if billing_months else None
 
-    def cost_of(coll: ReplayCollection) -> float | None:
+    def cost_of(params: dm.DeltaFleetParams) -> float | None:
         if pricing_month is None:
             return None
+        l1s_series = lm._simulate_delta_series(
+            ordered_buckets, params, soc_anchor_by_date, pv_ac_efficiency=1.0, mode="l1s"
+        )
+        if l1s_series.missing_anchor:
+            return None
+        buy_kwh = sum(v[0] for v in l1s_series.daily_kwh.values())
+        sell_kwh = sum(v[1] for v in l1s_series.daily_kwh.values())
         try:
             buy_price, sell_fit, _sell_post, _prov, _src = bill_model.per_kwh_prices(tariff, pricing_month)
         except KeyError:
             return None
-        return coll.sim_buy_kwh * buy_price - coll.sim_sell_kwh * sell_fit
+        return buy_kwh * buy_price - sell_kwh * sell_fit
 
     optimistic = pessimistic = None
     if gate_passing:
-        costed = [(cost_of(coll), params, coll) for params, coll in gate_passing]
+        costed = [(cost_of(params), params, coll) for params, coll in gate_passing]
         costed = [c for c in costed if c[0] is not None]
         if costed:
             optimistic = min(costed, key=lambda c: c[0])
@@ -395,6 +410,19 @@ def run_calibration(profile_path: Path, ecoflow_unit_daily_path: Path, since: st
     diagnostic_hours_meas = sum(
         dt_h for b in ordered_buckets if (b.eco_ac_in_w or 0.0) > 50.0 and (b.buy_w or 0.0) > 0.0
     )
+
+    # L1（太陽光だけ、DELTA無し）とcentral paramsでのL1Sの電気代を、同じ較正期間で比較する
+    # 診断値（QA指摘2026-09-24 F6の「L1S +72円/22日」のような比較を再現できるようにする）。
+    l1_cost_yen = None
+    central_l1s_cost_yen = cost_of(best_params)
+    if pricing_month is not None:
+        try:
+            buy_price, sell_fit, _sell_post, _prov, _src = bill_model.per_kwh_prices(tariff, pricing_month)
+            resampled = lm.resample_buckets(ordered_buckets, lm.BUCKET_MINUTES)
+            l1_totals = lm.simulate_l1(resampled, pv_ac_efficiency=1.0)
+            l1_cost_yen = l1_totals.buy_kwh * buy_price - l1_totals.sell_kwh * sell_fit
+        except KeyError:
+            l1_cost_yen = None
 
     return {
         "usable_days": len(usable_dates),
@@ -411,6 +439,7 @@ def run_calibration(profile_path: Path, ecoflow_unit_daily_path: Path, since: st
             "sim_ac_in_kwh": best_coll.sim_ac_in_kwh, "meas_ac_in_kwh": best_coll.meas_ac_in_kwh,
             "sim_buy_kwh": best_coll.sim_buy_kwh, "meas_buy_kwh": best_coll.meas_buy_kwh,
             "sim_sell_kwh": best_coll.sim_sell_kwh, "meas_sell_kwh": best_coll.meas_sell_kwh,
+            "l1s_cost_yen": central_l1s_cost_yen,
         },
         "optimistic": None if optimistic is None else {
             "cost_yen": optimistic[0], "charge_efficiency": optimistic[1].charge_efficiency,
@@ -422,6 +451,7 @@ def run_calibration(profile_path: Path, ecoflow_unit_daily_path: Path, since: st
             "idle_w": pessimistic[1].idle_w, "tracking_margin_w": pessimistic[1].tracking_margin_w,
             "capacity_factor": pessimistic[1].units[0].capacity_wh / nominal_wh["u1"],
         },
+        "l1_cost_yen": l1_cost_yen,  # 較正期間・central paramsでのL1(太陽光だけ)との比較用
         "gate_passing_count": len(gate_passing),
         "diagnostic_connected_and_buying_hours": {
             "sim": diagnostic_hours_sim, "meas": diagnostic_hours_meas,
@@ -447,7 +477,10 @@ def three_state_diagnostic(ordered_buckets: list, unit_count: int = 4) -> dict:
         ac_out = b.eco_ac_out_w or 0.0
         if ac_in <= 1.0 and ac_out > 20.0:
             discharge_pairs.append(ac_out)
-        elif ac_in > 20.0 and ac_out > 20.0 and ac_in <= ac_out * 1.15:
+        # QA指摘2026-09-24 F7: 下限(ac_in>=ac_out)が無いとac_in<ac_out（実質は放電寄り）の
+        # バケットまで「パススルーのみ」に混入し、idle推定が負の値になっていた
+        # （観測: idle_total_w_during_passthrough=-92W）。ac_out<=ac_in<=1.15*ac_outに絞る。
+        elif ac_out > 20.0 and ac_out <= ac_in <= ac_out * 1.15:
             passthrough_diffs.append(ac_in - ac_out)
         elif ac_in > ac_out * 1.3 and ac_in > 100.0:
             charge_pairs.append(ac_in - ac_out)

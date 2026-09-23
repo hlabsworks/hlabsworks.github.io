@@ -97,6 +97,32 @@ def _generate_synthetic_calibration_inputs(
     return buckets_out, unit_daily_rows
 
 
+class ReplayAndCollectMatchesLayerModelTest(unittest.TestCase):
+    """QA指摘2026-09-24 F11: calibrate_delta_model.replay_and_collect は
+    layer_model._simulate_delta_series（mode="replay"）と別実装のループを持つ（台ごとの
+    日次SOC最小/最大・接続中かつ買電中の時間という、layer_model側が公開していない粒度を
+    集計する必要があるため）。同一入力ならsim_ac_in/sim_buy/sim_sell/meas_*の合計が
+    一致することを回帰テストで固定する（実装が将来ずれたら検出する）。"""
+
+    def test_totals_match_layer_model_simulate_delta_series(self):
+        params = _make_true_params(capacity_factor=0.95, eta=0.90, idle_w=25.0, margin_w=200.0)
+        dates = [(date(2026, 9, 1) + timedelta(days=i)).isoformat() for i in range(3)]
+        buckets, _unit_daily_rows = _generate_synthetic_calibration_inputs(params, dates, soc_start_pct=40.0)
+        soc_map = {dates[0]: 40.0}
+
+        collected = cal.replay_and_collect(buckets, params, soc_map)
+        via_layer_model = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="replay")
+
+        self.assertFalse(collected.missing_anchor)
+        self.assertFalse(via_layer_model.missing_anchor)
+        self.assertAlmostEqual(collected.sim_ac_in_kwh, via_layer_model.sim_ac_in_kwh, places=6)
+        self.assertAlmostEqual(collected.sim_buy_kwh, via_layer_model.sim_buy_kwh, places=6)
+        self.assertAlmostEqual(collected.sim_sell_kwh, via_layer_model.sim_sell_kwh, places=6)
+        self.assertAlmostEqual(collected.meas_ac_in_kwh, via_layer_model.meas_ac_in_kwh, places=6)
+        self.assertAlmostEqual(collected.meas_buy_kwh, via_layer_model.meas_buy_kwh, places=6)
+        self.assertAlmostEqual(collected.meas_sell_kwh, via_layer_model.meas_sell_kwh, places=6)
+
+
 class GridSearchRecoversKnownParamsTest(unittest.TestCase):
     def setUp(self):
         # テスト用に候補グリッドを縮小する（本番2340通りは実データでのみ実行）。
@@ -160,6 +186,31 @@ class CanonicalUnitNameTest(unittest.TestCase):
     def test_unknown_capacity_raises(self):
         with self.assertRaises(ValueError):
             cal._canonical_unit_name({"capacity_wh": 9999, "device_type": "DELTA2_MAX"})
+
+
+class ThreeStateDiagnosticPassthroughBoundsTest(unittest.TestCase):
+    """QA指摘2026-09-24 F7: 「パススルーのみ」判定は ac_out <= ac_in <= 1.15*ac_out に限る
+    （下限が無いと ac_in<ac_out の実質放電バケットまで混入し、idle推定が負になっていた）。"""
+
+    def test_bucket_below_ac_out_is_excluded_from_passthrough(self):
+        # ac_in(150) < ac_out(300) は「パススルーのみ」ではない（下限を満たさない）。
+        buckets = [tlm.make_bucket(eco_ac_in_w=150.0, eco_ac_out_w=300.0)]
+        diag = cal.three_state_diagnostic(buckets)
+        self.assertEqual(diag["passthrough_buckets"], 0)
+
+    def test_bucket_within_bounds_is_included_and_idle_is_nonnegative(self):
+        # ac_in(320) は ac_out(300)以上 かつ 1.15*ac_out(345)以下 → パススルーのみに分類される。
+        buckets = [tlm.make_bucket(eco_ac_in_w=320.0, eco_ac_out_w=300.0)]
+        diag = cal.three_state_diagnostic(buckets)
+        self.assertEqual(diag["passthrough_buckets"], 1)
+        self.assertAlmostEqual(diag["idle_total_w_during_passthrough"], 20.0, places=6)
+        self.assertGreaterEqual(diag["idle_total_w_during_passthrough"], 0.0)
+
+    def test_bucket_above_1_15x_is_excluded(self):
+        # ac_in(400) > 1.15*ac_out(345) → 充電寄りなのでパススルーのみからは除外される。
+        buckets = [tlm.make_bucket(eco_ac_in_w=400.0, eco_ac_out_w=300.0)]
+        diag = cal.three_state_diagnostic(buckets)
+        self.assertEqual(diag["passthrough_buckets"], 0)
 
 
 if __name__ == "__main__":

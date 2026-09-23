@@ -13,13 +13,13 @@
     "month_usable_fraction_threshold": 0.9,
     "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）",
     "l1s_model": {
-      "units": 4,
+      "unit_count": 4,
       "capacity_kwh_nominal": 14.336,
-      "capacity_kwh_effective": 12.186,
-      "charge_efficiency": 0.94,
-      "discharge_efficiency": 0.94,
-      "idle_w_per_unit": 20.0,
-      "tracking_margin_w": 400.0,
+      "capacity_kwh_effective": 12.902,
+      "charge_efficiency": 0.98,
+      "discharge_efficiency": 0.98,
+      "idle_w_per_unit": 25.0,
+      "tracking_margin_w": 450.0,
       "speedup_threshold_w": 400.0,
       "full_soc_pct": 95.0,
       "emergency_soc_pct": 10.0,
@@ -28,7 +28,7 @@
       "replay_tolerance_buy_pct": 10.0,
       "replay_tolerance_sell_pct": 5.0,
       "calibrated_on": "2026-09-24",
-      "_source": "2026-09-24較正: 2026-08-29〜2026-09-22の実測(22日) を calibrate_delta_model.py（格子探索2340通り）にreplayさせた中央値。charge_efficiency/tracking_margin_w/capacity_factorは候補範囲の端で、真の最適値が範囲外の可能性がある（次回較正で候補を広げて再確認予定）。"
+      "_source": "2026-09-24較正（再較正、候補範囲拡大）: 2026-08-29〜2026-09-22の実測(22日)を calibrate_delta_model.py（格子探索7098通り、η0.86〜0.98/idle0〜60/margin0〜600/capacity_factor0.75〜1.00）にreplayさせた中央値。charge_efficiencyは依然として候補範囲の上限(0.98)に張り付いており、真の最適値が範囲外の可能性がある（次回較正でさらに候補を広げて再確認予定）。この較正期間と重なる月のreplayゲートはin-sample、それ以降の月はout-of-sample。"
     }
   },
   "months": [
@@ -89,7 +89,7 @@
           "kind": "estimated",
           "available": true,
           "buy_kwh": 237.086,
-          "sell_kwh": 534.242,
+          "sell_kwh": 532.73,
           "bill": {
             "buy_kwh": 237.086,
             "basic_fee_yen": 0,
@@ -99,8 +99,8 @@
             "capacity_contribution_yen": 213,
             "total_yen": 10066
           },
-          "net_cost_fit_yen": 1518,
-          "net_cost_post_fit_yen": 5792,
+          "net_cost_fit_yen": 1542,
+          "net_cost_post_fit_yen": 5804,
           "estimation": "full",
           "days_usable": 31,
           "days_total": 31,
@@ -167,8 +167,8 @@
         },
         "note": "バケット5/15/30分 × pv_ac_efficiency 1.00/0.95 の組み合わせでのnet_cost_fit_yenの範囲（DDR §0既知のノイズ参照）。L1Sの帯はL1S単独のパラメータ不確かさによるもので、L1とL1Sの帯どうしを引き算して差の帯にすることはできない。",
         "L1S": {
-          "net_cost_fit_yen_min": 1200,
-          "net_cost_fit_yen_max": 2252
+          "net_cost_fit_yen_min": 1132,
+          "net_cost_fit_yen_max": 2385
         }
       },
       "l1s_replay": {
@@ -223,7 +223,7 @@
       "L1": 2775,
       "L2": -1276,
       "L3": -2867,
-      "L1S": 1518
+      "L1S": 1542
     },
     "saving_yen_fit": 34204,
     "includes_scaled_months": false
@@ -250,9 +250,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 14.704,
-          "net_cost_fit_yen": 83,
-          "net_cost_post_fit_yen": 200
+          "sell_kwh": 14.476,
+          "net_cost_fit_yen": 86,
+          "net_cost_post_fit_yen": 202
         },
         "L2": {
           "available": true,
@@ -297,8 +297,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.284,
-          "net_cost_fit_yen": 41,
+          "sell_kwh": 17.262,
+          "net_cost_fit_yen": 42,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -344,7 +344,7 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.299,
+          "sell_kwh": 17.301,
           "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
@@ -391,9 +391,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.394,
-          "net_cost_fit_yen": 40,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.179,
+          "net_cost_fit_yen": 43,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -438,8 +438,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.36,
-          "net_cost_fit_yen": 40,
+          "sell_kwh": 17.312,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -485,8 +485,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.247,
-          "net_cost_fit_yen": 42,
+          "sell_kwh": 17.292,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -532,8 +532,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.405,
-          "net_cost_fit_yen": 39,
+          "sell_kwh": 17.391,
+          "net_cost_fit_yen": 40,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -579,8 +579,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.221,
-          "net_cost_fit_yen": 42,
+          "sell_kwh": 17.287,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -626,9 +626,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.289,
+          "sell_kwh": 17.312,
           "net_cost_fit_yen": 41,
-          "net_cost_post_fit_yen": 180
+          "net_cost_post_fit_yen": 179
         },
         "L2": {
           "available": true,
@@ -673,9 +673,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.405,
-          "net_cost_fit_yen": 39,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.253,
+          "net_cost_fit_yen": 42,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -720,8 +720,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.221,
-          "net_cost_fit_yen": 42,
+          "sell_kwh": 17.179,
+          "net_cost_fit_yen": 43,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -767,8 +767,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.402,
-          "net_cost_fit_yen": 39,
+          "sell_kwh": 17.301,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -814,8 +814,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.348,
-          "net_cost_fit_yen": 40,
+          "sell_kwh": 17.295,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -861,7 +861,7 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.268,
+          "sell_kwh": 17.253,
           "net_cost_fit_yen": 42,
           "net_cost_post_fit_yen": 180
         },
@@ -908,8 +908,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.356,
-          "net_cost_fit_yen": 40,
+          "sell_kwh": 17.301,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -955,8 +955,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.36,
-          "net_cost_fit_yen": 40,
+          "sell_kwh": 17.295,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -1002,7 +1002,7 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.255,
+          "sell_kwh": 17.262,
           "net_cost_fit_yen": 42,
           "net_cost_post_fit_yen": 180
         },
@@ -1049,9 +1049,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.373,
-          "net_cost_fit_yen": 40,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.275,
+          "net_cost_fit_yen": 41,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -1096,8 +1096,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.274,
-          "net_cost_fit_yen": 41,
+          "sell_kwh": 17.179,
+          "net_cost_fit_yen": 43,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -1143,9 +1143,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.284,
+          "sell_kwh": 17.295,
           "net_cost_fit_yen": 41,
-          "net_cost_post_fit_yen": 180
+          "net_cost_post_fit_yen": 179
         },
         "L2": {
           "available": true,
@@ -1190,9 +1190,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.385,
-          "net_cost_fit_yen": 40,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.179,
+          "net_cost_fit_yen": 43,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -1237,9 +1237,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.246,
-          "net_cost_fit_yen": 42,
-          "net_cost_post_fit_yen": 180
+          "sell_kwh": 17.428,
+          "net_cost_fit_yen": 39,
+          "net_cost_post_fit_yen": 178
         },
         "L2": {
           "available": true,
@@ -1284,9 +1284,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.381,
-          "net_cost_fit_yen": 40,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.262,
+          "net_cost_fit_yen": 42,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -1331,8 +1331,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.351,
-          "net_cost_fit_yen": 40,
+          "sell_kwh": 17.296,
+          "net_cost_fit_yen": 41,
           "net_cost_post_fit_yen": 179
         },
         "L2": {
@@ -1378,8 +1378,8 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.267,
-          "net_cost_fit_yen": 42,
+          "sell_kwh": 17.171,
+          "net_cost_fit_yen": 43,
           "net_cost_post_fit_yen": 180
         },
         "L2": {
@@ -1425,9 +1425,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.284,
+          "sell_kwh": 17.294,
           "net_cost_fit_yen": 41,
-          "net_cost_post_fit_yen": 180
+          "net_cost_post_fit_yen": 179
         },
         "L2": {
           "available": true,
@@ -1472,9 +1472,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.302,
+          "sell_kwh": 17.276,
           "net_cost_fit_yen": 41,
-          "net_cost_post_fit_yen": 179
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -1519,9 +1519,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.402,
-          "net_cost_fit_yen": 39,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.262,
+          "net_cost_fit_yen": 42,
+          "net_cost_post_fit_yen": 180
         },
         "L2": {
           "available": true,
@@ -1566,9 +1566,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.246,
-          "net_cost_fit_yen": 42,
-          "net_cost_post_fit_yen": 180
+          "sell_kwh": 17.331,
+          "net_cost_fit_yen": 41,
+          "net_cost_post_fit_yen": 179
         },
         "L2": {
           "available": true,
@@ -1613,9 +1613,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.246,
-          "net_cost_fit_yen": 42,
-          "net_cost_post_fit_yen": 180
+          "sell_kwh": 17.392,
+          "net_cost_fit_yen": 40,
+          "net_cost_post_fit_yen": 179
         },
         "L2": {
           "available": true,
@@ -1660,9 +1660,9 @@
         "L1S": {
           "available": true,
           "buy_kwh": 7.648,
-          "sell_kwh": 17.381,
-          "net_cost_fit_yen": 40,
-          "net_cost_post_fit_yen": 179
+          "sell_kwh": 17.141,
+          "net_cost_fit_yen": 44,
+          "net_cost_post_fit_yen": 181
         },
         "L2": {
           "available": true,
@@ -1689,5 +1689,5 @@
   ],
   "in_progress": null,
   "_note": "5分プロファイルは本番Pi側の実測集計（synthetic_test_fixture）を使用しています。退避済みCSV（単純平均集計）由来の既知バイアス（+4.1%）は本データには含まれません。",
-  "generated_at": "2026-09-24 00:16:50"
+  "generated_at": "2026-09-24 01:14:04"
 }

@@ -109,6 +109,9 @@ REASON_CODE_PROFILE_MISSING = "profile_missing"
 REASON_CODE_PERIOD_INCOMPLETE = "period_incomplete"
 REASON_CODE_DAILY_MISSING = "daily_missing"
 REASON_CODE_TARIFF_MISSING = "tariff_missing"
+# L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §5.1）専用の理由コード。
+REASON_CODE_ECOFLOW_SOC_MISSING = "ecoflow_soc_missing"
+REASON_CODE_L1S_MODEL_CHECK_FAILED = "l1s_model_check_failed"
 
 
 def reason(code: str, label: str, detail: str) -> dict:

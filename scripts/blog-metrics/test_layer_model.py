@@ -20,12 +20,14 @@ import os
 import re
 import sys
 import unittest
+from dataclasses import replace as dataclass_replace
 from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bill_model  # noqa: E402
+import delta_model as dm  # noqa: E402
 import layer_model as lm  # noqa: E402
 
 ARCHIVE_CSV_PATH = Path.home() / "Develop" / "energy-archive" / "solarchgctl" / "profile_5min" / "2026-08-27_to_now.csv"
@@ -146,6 +148,54 @@ def build_synthetic_golden_day_buckets(day: str = "2026-09-01") -> list:
         hh, mm = divmod(t, 60)
         buckets.append(lm.Bucket(bucket_at=f"{day} {hh:02d}:{mm:02d}", **values))
     return buckets
+
+
+def build_self_consistent_golden_period(
+    start: str, end: str, params: dm.DeltaFleetParams, soc_pct: float
+) -> tuple[list, dict]:
+    """DDR §5.8。既存の合成golden dayをSTART..ENDに並べてhouse_load/delta_loadを固定し、
+    delta_modelをreplayモードで連続実行して、eco_ac_in_w:=ac_in_sim、buy/sell:=grid_wの
+    正負に置き換える。unserved=0（テストパラメータは枯渇しない値を選ぶこと）をassertする。
+    戻り値: (置き換え後のBucketリスト, {date: 容量加重平均soc_start_pct})。soc_mapは
+    「その日の最初のバケットを処理する直前」の容量加重平均SOC（metrics-export.shの
+    ecoflow_dailyクエリと同じ定義）を全日について持つため、途中の日を間引いて非連続な
+    usable日集合を作っても（テスト側で）合わせ直し用アンカーとして使える。"""
+    start_d = date.fromisoformat(start)
+    end_d = date.fromisoformat(end)
+    buckets: list = []
+    d = start_d
+    while d <= end_d:
+        buckets.extend(build_synthetic_golden_day_buckets(day=d.isoformat()))
+        d += timedelta(days=1)
+    buckets.sort(key=lambda b: b.bucket_at)
+
+    total_capacity_wh = sum(u.capacity_wh for u in params.units)
+    dt_h = lm.BUCKET_MINUTES / 60.0
+    states = dm.init_states(params, soc_pct)
+    new_buckets = []
+    soc_by_date: dict[str, float] = {}
+    prev_date = None
+    for b in buckets:
+        if b.date_str != prev_date:
+            weighted = sum(st.soc_pct * u.capacity_wh for st, u in zip(states, params.units))
+            soc_by_date[b.date_str] = round(weighted / total_capacity_wh, 1) if total_capacity_wh else soc_pct
+            prev_date = b.date_str
+        load_w = b.load_true_w()
+        delta_load_w = max(0.0, b.eco_ac_out_w)
+        house_load_w = load_w - delta_load_w
+        pv_w = b.solar_w + b.nichicon_pv_w - b.nichicon_battery_w
+        surplus_w = pv_w - house_load_w
+        step = dm.fleet_step(states, params, surplus_w, delta_load_w, dt_h)
+        if abs(step.unserved_w) > 1e-9:
+            raise AssertionError(
+                f"build_self_consistent_golden_period: unservedが発生しました "
+                f"({b.bucket_at} unserved_w={step.unserved_w})。テストパラメータを見直してください。"
+            )
+        grid_w = house_load_w + step.ac_in_w + step.unserved_w - pv_w
+        new_buckets.append(
+            dataclass_replace(b, eco_ac_in_w=step.ac_in_w, buy_w=max(0.0, grid_w), sell_w=max(0.0, -grid_w))
+        )
+    return new_buckets, soc_by_date
 
 
 # ---------------------------------------------------------------------------
@@ -1684,6 +1734,287 @@ class BuildMonthLayersScalingTest(unittest.TestCase):
         for key in ("L0", "L1", "L2"):
             self.assertFalse(record["layers"][key]["available"], f"{key} should be unavailable")
             self.assertEqual(record["layers"][key]["unavailable_reason"]["reason_code"], "tariff_missing")
+
+
+# ---------------------------------------------------------------------------
+# L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §7「test_layer_model.py 追加」）
+# ---------------------------------------------------------------------------
+def _l1s_test_params(**overrides) -> dm.DeltaFleetParams:
+    base = dict(
+        units=(
+            dm.DeltaUnitSpec("u1", "delta2", 6000.0, 0.6, 1400.0),
+            dm.DeltaUnitSpec("u2", "delta3", 4000.0, 0.4, 1400.0),
+        ),
+        charge_efficiency=0.9,
+        discharge_efficiency=0.9,
+        idle_w=20.0,
+    )
+    base.update(overrides)
+    return dm.DeltaFleetParams(**base)
+
+
+@contextlib.contextmanager
+def _patched_default_delta_fleet_params(params: dm.DeltaFleetParams):
+    """本番の較正済みパラメータ（lm.DEFAULT_DELTA_FLEET_PARAMS）をテスト用パラメータに
+    一時的に差し替える（build_month_layers等は内部でモジュール定数を直接参照するため）。"""
+    original = lm.DEFAULT_DELTA_FLEET_PARAMS
+    lm.DEFAULT_DELTA_FLEET_PARAMS = params
+    try:
+        yield
+    finally:
+        lm.DEFAULT_DELTA_FLEET_PARAMS = original
+
+
+class L1SDegenerateTest(unittest.TestCase):
+    """1. 退化した場合の同値: units=() → 全バケットでL1Sのbuy/sellがL1と完全一致する。"""
+
+    def test_empty_units_matches_l1_exactly(self):
+        params = dm.DeltaFleetParams(units=(), charge_efficiency=0.9, discharge_efficiency=0.9, idle_w=0.0)
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        soc_map = {"2026-09-01": 50.0}
+        l1s = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="l1s")
+        resampled = lm.resample_buckets(buckets, lm.BUCKET_MINUTES)
+        l1 = lm.simulate_l1(resampled, pv_ac_efficiency=1.0)
+        l1s_buy = sum(v[0] for v in l1s.daily_kwh.values())
+        l1s_sell = sum(v[1] for v in l1s.daily_kwh.values())
+        self.assertAlmostEqual(l1s_buy, l1.buy_kwh, places=6)
+        self.assertAlmostEqual(l1s_sell, l1.sell_kwh, places=6)
+
+
+class L1SSunnyDayTest(unittest.TestCase):
+    """2. 晴天の合成日: L1S.buy_kwh < L1.buy_kwh かつ net_cost_fit でL1S ≤ L1。"""
+
+    def test_sunny_golden_day_favors_l1s(self):
+        tariff = make_tariff()
+        params = _l1s_test_params()
+        buckets = build_synthetic_golden_day_buckets(day="2026-09-01")
+        soc_map = {"2026-09-01": 50.0}
+        l1s = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="l1s")
+        resampled = lm.resample_buckets(buckets, lm.BUCKET_MINUTES)
+        l1 = lm.simulate_l1(resampled, pv_ac_efficiency=1.0)
+        l1s_buy = sum(v[0] for v in l1s.daily_kwh.values())
+        l1s_sell = sum(v[1] for v in l1s.daily_kwh.values())
+
+        self.assertLess(l1s_buy, l1.buy_kwh)
+
+        l1s_bill = bill_model.compute_bill(tariff, l1s_buy, "2026-09")
+        l1_bill = bill_model.compute_bill(tariff, l1.buy_kwh, "2026-09")
+        sell_fit = tariff["sell_price_yen_per_kwh"]["fit"]
+        l1s_net = l1s_bill.total_yen - lm._round_yen(l1s_sell * sell_fit)
+        l1_net = l1_bill.total_yen - lm._round_yen(l1.sell_kwh * sell_fit)
+        # 単日スナップショットでは、日末にDELTAへ充電したまま未放電のエネルギー
+        # (boundary_delta_kwh) が「まだ実現していない資産」として残り、単純比較では
+        # L1Sが不利に見える境界アーティファクトが生じる（DDR §5.4と同じ理屈）。
+        # uncertaintyの境界補正と同じ式で売電単価換算し、公平な比較にしてから比べる。
+        if l1s.boundary_delta_kwh > 0:
+            l1s_net -= lm._round_yen(l1s.boundary_delta_kwh * sell_fit)
+        self.assertLessEqual(l1s_net, l1_net)
+
+
+class L1SCloudyDayTest(unittest.TestCase):
+    """3. 曇天の合成日: PVは終日300W、SOC 12%開始。夜間相当の枯渇でemergencyに入り系統から
+    供給 → L1S.buy_kwh − L1.buy_kwh ≥ 0.9 × 待機電力量、かつ L1S > L1（不利な結果の固定）。"""
+
+    def test_persistent_low_pv_drains_battery_into_emergency(self):
+        params = _l1s_test_params()
+        day = "2026-09-01"
+        buckets = []
+        for slot in range(lm.DAY_BUCKETS):
+            hh, mm = divmod(slot * lm.BUCKET_MINUTES, 60)
+            buckets.append(lm.Bucket(
+                bucket_at=f"{day} {hh:02d}:{mm:02d}", solar_w=300.0, buy_w=0.0, sell_w=0.0,
+                nichicon_pv_w=0.0, nichicon_battery_w=0.0, nichicon_soc=50.0,
+                eco_ac_in_w=0.0, eco_ac_out_w=300.0,
+            ))
+        soc_map = {day: 12.0}
+
+        l1s = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="l1s")
+        resampled = lm.resample_buckets(buckets, lm.BUCKET_MINUTES)
+        l1 = lm.simulate_l1(resampled, pv_ac_efficiency=1.0)
+        l1s_buy = sum(v[0] for v in l1s.daily_kwh.values())
+
+        # 独立にemergencyの延べ台×時間を数える（実装の別経路での再検証。fleet_stepを直接呼ぶ）。
+        states = dm.init_states(params, 12.0)
+        dt_h = lm.BUCKET_MINUTES / 60.0
+        emergency_unit_hours = 0.0
+        for _b in buckets:
+            dm.fleet_step(states, params, surplus_w=0.0, delta_load_w=300.0, dt_h=dt_h)
+            emergency_unit_hours += sum(1 for st in states if st.emergency) * dt_h
+        idle_energy_kwh = params.idle_w * emergency_unit_hours / 1000.0
+
+        self.assertGreater(l1s_buy, l1.buy_kwh)
+        self.assertGreaterEqual(l1s_buy - l1.buy_kwh, 0.9 * idle_energy_kwh)
+
+
+class L1SReplaySelfConsistencyTest(unittest.TestCase):
+    """4. replayの自己整合: build_self_consistent_golden_periodの出力をreplay → 3つの誤差
+    すべて < 1e-6、ゲート合格。"""
+
+    def test_replay_reproduces_generated_measurements(self):
+        params = _l1s_test_params()
+        buckets, soc_map = build_self_consistent_golden_period("2026-09-01", "2026-09-01", params, 50.0)
+        replay = lm._simulate_delta_series(buckets, params, soc_map, pv_ac_efficiency=1.0, mode="replay")
+        self.assertFalse(replay.missing_anchor)
+        self.assertAlmostEqual(replay.sim_ac_in_kwh, replay.meas_ac_in_kwh, places=6)
+        self.assertAlmostEqual(replay.sim_buy_kwh, replay.meas_buy_kwh, places=6)
+        self.assertAlmostEqual(replay.sim_sell_kwh, replay.meas_sell_kwh, places=6)
+        l1s_replay, gate_ok = lm._l1s_replay_check(replay)
+        self.assertTrue(gate_ok)
+        self.assertEqual(l1s_replay["ac_in_error_pct"], 0.0)
+        self.assertEqual(l1s_replay["buy_error_pct"], 0.0)
+        self.assertEqual(l1s_replay["sell_error_pct"], 0.0)
+
+
+class L1SReplayDetectionPowerTest(unittest.TestCase):
+    """5. replayの検出力: 生成時と異なるパラメータ（idle×2）でreplay → ac_in_error_pctが
+    許容差を超え、build_month_layersのL1Sがl1s_model_check_failedで金額キー無し。"""
+
+    def test_mismatched_idle_fails_replay_gate(self):
+        tariff = make_tariff()
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        params_true = _l1s_test_params(idle_w=20.0)
+        buckets, soc_map = build_self_consistent_golden_period(start.isoformat(), end.isoformat(), params_true, 50.0)
+        profile_by_date = lm.group_by_date(buckets)
+        daily = _full_month_daily("2026-09")
+
+        params_mismatched = _l1s_test_params(idle_w=40.0)  # idle×2（较正と異なるパラメータ）
+        with _patched_default_delta_fleet_params(params_mismatched):
+            record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+
+        l1s_layer = record["layers"]["L1S"]
+        self.assertFalse(l1s_layer["available"])
+        self.assertEqual(l1s_layer["unavailable_reason"]["reason_code"], "l1s_model_check_failed")
+        self.assertNotIn("buy_kwh", l1s_layer)
+        self.assertGreater(abs(record["l1s_replay"]["ac_in_error_pct"]), lm.L1S_REPLAY_TOLERANCE["ac_in"]["pct"])
+
+
+class L1SAnchorTest(unittest.TestCase):
+    """6. 合わせ直し: ecoflow_soc_by_dateが無ければecoflow_soc_missingになり、他の4層は
+    変わらない（回帰防止）。"""
+
+    def test_missing_ecoflow_soc_does_not_affect_other_layers(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        profile_by_date = {}
+        d = start
+        while d <= end:
+            profile_by_date[d.isoformat()] = build_synthetic_golden_day_buckets(day=d.isoformat())
+            d += timedelta(days=1)
+
+        record_without = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date)
+        record_with_empty = lm.build_month_layers(
+            tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date={}
+        )
+
+        for record in (record_without, record_with_empty):
+            l1s = record["layers"]["L1S"]
+            self.assertFalse(l1s["available"])
+            self.assertEqual(l1s["unavailable_reason"]["reason_code"], "ecoflow_soc_missing")
+
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertEqual(record_without["layers"][key], record_with_empty["layers"][key])
+
+    def test_provided_anchor_makes_l1s_available(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        params = _l1s_test_params()
+        buckets, soc_map = build_self_consistent_golden_period(start.isoformat(), end.isoformat(), params, 50.0)
+        profile_by_date = lm.group_by_date(buckets)
+        with _patched_default_delta_fleet_params(params):
+            record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+        self.assertTrue(record["layers"]["L1S"]["available"])
+
+
+class L1SContractTest(unittest.TestCase):
+    """7. 契約: scaled月の付与・in_progressの日集合・daily[]のL1S・uncertainty.L1S・
+    cumulativeのL1Sキー・layers.jsonにSOC値が無いこと。"""
+
+    def _full_self_consistent_month(self):
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        params = _l1s_test_params()
+        buckets, soc_map = build_self_consistent_golden_period(start.isoformat(), end.isoformat(), params, 50.0)
+        profile_by_date = lm.group_by_date(buckets)
+        return params, soc_map, profile_by_date, start, end
+
+    def test_month_record_has_available_l1s_within_uncertainty_band(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        params, soc_map, profile_by_date, _start, _end = self._full_self_consistent_month()
+        with _patched_default_delta_fleet_params(params):
+            record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+        l1s = record["layers"]["L1S"]
+        self.assertTrue(l1s["available"])
+        self.assertEqual(l1s["estimation"], "full")
+        band = record["uncertainty"]["L1S"]
+        self.assertLessEqual(band["net_cost_fit_yen_min"], l1s["net_cost_fit_yen"])
+        self.assertLessEqual(l1s["net_cost_fit_yen"], band["net_cost_fit_yen_max"])
+        # SOC値そのものはlayers.jsonに一切出さない（オーナー方針）。
+        self.assertNotIn("soc_start_pct", l1s)
+        self.assertNotIn("soc_end_pct", l1s)
+
+    def test_scaled_month_l1s_gets_scale_factor(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        params, soc_map, profile_by_date, start, end = self._full_self_consistent_month()
+        missing = {"2026-08-09", "2026-08-23"}  # 29/31日 usable ≈93.5%（scaled相当）
+        for d_str in missing:
+            profile_by_date.pop(d_str, None)
+        # soc_mapは全日ぶん保持する（欠測日の翌日が合わせ直しアンカーを必要とするため。
+        # metrics-export.shのecoflow_dailyは日次の容量加重平均SOCを全日出す想定）。
+        with _patched_default_delta_fleet_params(params):
+            record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+        l1s = record["layers"]["L1S"]
+        self.assertTrue(l1s["available"])
+        self.assertEqual(l1s["estimation"], "scaled")
+        self.assertIn("scale_factor", l1s)
+
+    def test_daily_layers_include_l1s_without_time_of_day_granularity(self):
+        tariff = make_tariff()
+        params, soc_map, profile_by_date, _start, _end = self._full_self_consistent_month()
+        with _patched_default_delta_fleet_params(params):
+            days = lm.build_daily_layers(tariff, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+        self.assertGreater(len(days), 0)
+        l1s_day = days[0]["layers"]["L1S"]
+        self.assertIn(l1s_day["available"], (True, False))
+        self.assertNotIn("hourly", days[0])
+        self.assertNotIn("soc_start_pct", l1s_day)
+
+    def test_in_progress_l1s_shares_day_set_with_other_layers(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        params, soc_map, profile_by_date, start, end = self._full_self_consistent_month()
+        today = start + timedelta(days=5)  # 請求期間"2026-09"の途中（endの翌日にするとbilling_monthが次月にずれる）
+        with _patched_default_delta_fleet_params(params):
+            ip = lm.build_in_progress(tariff, daily, profile_by_date, today, ecoflow_soc_by_date=soc_map)
+        self.assertIsNotNone(ip)
+        self.assertTrue(ip["layers"]["L1S"]["available"])
+        self.assertEqual(ip["layers"]["L1S"]["buy_kwh"] > 0, True)
+        self.assertIn("l1s_replay", ip)
+
+    def test_cumulative_includes_l1s_only_when_all_full_months_available(self):
+        tariff = make_tariff()
+        daily = _full_month_daily("2026-09")
+        params, soc_map, profile_by_date, _start, _end = self._full_self_consistent_month()
+        with _patched_default_delta_fleet_params(params):
+            record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date, ecoflow_soc_by_date=soc_map)
+        cumulative_with = lm._build_cumulative([record])
+        self.assertIn("L1S", cumulative_with["net_cost_fit_yen"])
+
+        unavailable_l1s_record = dict(record)
+        unavailable_l1s_record["layers"] = dict(record["layers"])
+        unavailable_l1s_record["layers"]["L1S"] = {"available": False}
+        cumulative_without = lm._build_cumulative([unavailable_l1s_record])
+        self.assertNotIn("L1S", cumulative_without["net_cost_fit_yen"])
+
+    def test_params_l1s_model_has_no_per_unit_or_soc_fields(self):
+        tariff = make_tariff()
+        result = lm.build_layers(tariff, {}, {}, {}, {})
+        l1s_model = result["params"]["l1s_model"]
+        self.assertIsInstance(l1s_model["units"], int)  # 台数のみ（台ごとのload_share等は無い）
+        for forbidden in ("load_share", "soc", "units_detail", "u1", "u2", "u3", "u4"):
+            self.assertNotIn(forbidden, l1s_model)
 
 
 if __name__ == "__main__":

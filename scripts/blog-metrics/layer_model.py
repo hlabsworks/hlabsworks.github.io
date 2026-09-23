@@ -69,12 +69,13 @@ import csv
 import io
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bill_model  # noqa: E402
+import delta_model  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
@@ -103,6 +104,72 @@ BATTERY_DISCHARGE_KWH_PER_100SOC = 8.92  # 実測: 放電9.01kWhでSOC降下101%
 BATTERY_MAX_DISCHARGE_KW = 5.9  # 定格出力
 
 PV_CAPACITY_KW = 9.4  # L1 全量（FIT設備認定が9.4kW一体、オーナー決定）
+
+# L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §2.2〜§2.3）:
+# DELTA 4台の構成。台ごとのS/N・load_shareは公開しない（合計値のみ、DDR §5.6）ため
+# 公称容量はここにオーナー値として定数で持つ（コード上は公開してよい、JSON出力には出さない）。
+DELTA_UNIT_NOMINAL_WH: dict[str, float] = {
+    "u1": 6144.0,  # DELTA2 MAX + エクストラ2
+    "u2": 4096.0,  # DELTA2 MAX-S + エクストラ1
+    "u3": 2048.0,  # DELTA2 MAX-S
+    "u4": 2048.0,  # DELTA3 Plus + エクストラ1
+}
+
+# 2026-09-24 較正: 2026-08-29〜2026-09-22（usable 22日）の実測5分プロファイル・
+# daily_ecoflow_summary（SN→u1〜u4置換済み、非公開データ）を calibrate_delta_model.py
+# （格子探索 η5×idle13×margin9×capacity_factor4=2340通り）にreplayさせた「中央値」の出力。
+# load_share は台ごとの放電量比（Σdischarge_kwh）から算出（旧DDR §2.3の暫定値から
+# u1/u3が入れ替わった。SNとu1〜u4の対応をオーナーの挙げた順で仮定していた旧値は誤りだった
+# 可能性がある。実際の容量降順に対する discharge_kwh 比で決め直した値がこちら）。
+# 較正メモ: charge_efficiency・tracking_margin_w・capacity_factor は候補グリッドの端に
+# 張り付いており（0.94=上限、400=上限、0.85=下限）、真の最適値がグリッド外にある可能性が
+# ある（ASSUMED、次回較正で候補範囲を広げて再確認する）。診断「接続中かつ買電中の延べ時間」
+# はsim 180.3h/meas 204.5h（誤差 -11.8%、許容±25%以内）。
+_DELTA_MODEL_CAPACITY_FACTOR = 0.85
+_DELTA_MODEL_LOAD_SHARE = {"u1": 0.183, "u2": 0.420, "u3": 0.220, "u4": 0.177}
+_DELTA_MODEL_CHARGE_EFFICIENCY = 0.94
+_DELTA_MODEL_DISCHARGE_EFFICIENCY = 0.94
+_DELTA_MODEL_IDLE_W = 20.0
+_DELTA_MODEL_TRACKING_MARGIN_W = 400.0
+_DELTA_MODEL_MAX_CHARGE_W = 1400.0  # ecoflow_device.max_charging_speed_w の本番値（オーナー値、全台同一）
+DELTA_MODEL_CALIBRATED_ON: str | None = "2026-09-24"
+DELTA_MODEL_SOURCE_NOTE = (
+    "2026-09-24較正: 2026-08-29〜2026-09-22の実測(22日) を "
+    "calibrate_delta_model.py（格子探索2340通り）にreplayさせた中央値。"
+    "charge_efficiency/tracking_margin_w/capacity_factorは候補範囲の端で、真の最適値が"
+    "範囲外の可能性がある（次回較正で候補を広げて再確認予定）。"
+)
+
+
+def _build_default_delta_fleet_params() -> delta_model.DeltaFleetParams:
+    units = tuple(
+        delta_model.DeltaUnitSpec(
+            name=name,
+            kind="delta3" if name == "u4" else "delta2",
+            capacity_wh=nominal_wh * _DELTA_MODEL_CAPACITY_FACTOR,
+            load_share=_DELTA_MODEL_LOAD_SHARE[name],
+            max_charge_w=_DELTA_MODEL_MAX_CHARGE_W,
+        )
+        for name, nominal_wh in DELTA_UNIT_NOMINAL_WH.items()
+    )
+    return delta_model.DeltaFleetParams(
+        units=units,
+        charge_efficiency=_DELTA_MODEL_CHARGE_EFFICIENCY,
+        discharge_efficiency=_DELTA_MODEL_DISCHARGE_EFFICIENCY,
+        idle_w=_DELTA_MODEL_IDLE_W,
+        tracking_margin_w=_DELTA_MODEL_TRACKING_MARGIN_W,
+    )
+
+
+DEFAULT_DELTA_FLEET_PARAMS = _build_default_delta_fleet_params()
+
+# L1S replay の較正ゲート許容差（DDR §3.3）。相対誤差 OR 1日あたり絶対誤差のどちらかを
+# 満たせば合格。売電が絶対値小さい月があるため絶対誤差の下駄を必ず用意する。
+L1S_REPLAY_TOLERANCE: dict[str, dict[str, float]] = {
+    "ac_in": {"pct": 5.0, "abs_kwh_per_day": 0.5},
+    "buy": {"pct": 10.0, "abs_kwh_per_day": 0.5},
+    "sell": {"pct": 5.0, "abs_kwh_per_day": 0.5},
+}
 
 # オーナー承認機能・2026-09-06（データ再生成 #5）: 退避済みCSV(archive_csv)は単純平均集計で
 # power_history由来チャンネルに約+4.1%の既知バイアスがある（DDR §5-C）。Pi側実装
@@ -588,6 +655,260 @@ def simulate_l2_series(
     return daily_kwh
 
 
+@dataclass
+class DeltaSeriesResult:
+    """_simulate_delta_series の戻り値（DDR §3.2）。"""
+
+    daily_kwh: dict[str, tuple[float, float]]
+    max_export_w: float
+    boundary_delta_kwh: float
+    sim_ac_in_kwh: float
+    sim_buy_kwh: float
+    sim_sell_kwh: float
+    meas_ac_in_kwh: float
+    meas_buy_kwh: float
+    meas_sell_kwh: float
+    unserved_kwh: float
+    days: int
+    missing_anchor: bool
+
+
+def _simulate_delta_series(
+    ordered_buckets: list[Bucket],
+    params: delta_model.DeltaFleetParams,
+    soc_anchor_by_date: dict[str, float],
+    pv_ac_efficiency: float,
+    mode: str,
+) -> DeltaSeriesResult:
+    """DDR §3.2。DELTA群を時系列順に連続シミュレートする。mode="l1s" は太陽光＋SCC試算の
+    PV（蓄電池なし想定）、mode="replay" は実測ニチコン込みの余剰でDELTAを動かし、実測
+    eco_ac_in/buy/sellと突き合わせる較正用。最初のバケットと、5分の連続性が切れた箇所
+    （L2と同じ判定）で states を soc_anchor_by_date[date] に合わせ直す。その日の値が
+    無ければ missing_anchor=True を返し、以降のバケットは処理しない（値を作らない）。"""
+    if mode not in ("l1s", "replay"):
+        raise ValueError(f"mode は 'l1s' か 'replay' を想定: {mode!r}")
+
+    daily_wh: dict[str, list[float]] = {}
+    states: list[delta_model.UnitState] | None = None
+    initial_period_soc: float | None = None
+    prev_bucket_at: str | None = None
+    dt_h = _dt_hours(BUCKET_MINUTES)
+    max_export = 0.0
+    sim_ac_in_wh = 0.0
+    sim_buy_wh = 0.0
+    sim_sell_wh = 0.0
+    meas_ac_in_wh = 0.0
+    meas_buy_wh = 0.0
+    meas_sell_wh = 0.0
+    unserved_wh = 0.0
+    dates_seen: set[str] = set()
+
+    for b in ordered_buckets:
+        need_anchor = states is None or (
+            prev_bucket_at is not None and b.bucket_at != _next_bucket_at(prev_bucket_at, BUCKET_MINUTES)
+        )
+        if need_anchor:
+            anchor = soc_anchor_by_date.get(b.date_str)
+            if anchor is None:
+                return DeltaSeriesResult(
+                    daily_kwh={}, max_export_w=0.0, boundary_delta_kwh=0.0,
+                    sim_ac_in_kwh=0.0, sim_buy_kwh=0.0, sim_sell_kwh=0.0,
+                    meas_ac_in_kwh=0.0, meas_buy_kwh=0.0, meas_sell_kwh=0.0,
+                    unserved_kwh=0.0, days=0, missing_anchor=True,
+                )
+            states = delta_model.init_states(params, anchor)
+            if initial_period_soc is None:
+                initial_period_soc = anchor
+
+        load_w = b.load_true_w()
+        delta_load_w = max(0.0, b.eco_ac_out_w or 0.0)
+        house_load_w = load_w - delta_load_w
+        if mode == "l1s":
+            pv_w = b.solar_w + b.nichicon_pv_w * pv_ac_efficiency
+        else:
+            pv_w = b.solar_w + b.nichicon_pv_w - b.nichicon_battery_w
+        surplus_w = pv_w - house_load_w
+
+        step = delta_model.fleet_step(states, params, surplus_w, delta_load_w, dt_h)
+        grid_w = house_load_w + step.ac_in_w + step.unserved_w - pv_w
+        buy_w = max(0.0, grid_w)
+        sell_w = max(0.0, -grid_w)
+
+        entry = daily_wh.setdefault(b.date_str, [0.0, 0.0])
+        entry[0] += buy_w * dt_h
+        entry[1] += sell_w * dt_h
+        max_export = max(max_export, sell_w)
+        sim_ac_in_wh += step.ac_in_w * dt_h
+        sim_buy_wh += buy_w * dt_h
+        sim_sell_wh += sell_w * dt_h
+        meas_ac_in_wh += (b.eco_ac_in_w or 0.0) * dt_h
+        meas_buy_wh += (b.buy_w or 0.0) * dt_h
+        meas_sell_wh += (b.sell_w or 0.0) * dt_h
+        unserved_wh += step.unserved_w * dt_h
+        dates_seen.add(b.date_str)
+        prev_bucket_at = b.bucket_at
+
+    if states is None or initial_period_soc is None:
+        return DeltaSeriesResult(
+            daily_kwh={}, max_export_w=0.0, boundary_delta_kwh=0.0,
+            sim_ac_in_kwh=0.0, sim_buy_kwh=0.0, sim_sell_kwh=0.0,
+            meas_ac_in_kwh=0.0, meas_buy_kwh=0.0, meas_sell_kwh=0.0,
+            unserved_kwh=0.0, days=0, missing_anchor=False,
+        )
+
+    boundary_delta_wh = sum(
+        (states[i].soc_pct - initial_period_soc) / 100.0 * params.units[i].capacity_wh for i in range(len(states))
+    )
+    daily_kwh = {d: (v[0] / 1000.0, v[1] / 1000.0) for d, v in daily_wh.items()}
+    return DeltaSeriesResult(
+        daily_kwh=daily_kwh,
+        max_export_w=max_export,
+        boundary_delta_kwh=boundary_delta_wh / 1000.0,
+        sim_ac_in_kwh=sim_ac_in_wh / 1000.0,
+        sim_buy_kwh=sim_buy_wh / 1000.0,
+        sim_sell_kwh=sim_sell_wh / 1000.0,
+        meas_ac_in_kwh=meas_ac_in_wh / 1000.0,
+        meas_buy_kwh=meas_buy_wh / 1000.0,
+        meas_sell_kwh=meas_sell_wh / 1000.0,
+        unserved_kwh=unserved_wh / 1000.0,
+        days=len(dates_seen),
+        missing_anchor=False,
+    )
+
+
+def _pct_error(sim_kwh: float, meas_kwh: float) -> float:
+    if meas_kwh == 0.0:
+        return 0.0 if abs(sim_kwh) < 1e-9 else (100.0 if sim_kwh > 0 else -100.0)
+    return (sim_kwh - meas_kwh) / meas_kwh * 100.0
+
+
+def _within_tolerance(sim_kwh: float, meas_kwh: float, days: int, tolerance: dict[str, float]) -> bool:
+    if days <= 0:
+        return False
+    diff = abs(sim_kwh - meas_kwh)
+    abs_ok = diff <= tolerance["abs_kwh_per_day"] * days
+    pct_ok = abs(_pct_error(sim_kwh, meas_kwh)) <= tolerance["pct"]
+    return abs_ok or pct_ok
+
+
+def _l1s_replay_check(replay: DeltaSeriesResult) -> tuple[dict, bool]:
+    """DDR §3.3。replayの誤差%とゲート合否を返す。"""
+    ac_ok = _within_tolerance(replay.sim_ac_in_kwh, replay.meas_ac_in_kwh, replay.days, L1S_REPLAY_TOLERANCE["ac_in"])
+    buy_ok = _within_tolerance(replay.sim_buy_kwh, replay.meas_buy_kwh, replay.days, L1S_REPLAY_TOLERANCE["buy"])
+    sell_ok = _within_tolerance(replay.sim_sell_kwh, replay.meas_sell_kwh, replay.days, L1S_REPLAY_TOLERANCE["sell"])
+    l1s_replay = {
+        "ac_in_error_pct": round(_pct_error(replay.sim_ac_in_kwh, replay.meas_ac_in_kwh), 1),
+        "buy_error_pct": round(_pct_error(replay.sim_buy_kwh, replay.meas_buy_kwh), 1),
+        "sell_error_pct": round(_pct_error(replay.sim_sell_kwh, replay.meas_sell_kwh), 1),
+    }
+    return l1s_replay, (ac_ok and buy_ok and sell_ok)
+
+
+def _params_with_overrides(
+    base: delta_model.DeltaFleetParams, capacity_factor: float, eta: float, idle_w: float, margin_w: float
+) -> delta_model.DeltaFleetParams:
+    units = tuple(
+        dataclass_replace(u, capacity_wh=DELTA_UNIT_NOMINAL_WH[u.name] * capacity_factor) for u in base.units
+    )
+    return dataclass_replace(
+        base, units=units, charge_efficiency=eta, discharge_efficiency=eta, idle_w=idle_w, tracking_margin_w=margin_w
+    )
+
+
+def _l1s_param_variants(base: delta_model.DeltaFleetParams) -> dict[str, delta_model.DeltaFleetParams]:
+    """DDR §5.4の楽観/悲観。2026-09-24較正（calibrate_delta_model.py、DELTA_MODEL_CALIBRATED_ON
+    参照）で、ゲート合格した格子探索の組の中でL1Sの電気代が最小・最大になった実際の組に
+    置き換え済み（較正前は§5.4の暫定の相対倍率だった）。"""
+    if DELTA_MODEL_CALIBRATED_ON is not None:
+        # 2026-09-24較正の出力（calibrate_delta_model.py、2026-08-29〜2026-09-22, gate_passing=226通り中）。
+        optimistic = _params_with_overrides(base, capacity_factor=0.85, eta=0.90, idle_w=10.0, margin_w=100.0)
+        pessimistic = _params_with_overrides(base, capacity_factor=0.85, eta=0.88, idle_w=20.0, margin_w=400.0)
+        return {"central": base, "optimistic": optimistic, "pessimistic": pessimistic}
+
+    # 較正前の暫定フォールバック（DDR §5.4）: 楽観=容量大・効率高・待機小・マージン小
+    # （＝系統から買う分が少なく有利）、悲観はその逆。
+    def scaled_units(capacity_mult: float) -> tuple[delta_model.DeltaUnitSpec, ...]:
+        return tuple(dataclass_replace(u, capacity_wh=u.capacity_wh * capacity_mult) for u in base.units)
+
+    optimistic = dataclass_replace(
+        base,
+        units=scaled_units(1.10),
+        charge_efficiency=min(0.97, base.charge_efficiency + 0.03),
+        discharge_efficiency=min(0.97, base.discharge_efficiency + 0.03),
+        idle_w=base.idle_w * 0.7,
+        tracking_margin_w=max(0.0, base.tracking_margin_w - 100.0),
+    )
+    pessimistic = dataclass_replace(
+        base,
+        units=scaled_units(0.90),
+        charge_efficiency=max(0.0, base.charge_efficiency - 0.03),
+        discharge_efficiency=max(0.0, base.discharge_efficiency - 0.03),
+        idle_w=base.idle_w * 1.3,
+        tracking_margin_w=base.tracking_margin_w + 100.0,
+    )
+    return {"central": base, "optimistic": optimistic, "pessimistic": pessimistic}
+
+
+def _l1s_uncertainty(
+    ordered_buckets: list[Bucket],
+    soc_map: dict[str, float],
+    scale_factor: float,
+    tariff: dict,
+    billing_month: str,
+    sell_fit: float,
+    buy_price: float,
+) -> dict:
+    """DDR §5.4。pv_ac_efficiency{1.00,0.95} × パラメータ{悲観,中央,楽観}の6通りのmin/max。
+    境界のSOCドリフト（中央×1.00のboundary_delta_kwh）で帯を補正する。"""
+    variants = _l1s_param_variants(DEFAULT_DELTA_FLEET_PARAMS)
+    costs: list[int] = []
+    boundary_kwh_central = None
+    for pv_eff in (1.00, 0.95):
+        for name, params in variants.items():
+            series = _simulate_delta_series(ordered_buckets, params, soc_map, pv_ac_efficiency=pv_eff, mode="l1s")
+            if series.missing_anchor:
+                continue
+            buy_kwh = sum(v[0] for v in series.daily_kwh.values()) * scale_factor
+            sell_kwh = sum(v[1] for v in series.daily_kwh.values()) * scale_factor
+            bill = bill_model.compute_bill(tariff, buy_kwh, billing_month)
+            costs.append(bill.total_yen - _round_yen(sell_kwh * sell_fit))
+            if name == "central" and pv_eff == 1.00:
+                boundary_kwh_central = series.boundary_delta_kwh
+    if not costs:
+        return {}
+    cost_min, cost_max = min(costs), max(costs)
+    if boundary_kwh_central:
+        if boundary_kwh_central > 0:
+            cost_min -= _round_yen(boundary_kwh_central * sell_fit)
+        else:
+            cost_max += _round_yen(abs(boundary_kwh_central) * buy_price)
+    return {"net_cost_fit_yen_min": cost_min, "net_cost_fit_yen_max": cost_max}
+
+
+def _l1s_model_params_dict() -> dict:
+    """DDR §5.6。台ごとの値・load_shareは出さず合計値のみ（オーナー決定）。"""
+    capacity_kwh_nominal = sum(DELTA_UNIT_NOMINAL_WH.values()) / 1000.0
+    capacity_kwh_effective = sum(u.capacity_wh for u in DEFAULT_DELTA_FLEET_PARAMS.units) / 1000.0
+    return {
+        "units": len(DEFAULT_DELTA_FLEET_PARAMS.units),
+        "capacity_kwh_nominal": round(capacity_kwh_nominal, 3),
+        "capacity_kwh_effective": round(capacity_kwh_effective, 3),
+        "charge_efficiency": DEFAULT_DELTA_FLEET_PARAMS.charge_efficiency,
+        "discharge_efficiency": DEFAULT_DELTA_FLEET_PARAMS.discharge_efficiency,
+        "idle_w_per_unit": DEFAULT_DELTA_FLEET_PARAMS.idle_w,
+        "tracking_margin_w": DEFAULT_DELTA_FLEET_PARAMS.tracking_margin_w,
+        "speedup_threshold_w": DEFAULT_DELTA_FLEET_PARAMS.speedup_threshold_w,
+        "full_soc_pct": DEFAULT_DELTA_FLEET_PARAMS.full_on_pct,
+        "emergency_soc_pct": DEFAULT_DELTA_FLEET_PARAMS.emergency_on_pct,
+        "emergency_exit_soc_pct": DEFAULT_DELTA_FLEET_PARAMS.emergency_off_pct,
+        "replay_tolerance_ac_in_pct": L1S_REPLAY_TOLERANCE["ac_in"]["pct"],
+        "replay_tolerance_buy_pct": L1S_REPLAY_TOLERANCE["buy"]["pct"],
+        "replay_tolerance_sell_pct": L1S_REPLAY_TOLERANCE["sell"]["pct"],
+        "calibrated_on": DELTA_MODEL_CALIBRATED_ON,
+        "_source": DELTA_MODEL_SOURCE_NOTE,
+    }
+
+
 def daily_layer_dict(
     available: bool,
     buy_kwh: float | None = None,
@@ -727,6 +1048,41 @@ def _missing_days_reason(missing_days: list[str], total_days: int) -> dict:
     )
 
 
+def _ecoflow_soc_missing_reason(detail: str) -> dict:
+    """DDR §5.1: L1Sが unavailable になる理由2（合わせ直しに使うSOCが無い）。"""
+    return bill_model.reason(bill_model.REASON_CODE_ECOFLOW_SOC_MISSING, "ポータブル電源の記録が不足", detail)
+
+
+def _l1s_model_check_failed_reason(l1s_replay: dict) -> dict:
+    """DDR §5.1: L1Sが unavailable になる理由3（replayが許容差外）。"""
+    detail = (
+        f"replay誤差: AC入力{l1s_replay['ac_in_error_pct']}% "
+        f"買電{l1s_replay['buy_error_pct']}% 売電{l1s_replay['sell_error_pct']}%"
+    )
+    return bill_model.reason(bill_model.REASON_CODE_L1S_MODEL_CHECK_FAILED, "試算モデルの検証で誤差が大きかった期間", detail)
+
+
+def _compute_l1s_for_period(
+    ordered_buckets: list[Bucket], ecoflow_soc_by_date: dict[str, float] | None
+) -> tuple[DeltaSeriesResult, dict | None, bool, dict | None]:
+    """DDR §3.2〜§3.3。l1s系列とreplay系列の両方を実行し、
+    (l1s系列, l1s_replay辞書|None, ゲート合格か, unavailable理由|None) を返す。"""
+    soc_map = ecoflow_soc_by_date or {}
+    l1s_series = _simulate_delta_series(
+        ordered_buckets, DEFAULT_DELTA_FLEET_PARAMS, soc_map, pv_ac_efficiency=1.00, mode="l1s"
+    )
+    if l1s_series.missing_anchor:
+        return l1s_series, None, False, _ecoflow_soc_missing_reason("ecoflow_daily の合わせ直し用SOCがありません")
+    replay_series = _simulate_delta_series(
+        ordered_buckets, DEFAULT_DELTA_FLEET_PARAMS, soc_map, pv_ac_efficiency=1.00, mode="replay"
+    )
+    if replay_series.missing_anchor:
+        return l1s_series, None, False, _ecoflow_soc_missing_reason("ecoflow_daily の合わせ直し用SOCがありません")
+    l1s_replay, gate_ok = _l1s_replay_check(replay_series)
+    reason = None if gate_ok else _l1s_model_check_failed_reason(l1s_replay)
+    return l1s_series, l1s_replay, gate_ok, reason
+
+
 def _day_exclusion_entry(d_str: str, day_buckets: list[Bucket] | None) -> dict:
     """暦日1日分の除外理由（オーナー決定2026-09-20、90%スケール運用の excluded_dates 用）。
     全日欠測（プロファイル自体が無い）と部分欠損（補間上限INTERPOLATION_MAX_GAP超過・
@@ -753,8 +1109,11 @@ def build_month_layers(
     official_sell_by_month: dict,
     official_buy_by_month: dict,
     profile_by_date: dict[str, list[Bucket]],
+    *,
+    ecoflow_soc_by_date: dict[str, float] | None = None,
 ) -> dict:
-    """1請求月分の4層レコードを組み立てる。層ごとに available/unavailable_reason を持つため、
+    """1請求期間分のレイヤーレコードを組み立てる（L0/L1/L1S/L2/L3）。層ごとに
+    available/unavailable_reason を持つため、
     呼び出し側(build_layers)は「1つも available が無い月」だけを excluded_months に回す
     （QA #4: 除外理由を層ごとに具体化するため、本関数は常にレコードを返す）。"""
     meter_read_day = tariff["meter_read_day"]
@@ -820,7 +1179,9 @@ def build_month_layers(
         reason = _missing_days_reason([e["date"] for e in excluded_dates], total_days)
         l0_layer = unavailable_layer("estimated", reason)
         l1_layer = unavailable_layer("estimated", reason)
+        l1s_layer = unavailable_layer("estimated", reason)  # DDR §5.1 理由1: L1がunavailableならL1Sも同じ理由
         l2_layer = unavailable_layer("estimated", reason)
+        l1s_replay = None
         uncertainty: dict = {}
         boundary_storage_kwh = None
         max_export_w = None
@@ -845,6 +1206,17 @@ def build_month_layers(
             buy_kwh=sum(v[0] for v in l2_daily.values()),
             sell_kwh=sum(v[1] for v in l2_daily.values()),
             max_export_w=l2_max_export,
+        )
+
+        # L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §3.2〜§3.3）: L1/L2と
+        # 同じusable日集合をDELTA群モデルでシミュレートし、replayで実測と突き合わせる。
+        l1s_series, l1s_replay, l1s_gate_ok, l1s_unavail_reason = _compute_l1s_for_period(
+            ordered_buckets, ecoflow_soc_by_date
+        )
+        l1s_totals = LayerTotals(
+            buy_kwh=sum(v[0] for v in l1s_series.daily_kwh.values()),
+            sell_kwh=sum(v[1] for v in l1s_series.daily_kwh.values()),
+            max_export_w=l1s_series.max_export_w,
         )
 
         is_full = days_usable == total_days
@@ -890,6 +1262,13 @@ def build_month_layers(
                     "soc_start_pct": round(soc_start_pct, 1), "soc_end_pct": round(soc_end_pct, 1),
                 },
             )
+            if l1s_gate_ok:
+                l1s_layer = layer_dict(
+                    "estimated", True, l1s_totals.buy_kwh * scale_factor, l1s_totals.sell_kwh * scale_factor,
+                    tariff, billing_month, sell_fit, sell_post_fit, extra=dict(common_extra),
+                )
+            else:
+                l1s_layer = unavailable_layer("estimated", l1s_unavail_reason)
 
             # 不確かさ帯: バケット5/15/30分 × pv_ac_efficiency 1.00/0.95 の組み合わせでL1/L2を
             # 再計算する（DDR §0既知のノイズ: max(0,・)は凸なのでバケットを粗くするほど
@@ -911,8 +1290,17 @@ def build_month_layers(
             uncertainty = {
                 "L1": {"net_cost_fit_yen_min": min(l1_costs), "net_cost_fit_yen_max": max(l1_costs)},
                 "L2": {"net_cost_fit_yen_min": min(l2_costs), "net_cost_fit_yen_max": max(l2_costs)},
-                "note": "バケット5/15/30分 × pv_ac_efficiency 1.00/0.95 の組み合わせでのnet_cost_fit_yenの範囲（DDR §0既知のノイズ参照）",
+                "note": "バケット5/15/30分 × pv_ac_efficiency 1.00/0.95 の組み合わせでのnet_cost_fit_yenの範囲"
+                "（DDR §0既知のノイズ参照）。L1Sの帯はL1S単独のパラメータ不確かさによるもので、"
+                "L1とL1Sの帯どうしを引き算して差の帯にすることはできない。",
             }
+            if l1s_gate_ok:
+                buy_price = bill_model.per_kwh_prices(tariff, billing_month)[0]
+                l1s_uncertainty = _l1s_uncertainty(
+                    ordered_buckets, ecoflow_soc_by_date or {}, scale_factor, tariff, billing_month, sell_fit, buy_price
+                )
+                if l1s_uncertainty:
+                    uncertainty["L1S"] = l1s_uncertainty
         except KeyError as exc:
             # 暫定単価を確定月に使わないルールは維持する（resolve_effective_tariffを呼ばない）。
             # 5分プロファイルはusableでもtariff.json側が未確定なら、build_in_progress側の
@@ -922,10 +1310,11 @@ def build_month_layers(
             )
             l0_layer = unavailable_layer("estimated", tariff_reason)
             l1_layer = unavailable_layer("estimated", tariff_reason)
+            l1s_layer = unavailable_layer("estimated", tariff_reason)
             l2_layer = unavailable_layer("estimated", tariff_reason)
             uncertainty = {}
 
-    layers = {"L0": l0_layer, "L1": l1_layer, "L2": l2_layer, "L3": l3_layer}
+    layers = {"L0": l0_layer, "L1": l1_layer, "L1S": l1s_layer, "L2": l2_layer, "L3": l3_layer}
 
     return {
         "billing_month": billing_month,
@@ -935,6 +1324,7 @@ def build_month_layers(
         "boundary_storage_kwh": boundary_storage_kwh,
         "max_export_w": round(max_export_w, 1) if max_export_w is not None else None,
         "uncertainty": uncertainty,
+        "l1s_replay": l1s_replay,
         "interpolated_buckets": month_interpolated_buckets,
         "interpolated_slots": month_interpolated_slots,
     }
@@ -958,7 +1348,13 @@ def build_daily_load(profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
     return days
 
 
-def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
+def build_daily_layers(
+    tariff: dict,
+    daily_by_date: dict,
+    profile_by_date: dict[str, list[Bucket]],
+    *,
+    ecoflow_soc_by_date: dict[str, float] | None = None,
+) -> list[dict]:
     """usableな各日（1日INTERPOLATION_MAX_GAPバケットまでの欠落は resolve_day_buckets が
     線形補間して埋める。オーナー承認機能・2026-09-06、DDR §0既知のノイズ対策）についてL0/L1/L2(推定)と
     L3(センサー実測)の日次buy/sell kWhと円換算(per_kwh_only)を算出する（請求期間が全日
@@ -1009,6 +1405,23 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
         initial_soc = ordered_buckets[0].nichicon_soc if ordered_buckets[0].nichicon_soc is not None else 0.0
         l2_by_date.update(simulate_l2_series(ordered_buckets, pv_ac_efficiency=1.0, initial_soc_pct=initial_soc))
 
+    # L1Sも請求期間ごとにグルーピングして連続シミュレートする。その期間のreplayが不合格な
+    # 場合は period_dates を daily_kwh に登録しないため、下の.get()がNoneを返しL1Sは
+    # 自然にavailable:falseになる（DDR §5.5「期間内の全日をavailable:falseにする」）。
+    l1s_by_date: dict[str, tuple[float, float]] = {}
+    for billing_month in bill_model.list_candidate_billing_months(first_date, last_date):
+        p_start, p_end = bill_model.billing_period(billing_month, meter_read_day)
+        period_dates = [d for d in usable_dates if p_start.isoformat() <= d <= p_end.isoformat()]
+        if not period_dates:
+            continue
+        ordered_buckets = []
+        for d_str in period_dates:
+            ordered_buckets.extend(resolved_by_date[d_str])
+        ordered_buckets.sort(key=lambda b: b.bucket_at)
+        l1s_series, _l1s_replay, l1s_gate_ok, _reason = _compute_l1s_for_period(ordered_buckets, ecoflow_soc_by_date)
+        if l1s_gate_ok:
+            l1s_by_date.update(l1s_series.daily_kwh)
+
     days = []
     for d_str in usable_dates:
         d = date.fromisoformat(d_str)
@@ -1032,6 +1445,7 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
 
         l0_totals, l1_totals = l0_l1_by_date[d_str]
         l2_buy_sell = l2_by_date.get(d_str)
+        l1s_buy_sell = l1s_by_date.get(d_str)
 
         daily_row = daily_by_date.get(d_str) or {}
         l3_buy_kwh = daily_row.get("buy_kwh")
@@ -1044,6 +1458,12 @@ def build_daily_layers(tariff: dict, daily_by_date: dict, profile_by_date: dict[
             "layers": {
                 "L0": daily_layer_dict(True, l0_totals.buy_kwh, l0_totals.sell_kwh, buy_price, sell_fit, sell_post_fit),
                 "L1": daily_layer_dict(True, l1_totals.buy_kwh, l1_totals.sell_kwh, buy_price, sell_fit, sell_post_fit),
+                "L1S": daily_layer_dict(
+                    l1s_buy_sell is not None,
+                    l1s_buy_sell[0] if l1s_buy_sell else None,
+                    l1s_buy_sell[1] if l1s_buy_sell else None,
+                    buy_price, sell_fit, sell_post_fit,
+                ),
                 "L2": daily_layer_dict(
                     l2_buy_sell is not None,
                     l2_buy_sell[0] if l2_buy_sell else None,
@@ -1069,6 +1489,8 @@ def build_in_progress(
     daily_by_date: dict,
     profile_by_date: dict[str, list[Bucket]],
     today: date,
+    *,
+    ecoflow_soc_by_date: dict[str, float] | None = None,
 ) -> dict | None:
     """現在進行中の請求期間（todayを含む期間）の月途中集計（オーナー承認機能・2026-09-06、
     非連続usable日集合への変更はオーナー決定2026-09-20）。確定月（build_month_layers）と
@@ -1182,6 +1604,17 @@ def build_in_progress(
     boundary_storage_kwh = {
         "nichicon_soc_start_pct": round(soc_start_pct, 1), "nichicon_soc_end_pct": round(soc_end_pct, 1),
     }
+
+    # L1S: L0〜L3と同じusable_dates（DDR §5.5「in_progressのL1SはL0〜L3と同じ日の集合」）。
+    l1s_series, l1s_replay, l1s_gate_ok, l1s_unavail_reason = _compute_l1s_for_period(
+        ordered_buckets, ecoflow_soc_by_date
+    )
+    l1s_totals = LayerTotals(
+        buy_kwh=sum(v[0] for v in l1s_series.daily_kwh.values()),
+        sell_kwh=sum(v[1] for v in l1s_series.daily_kwh.values()),
+        max_export_w=l1s_series.max_export_w,
+    )
+
     try:
         l0_layer = layer_dict(
             "estimated", True, l0_totals.buy_kwh, l0_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit,
@@ -1191,6 +1624,13 @@ def build_in_progress(
             "estimated", True, l1_totals.buy_kwh, l1_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit,
             extra={"excluded_dates": excluded_dates},
         )
+        if l1s_gate_ok:
+            l1s_layer = layer_dict(
+                "estimated", True, l1s_totals.buy_kwh, l1s_totals.sell_kwh, effective_tariff, billing_month,
+                sell_fit, sell_post_fit, extra={"excluded_dates": excluded_dates},
+            )
+        else:
+            l1s_layer = unavailable_layer("estimated", l1s_unavail_reason)
         l2_layer = layer_dict(
             "estimated", True, l2_totals.buy_kwh, l2_totals.sell_kwh, effective_tariff, billing_month, sell_fit, sell_post_fit,
             extra={
@@ -1202,6 +1642,7 @@ def build_in_progress(
         tariff_reason = bill_model.reason(bill_model.REASON_CODE_TARIFF_MISSING, "料金表の設定が不足しています", str(exc))
         l0_layer = unavailable_layer("estimated", tariff_reason)
         l1_layer = unavailable_layer("estimated", tariff_reason)
+        l1s_layer = unavailable_layer("estimated", tariff_reason)
         l2_layer = unavailable_layer("estimated", tariff_reason)
         boundary_storage_kwh = None
 
@@ -1213,8 +1654,9 @@ def build_in_progress(
         "days_elapsed": days_elapsed,
         "period_end_actual": period_end_actual.isoformat(),
         "excluded_dates": excluded_dates,
-        "layers": {"L0": l0_layer, "L1": l1_layer, "L2": l2_layer, "L3": l3_layer},
+        "layers": {"L0": l0_layer, "L1": l1_layer, "L1S": l1s_layer, "L2": l2_layer, "L3": l3_layer},
         "boundary_storage_kwh": boundary_storage_kwh,
+        "l1s_replay": l1s_replay,
         "tariff_provisional": provisional,
         "tariff_source_month": source_month,
         "interpolated_buckets": period_interpolated_values,
@@ -1231,6 +1673,7 @@ def build_layers(
     today: date | None = None,
     profile_source: str = DEFAULT_PROFILE_SOURCE_LABEL,
     publish_since: str | None = None,
+    ecoflow_soc_by_date: dict[str, float] | None = None,
 ) -> dict:
     """publish_since: 'YYYY-MM-DD'。指定した場合、請求期間の開始日がこれより前の請求月は
     months/excluded_months/in_progress から除外し、daily は date>=publish_since の行のみに
@@ -1273,7 +1716,8 @@ def build_layers(
             if period_start.isoformat() < effective_publish_since:
                 continue
         record = build_month_layers(
-            tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date
+            tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
+            ecoflow_soc_by_date=ecoflow_soc_by_date,
         )
         layers = record["layers"]
         if any(layer.get("available") for layer in layers.values()):
@@ -1288,11 +1732,15 @@ def build_layers(
 
     cumulative = _build_cumulative(months)
 
-    daily_layers = build_daily_layers(tariff, daily_by_date, profile_by_date)
+    daily_layers = build_daily_layers(
+        tariff, daily_by_date, profile_by_date, ecoflow_soc_by_date=ecoflow_soc_by_date
+    )
     if effective_publish_since is not None:
         daily_layers = [d for d in daily_layers if d["date"] >= effective_publish_since]
 
-    in_progress = build_in_progress(tariff, daily_by_date, profile_by_date, today or date.today())
+    in_progress = build_in_progress(
+        tariff, daily_by_date, profile_by_date, today or date.today(), ecoflow_soc_by_date=ecoflow_soc_by_date
+    )
     if (
         in_progress is not None
         and effective_publish_since is not None
@@ -1316,6 +1764,7 @@ def build_layers(
             "profile_source": profile_source,
             "month_usable_fraction_threshold": MONTH_USABLE_FRACTION_THRESHOLD,
             "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）",
+            "l1s_model": _l1s_model_params_dict(),
         },
         "months": months,
         "excluded_months": excluded,
@@ -1362,11 +1811,16 @@ def _build_cumulative(months: list[dict]) -> dict:
     includes_scaled_months = any(
         m["layers"][layer].get("estimation") == "scaled" for m in full_months for layer in ("L0", "L1", "L2")
     )
+    net_cost_fit_yen = {"L0": total_l0, "L1": total_l1, "L2": total_l2, "L3": total_l3}
+    # DDR §5.5: 採用する月の規則（L0〜L3がすべてavailable）は変えない。billing_monthsの
+    # 全月でL1Sもavailableのときに限りL1Sキーを追加する（部分月の平均でごまかさない）。
+    if full_months and all(m["layers"].get("L1S", {}).get("available") for m in full_months):
+        net_cost_fit_yen["L1S"] = sum(m["layers"]["L1S"]["net_cost_fit_yen"] for m in full_months)
     return {
         "months_included": len(full_months),
         "available": True,
         "billing_months": [m["billing_month"] for m in full_months],
-        "net_cost_fit_yen": {"L0": total_l0, "L1": total_l1, "L2": total_l2, "L3": total_l3},
+        "net_cost_fit_yen": net_cost_fit_yen,
         "saving_yen_fit": total_l0 - total_l3,
         "includes_scaled_months": includes_scaled_months,
     }
@@ -1382,6 +1836,33 @@ def _read_profile_rows(profile_path: Path | None) -> list[dict]:
     if not text.strip():
         return []
     return list(csv.DictReader(io.StringIO(text)))
+
+
+def load_ecoflow_daily(path: Path | None) -> dict[str, float]:
+    """DDR §4.3。ecoflow_daily.json（[{"date":..., "soc_start_pct":...}, ...]、容量加重の
+    合計SOCのみ・S/N/台別値は含まない）を読み、date->soc_start_pctの辞書にする。
+    省略時・空・JSON不正は{}として扱い、stderrに警告を出す（L1Sはecoflow_soc_missingになる）。"""
+    if path is None:
+        return {}
+    if not path.exists():
+        print(f"layer_model.py: --ecoflow-daily {path} が見つかりません。L1Sはecoflow_soc_missingになります", file=sys.stderr)
+        return {}
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return {}
+    try:
+        rows = json.loads(text)
+    except json.JSONDecodeError as exc:
+        print(f"layer_model.py: --ecoflow-daily {path} のJSONが不正です（{exc}）。空として扱います", file=sys.stderr)
+        return {}
+    result: dict[str, float] = {}
+    for row in rows:
+        d = row.get("date")
+        pct = row.get("soc_start_pct")
+        if d is None or pct is None:
+            continue
+        result[d] = float(pct)
+    return result
 
 
 def main() -> None:
@@ -1414,6 +1895,11 @@ def main() -> None:
         "months/excluded_months/daily/in_progressから除外する（省略時は自動算出した"
         "params.profile_since を使う）",
     )
+    parser.add_argument(
+        "--ecoflow-daily", type=Path, default=None,
+        help="ecoflow_daily.json（容量加重の合計SOCのみ・S/N/台別値なし）のパス。"
+        "省略時はL1Sがすべてecoflow_soc_missingになる（DDR §4.3）",
+    )
     args = parser.parse_args()
 
     tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
@@ -1421,6 +1907,7 @@ def main() -> None:
     official_sell_by_month = bill_model.load_official_sell(args.official_sell)
     official_buy_by_month = bill_model.load_official_buy(args.official_buy)
     today = date.fromisoformat(args.today) if args.today else date.today()
+    ecoflow_soc_by_date = load_ecoflow_daily(args.ecoflow_daily)
 
     rows = _read_profile_rows(args.profile)
     buckets = parse_profile_rows(rows)
@@ -1432,6 +1919,7 @@ def main() -> None:
     result = build_layers(
         tariff, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
         today=today, profile_source=args.profile_source, publish_since=args.publish_since,
+        ecoflow_soc_by_date=ecoflow_soc_by_date,
     )
     result["generated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

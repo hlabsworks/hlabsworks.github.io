@@ -30,6 +30,11 @@ pagination.pagerSize = 10
     url = "/posts/"
     weight = 10
   [[menu.main]]
+    identifier = "metrics"
+    name = "実績ダッシュボード"
+    url = "/metrics/"
+    weight = 15
+  [[menu.main]]
     identifier = "about"
     name = "このサイトについて"
     url = "/about/"

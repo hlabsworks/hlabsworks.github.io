@@ -5,7 +5,7 @@
 
 - 経緯: 当初 `profile_20260901.csv`（2026-09-01の1日分・実データ288行）を golden day
   テスト用フィクスチャとして同梱していたが、QAレビューで「時間帯粒度の実データは
-  公開repoに置けない」（設計書 `docs/design/20260905_layer-model-ddr.md` §6 却下案4、
+  公開repoに置けない」（設計書（非公開） §6 却下案4、
   オーナー決定）との指摘を受け削除した（2026-09-06）。
 - golden day テスト（`test_layer_model.py` の `GoldenDaySyntheticTest`）は、実データの
   代わりに `test_layer_model.py` 内で**合成**した滑らかなパラメトリック曲線のプロファイルを

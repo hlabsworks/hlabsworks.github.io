@@ -4,7 +4,7 @@
 実行方法:
   cd scripts/blog-metrics && python3 -m unittest test_layer_model -v
 
-テスト分類は docs/design/20260905_layer-model-ddr.md §5 に対応する
+テスト分類は 設計書（非公開） §5 に対応する
 （A: 恒等式 / B: 蓄電池 / C: golden day / D: 請求変換 / E: 品質ゲート）。
 
 QA #1 (BLOCKER) 対応: 時間帯粒度の実データ(*.csv)は本repoにコミットしない
@@ -543,7 +543,7 @@ class GoldenDayRealDataOptInTest(unittest.TestCase):
     上流データ品質の問題（REASONED、SQLソース非公開のため未VERIFIED）。本モデルの恒等式・
     シミュレーションロジック自体は精度違いの2種のCSV（丸めあり/丸めなし）で同一の結果
     （26.7596 vs 26.7594kWh）を返すため正しいと確認済み。詳細は
-    docs/design/20260905_layer-model-ddr.md §5-C 追記を参照。
+    設計書（非公開） §5-C 追記を参照。
     """
 
     @classmethod

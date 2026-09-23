@@ -17,7 +17,7 @@
     エネルギー収支から復元した真の家庭負荷 load_true の暦日ごとの kWh。Hugo が読む
     data/metrics/ には置かない中間ファイル（.gitignore 済み）。無ければ bill_l0_no_solar は
     全月 null になる — 旧仕様の consumption_kwh ベースの反実仮想は誤りと判明したため廃止
-    した。詳細は docs/design/20260905_layer-model-ddr.md §0。L0 の算出元はこの1ファイルの
+    した。詳細は 設計書（非公開） §0。L0 の算出元はこの1ファイルの
     みとし（layer_model.py の day_is_usable/build_daily_load）、本ファイル側では再計算しない）
 出力:
   - data/metrics/bills.json
@@ -35,7 +35,7 @@
     参考値のまま残す）。
   - 買電量も同様に official_buy.json に対応する請求月があればそれを優先採用する
     （請求明細PDFの実使用量のため、buy_w センサー値は量子化・不感帯で系統的に過小になる
-    ことが判明している — docs/design/20260905_layer-model-ddr.md §0 #5）。採用した
+    ことが判明している — 設計書（非公開） §0 #5）。採用した
     買電量の出典は各月の "buy_source" ("billed"|"sensor") に記録し、センサー計測との
     差分は "buy_diff_pct" に併記する（センサー値は "buy_kwh_sensor" として参考値のまま
     残す。"bill_actual.buy_kwh" は採用後の値）。
@@ -43,7 +43,7 @@
     load_true（layer_model.py が生成する daily_load.json）の全量買電とみなす。旧仕様の
     consumption_kwh（= max(0, solar_w + buy_w − sell_w) の導出値。逆潮流時に0へ張り付き
     実測7日平均で真の負荷の67%しか説明しない）は誤りと判明したため使用しない
-    （docs/design/20260905_layer-model-ddr.md §0）。daily_load.json が無い月・請求期間内に
+    （設計書（非公開） §0）。daily_load.json が無い月・請求期間内に
     load_kwh 欠測がある月は "bill_l0_no_solar": null とし、理由を "l0_unavailable_reason"
     に記録する（捏造しない）。
   - 容量拠出金は tariff.json の capacity_contribution_yen_per_month に billing_month の
@@ -483,7 +483,7 @@ def build_month_record(
     sell_post_fit = tariff["sell_price_yen_per_kwh"]["post_fit_assumed_for_readers"]
 
     # 買電量: 請求実績(official_buy.json)があれば優先採用する。buy_w センサーは量子化・
-    # 不感帯で系統的に過小（docs/design/20260905_layer-model-ddr.md §0 #5）。
+    # 不感帯で系統的に過小（設計書（非公開） §0 #5）。
     official_buy = resolve_official_buy(official_buy_by_month or {}, billing_month, start, end)
     if official_buy is not None:
         buy_kwh = official_buy["official_buy_kwh"]

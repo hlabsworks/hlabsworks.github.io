@@ -3,7 +3,7 @@
 系統連系点のエネルギー収支で真の家庭負荷 load_true を復元し、太陽光・蓄電池の有無で
 4層（L0/L1/L2/L3）の請求期間ベース比較を行う。
 
-設計根拠: docs/design/20260905_layer-model-ddr.md（SolarChargeController リポジトリ）。
+設計根拠: 設計書（非公開）。
 本ファイルのコメントで参照する「§」はこの DDR の節番号。
 
 前提の訂正（DDR §0、必読）: パワコンの consumption_w は独立計測ではなく

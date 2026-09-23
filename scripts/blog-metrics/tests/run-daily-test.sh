@@ -38,6 +38,8 @@ STUB
   chmod +x "$T/bin/ssh"
 
   # --- metrics-export.sh スタブ ---
+  # ecoflow_daily) は本番Pi未対応時のexit 64(reject)を既定で再現する（QA指摘2026-09-24 F2）。
+  # STUB_ECOFLOW_DAILY_MODE=ok にすると STUB_ECOFLOW_DAILY_JSON を返す成功経路になる。
   cat > "$T/bin/stub-export.sh" <<'STUB'
 #!/bin/bash
 set -euo pipefail
@@ -48,12 +50,21 @@ while [ $# -gt 0 ]; do
     daily) CMD="daily"; shift ;;
     meta) CMD="meta"; shift ;;
     profile) CMD="profile"; DATE="$2"; shift 2 ;;
+    ecoflow_daily) CMD="ecoflow_daily"; shift ;;
     *) shift ;;
   esac
 done
 case "$CMD" in
   daily) printf '%s\n' "${STUB_DAILY_JSON}" ;;
   meta) printf '%s\n' "${STUB_META_JSON}" ;;
+  ecoflow_daily)
+    if [ "${STUB_ECOFLOW_DAILY_MODE:-fail}" = "ok" ]; then
+      printf '%s\n' "${STUB_ECOFLOW_DAILY_JSON:-[]}"
+    else
+      echo "stub-export: 未知のクエリID: ecoflow_daily" >&2
+      exit 64
+    fi
+    ;;
   profile)
     echo "bucket_at,solar_w,buy_w,sell_w,nichicon_pv_w,nichicon_battery_w,nichicon_soc,eco_ac_in_w,eco_ac_out_w,power_n,nichicon_n,ecoflow_n"
     echo "${DATE} 12:00,1000,0,200,500,100,55,0,0,10,10,10"
@@ -61,6 +72,50 @@ case "$CMD" in
 esac
 STUB
   chmod +x "$T/bin/stub-export.sh"
+
+  # --- 完全な1日ぶんのプロファイルを返すスタブ（L1S単独の分離検証用。DDR §5.1の
+  # unavailable理由の優先順位「1.L1がunavailableならL1Sも同じ理由」を回避し、L0〜L3を
+  # availableにした上でecoflow_dailyの成否だけがL1Sの理由に効くことを確認するため） ---
+  cat > "$T/bin/stub-export-full-profile.sh" <<'STUB'
+#!/bin/bash
+set -euo pipefail
+CMD=""
+DATE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --db) shift 2 ;;
+    daily) CMD="daily"; shift ;;
+    meta) CMD="meta"; shift ;;
+    profile) CMD="profile"; DATE="$2"; shift 2 ;;
+    ecoflow_daily) CMD="ecoflow_daily"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$CMD" in
+  daily) printf '%s\n' "${STUB_DAILY_JSON}" ;;
+  meta) printf '%s\n' "${STUB_META_JSON}" ;;
+  ecoflow_daily)
+    if [ "${STUB_ECOFLOW_DAILY_MODE:-fail}" = "ok" ]; then
+      printf '%s\n' "${STUB_ECOFLOW_DAILY_JSON:-[]}"
+    else
+      echo "stub-export: 未知のクエリID: ecoflow_daily" >&2
+      exit 64
+    fi
+    ;;
+  profile)
+    echo "bucket_at,solar_w,buy_w,sell_w,nichicon_pv_w,nichicon_battery_w,nichicon_soc,eco_ac_in_w,eco_ac_out_w,power_n,nichicon_n,ecoflow_n"
+    # STUB_FULL_PROFILE_DATE の1日分(288バケット、定数値)を返す。全チャネルが揃うため
+    # resolve_day_buckets が補間なしでusableと判定する。
+    d="${STUB_FULL_PROFILE_DATE:?STUB_FULL_PROFILE_DATE not set}"
+    for h in $(seq -w 0 23); do
+      for m in 00 05 10 15 20 25 30 35 40 45 50 55; do
+        echo "${d} ${h}:${m},500.0,0.0,100.0,0.0,0.0,50.0,0.0,0.0,10,10,10"
+      done
+    done
+    ;;
+esac
+STUB
+  chmod +x "$T/bin/stub-export-full-profile.sh"
 
   # --- notify.sh スタブ（呼び出しを記録するだけ） ---
   mkdir -p "$T/notify"
@@ -424,6 +479,80 @@ CALLS=$(notify_calls)
 CALL_COUNT=$(printf '%s\n' "$CALLS" | /usr/bin/grep -c . || true)
 assert_eq "14 second streak notify count" "$CALL_COUNT" "2"
 assert_contains "14 second notify subject" "$CALLS" "障害"
+teardown
+
+echo "# 15. ecoflow_daily失敗(exit64、Pi未対応相当): aggregate.shはexit0・layers.json生成・L1Sはecoflow_soc_missing・stderrに警告"
+setup
+# usableな1日を「今の請求期間の開始日」にする。それより後の日だけをusableにすると、
+# layer_model.pyのpublish_since自動算出（最古のusable日）が請求期間開始日より後になり、
+# in_progress自体が非公開扱いで隠れてしまう（build_layersの
+# 「in_progress.usage_period.start < effective_publish_since なら隠す」ガード）。
+YDAY=$(python3 -c "
+import sys
+sys.path.insert(0, '$BLOG_METRICS_SRC')
+import bill_model
+from datetime import date
+today = date.today()
+bm = bill_model.billing_month_for_date(today, 2)
+start, _end = bill_model.billing_period(bm, 2)
+print(start.isoformat())
+")
+export STUB_DAILY_JSON="[{\"date\":\"${YDAY}\",\"solar_kwh\":10.0,\"buy_kwh\":1.0,\"sell_kwh\":2.0,\"nichicon_charge_kwh\":0.5,\"ecoflow_charge_kwh\":0.2,\"status\":\"COMPLETE\"}]"
+export STUB_META_JSON="{\"power_history_since\":\"${YDAY}\",\"nichicon_data_since\":\"${YDAY}\",\"ecoflow_data_since\":\"${YDAY}\"}"
+export STUB_FULL_PROFILE_DATE="$YDAY"
+export STUB_ECOFLOW_DAILY_MODE="fail"
+OUT15="$T/out15"
+mkdir -p "$OUT15"
+STDERR15=$(bash "$BUNDLE/aggregate.sh" --local /dev/null --export-cmd "$T/bin/stub-export-full-profile.sh" \
+    --profile-since "$YDAY" --official-dir "$BUNDLE/inputs" --tariff "$BUNDLE/inputs/tariff.json" \
+    --out "$OUT15" 2>&1)
+RC=$?
+assert_eq "15 aggregate exit despite ecoflow_daily 64" "$RC" "0"
+if [ -f "$OUT15/layers.json" ]; then ok; else fail "15 layers.json not generated"; fi
+L1S_REASON=$(python3 -c "
+import json
+d = json.load(open('$OUT15/layers.json'))
+ip = d.get('in_progress')
+if not ip:
+    print('NO_IN_PROGRESS')
+else:
+    l1s = ip['layers']['L1S']
+    print('available' if l1s['available'] else l1s['unavailable_reason']['reason_code'])
+" 2>&1)
+assert_eq "15 L1S reason is ecoflow_soc_missing" "$L1S_REASON" "ecoflow_soc_missing"
+assert_contains "15 stderr warns about ecoflow_daily failure" "$STDERR15" "ecoflow_daily の取得に失敗しました"
+teardown
+
+echo "# 16. ecoflow_daily正常JSON経路: aggregate.shはexit0・ecoflow_daily失敗の警告を出さない"
+setup
+YDAY=$(python3 -c "
+import sys
+sys.path.insert(0, '$BLOG_METRICS_SRC')
+import bill_model
+from datetime import date
+today = date.today()
+bm = bill_model.billing_month_for_date(today, 2)
+start, _end = bill_model.billing_period(bm, 2)
+print(start.isoformat())
+")
+export STUB_DAILY_JSON="[{\"date\":\"${YDAY}\",\"solar_kwh\":10.0,\"buy_kwh\":1.0,\"sell_kwh\":2.0,\"nichicon_charge_kwh\":0.5,\"ecoflow_charge_kwh\":0.2,\"status\":\"COMPLETE\"}]"
+export STUB_META_JSON="{\"power_history_since\":\"${YDAY}\",\"nichicon_data_since\":\"${YDAY}\",\"ecoflow_data_since\":\"${YDAY}\"}"
+export STUB_FULL_PROFILE_DATE="$YDAY"
+export STUB_ECOFLOW_DAILY_MODE="ok"
+export STUB_ECOFLOW_DAILY_JSON="[{\"date\":\"${YDAY}\",\"soc_start_pct\":50.0}]"
+OUT16="$T/out16"
+mkdir -p "$OUT16"
+STDERR16=$(bash "$BUNDLE/aggregate.sh" --local /dev/null --export-cmd "$T/bin/stub-export-full-profile.sh" \
+    --profile-since "$YDAY" --official-dir "$BUNDLE/inputs" --tariff "$BUNDLE/inputs/tariff.json" \
+    --out "$OUT16" 2>&1)
+RC=$?
+assert_eq "16 aggregate exit 0 with ecoflow_daily ok" "$RC" "0"
+if [ -f "$OUT16/layers.json" ]; then ok; else fail "16 layers.json not generated"; fi
+if printf '%s' "$STDERR16" | /usr/bin/grep -qF "ecoflow_daily の取得に失敗しました"; then
+  fail "16 unexpected ecoflow_daily failure warning: $STDERR16"
+else
+  ok
+fi
 teardown
 
 echo "passed=$PASSES failed=$FAILS"

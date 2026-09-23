@@ -6,9 +6,12 @@
  * （scripts/blog-metrics/aggregate.sh, bill_model.py, layer_model.py の生成物）を読む。
  * 日次・月次の集計値のみを扱い、時間帯別の値やデバイス個体情報はそもそも埋め込まれていない。
  *
- * layers.json は4つの構成（L0=太陽光も蓄電池もない場合/L1=太陽光だけの場合/
+ * layers.json は階段表の4つの構成（L0=太陽光も蓄電池もない場合/L1=太陽光だけの場合/
  * L2=太陽光＋蓄電池の場合/L3=太陽光＋蓄電池＋SolarChargeController、実際の構成）の
- * 請求期間ベース比較。L0〜L2は試算、L3のみ実測。available:false の構成は描画しない（捏造しない）。
+ * 請求期間ベース比較に、分岐のL1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算）を
+ * 加えた5つの構成を持つ。L0・L1・L1S・L2は試算、L3のみ実測。L1Sは「家庭用蓄電池が無い
+ * ご家庭なら」の分岐（noHomeBatteryBranchHtml/renderL1sBranchTable）でのみ表示し、
+ * 階段表(LAYER_ORDER)には含めない。available:false の構成は描画しない（捏造しない）。
  * 数値の算出ロジックの詳細は /metrics/methodology/ を参照。
  */
 (function () {
@@ -92,10 +95,14 @@
   var LAYER_NAMES = {
     L0: "太陽光も蓄電池もない場合（試算）",
     L1: "太陽光だけの場合（試算）",
+    L1S: "太陽光＋SolarChargeController（蓄電池なし、試算）",
     L2: "太陽光＋蓄電池の場合（試算）",
     L3: "太陽光＋蓄電池＋SolarChargeController（実際）",
   };
-  var LAYER_COLORS = { L0: "#c9484f", L1: "#f4a92b", L2: "#3fa66b", L3: "#4d8fd6" };
+  var LAYER_COLORS = { L0: "#c9484f", L1: "#f4a92b", L1S: "#8e6bbf", L2: "#3fa66b", L3: "#4d8fd6" };
+  // 階段表（何もない→太陽光→蓄電池→SolarChargeController）はL0〜L3の4つのまま変えない。
+  // L1S（蓄電池なしでSolarChargeControllerを導入した場合の分岐）は別枠（noHomeBatteryBranchHtml）
+  // と月次分岐表（renderL1sBranchTable）で示す（DDR §6、旧DDRの却下案4「階段表に5行目」）。
   var LAYER_ORDER = ["L0", "L1", "L2", "L3"];
   // 階段表示で「1つ前の構成との差」に付ける設備名（その段で新たに足された設備）。
   var LAYER_DIFF_SUBJECT = { L1: "太陽光", L2: "蓄電池", L3: "SolarChargeController" };
@@ -192,7 +199,35 @@
       "<table><thead><tr><th>構成</th><th>電気代</th><th>1つ前の構成との差</th></tr></thead>" +
       "<tbody>" + rows + "</tbody></table>" +
       totalHtml +
-      cloudyNote;
+      cloudyNote +
+      noHomeBatteryBranchHtml(layersByKey.L1, ip.layers.L1S);
+  }
+
+  // 「家庭用蓄電池が無いご家庭なら」分岐（DDR §6）: 階段表とは別枠で、太陽光だけの場合と
+  // L1S（太陽光＋SolarChargeController、蓄電池なし試算）を比較する。L1Sがunavailableの
+  // ときは金額を「―」にし、reason_labelだけを表示する（reason_detailは内部情報のため出さない）。
+  function noHomeBatteryBranchHtml(l1, l1s) {
+    var row2Cells;
+    if (l1s && l1s.available) {
+      row2Cells = "<td>" + inProgressAmountText(l1s) + "</td>" + stepDiffCellHtml("SolarChargeController", l1, l1s);
+    } else {
+      var reasonLabel = l1s && l1s.unavailable_reason ? l1s.unavailable_reason.reason_label : "";
+      row2Cells = "<td>―</td><td>" + escapeHtml(reasonLabel) + "</td>";
+    }
+    var diffForNote = (l1 && l1.available && l1s && l1s.available) ? (l1s[layerChartMetric] - l1[layerChartMetric]) : null;
+    var cloudyNote = diffForNote !== null && diffForNote > 0
+      ? "<p class=\"metrics-notes\">曇りの日が多い月は、ポータブル電源の待機電力や充電・放電のロスの分だけ、太陽光だけの場合より高くなることがあります。</p>"
+      : "";
+    return (
+      "<h3>家庭用蓄電池が無いご家庭なら</h3>" +
+      "<table><thead><tr><th>構成</th><th>電気代</th><th>太陽光だけとの差</th></tr></thead>" +
+      "<tbody>" +
+      "<tr><td>" + LAYER_NAMES.L1 + "</td><td>" + inProgressAmountText(l1) + "</td><td>―</td></tr>" +
+      "<tr><td>" + LAYER_NAMES.L1S + "</td>" + row2Cells + "</tr>" +
+      "</tbody></table>" +
+      "<p class=\"metrics-notes\">ポータブル電源には、今つないでいる家電だけをつなぐ前提で試算しています。</p>" +
+      cloudyNote
+    );
   }
 
   function renderDailyLayersEmptyState(daily) {
@@ -213,7 +248,7 @@
     renderDailyLayersEmptyState(daily);
     var canvas = document.getElementById("chart-daily-layers");
     if (!canvas || !window.Chart || !daily || daily.length === 0) return;
-    var datasets = ["L0", "L1", "L2", "L3"].map(function (key) {
+    var datasets = ["L0", "L1", "L1S", "L2", "L3"].map(function (key) {
       return {
         label: LAYER_NAMES[key],
         data: daily.map(function (d) {
@@ -222,6 +257,7 @@
         }),
         borderColor: LAYER_COLORS[key],
         backgroundColor: "transparent",
+        borderDash: key === "L1S" ? [6, 4] : undefined,
         tension: 0.15,
         pointRadius: 0,
         spanGaps: true,
@@ -320,6 +356,53 @@
       "</table>";
   }
 
+  // 月ごとの「家庭用蓄電池が無いご家庭なら」分岐表（DDR §6）。cumulative.billing_monthsの
+  // 各月についてL1/L1S/差を並べる。L1Sがunavailableの月は「―」。1か月もL1Sが無ければ
+  // 何も描かない（既存の月次表と別枠、常にFIT単価net_cost_fit_yen基準で固定表示する）。
+  function renderL1sBranchTable(layers) {
+    var el = document.getElementById("metrics-l1s-branch-table");
+    if (!el) return;
+    var cumulative = layers && layers.cumulative;
+    if (!cumulative || !cumulative.available) {
+      el.innerHTML = "";
+      return;
+    }
+    var monthsByKey = {};
+    (layers.months || []).forEach(function (m) { monthsByKey[m.billing_month] = m; });
+    var anyL1sAvailable = false;
+    var rows = cumulative.billing_months.map(function (billing_month) {
+      var m = monthsByKey[billing_month];
+      var l1 = m.layers.L1, l1s = m.layers.L1S;
+      var l1sAmount = "―", diffCell = "<td>―</td>";
+      if (l1s && l1s.available) {
+        anyL1sAvailable = true;
+        l1sAmount = yen(l1s.net_cost_fit_yen);
+        diffCell = diffCellHtml(l1.net_cost_fit_yen, l1s.net_cost_fit_yen);
+      }
+      return "<tr><td>" + escapeHtml(billing_month) + "</td>" +
+        "<td>" + yen(l1.net_cost_fit_yen) + "</td>" +
+        "<td>" + l1sAmount + "</td>" + diffCell + "</tr>";
+    }).join("");
+    if (!anyL1sAvailable) {
+      el.innerHTML = "";
+      return;
+    }
+    var totalRow = "";
+    if (cumulative.net_cost_fit_yen.L1S !== undefined) {
+      totalRow = "<tfoot><tr><th>累計</th>" +
+        "<th>" + yen(cumulative.net_cost_fit_yen.L1) + "</th>" +
+        "<th>" + yen(cumulative.net_cost_fit_yen.L1S) + "</th>" +
+        diffCellHtml(cumulative.net_cost_fit_yen.L1, cumulative.net_cost_fit_yen.L1S, "th") +
+        "</tr></tfoot>";
+    }
+    el.innerHTML =
+      "<h3>家庭用蓄電池が無いご家庭なら（月ごと）</h3>" +
+      "<table><thead><tr><th>請求月</th><th>" + LAYER_NAMES.L1 + "</th><th>" + LAYER_NAMES.L1S +
+      "</th><th>SolarChargeControllerの効果</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody>" + totalRow +
+      "</table>";
+  }
+
   // 「月ごとの電気代と節約額」。確定月（4層すべてがそろう請求月）が無い間は、いつ最初の
   // 月が表示されるかだけを1文で示す（グラフ・表・長い説明文は出さない）。
   function renderMonthlySection(layers) {
@@ -343,9 +426,11 @@
       "<p>直近" + cumulative.months_included + "請求月の累計で <strong>" + yen(cumulative.saving_yen_fit) +
       "</strong> 節約できています（そのうち SolarChargeController の効果: " + yen(savingL2L3Yen) + "）。</p>" +
       "<canvas id=\"chart-layer-bills\" height=\"140\"></canvas>" +
-      "<div id=\"metrics-layer-cumulative-table\"></div>";
+      "<div id=\"metrics-layer-cumulative-table\"></div>" +
+      "<div id=\"metrics-l1s-branch-table\"></div>";
     renderLayerBillsChart(layers);
     renderLayerCumulativeTable(layers);
+    renderL1sBranchTable(layers);
   }
 
   // 「売電16円で計算／卒FIT（8円）で計算」トグル。今月ここまでカード・日次グラフ・

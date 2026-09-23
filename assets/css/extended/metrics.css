@@ -40,7 +40,8 @@
  * テーブルが横スクロールせずに折り返すようにする（新しい列を追加してもここは変更不要）。
  */
 .metrics-in-progress-card table,
-#metrics-layer-cumulative-table table {
+#metrics-layer-cumulative-table table,
+#metrics-l1s-branch-table table {
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
@@ -50,7 +51,9 @@
 .metrics-in-progress-card th,
 .metrics-in-progress-card td,
 #metrics-layer-cumulative-table th,
-#metrics-layer-cumulative-table td {
+#metrics-layer-cumulative-table td,
+#metrics-l1s-branch-table th,
+#metrics-l1s-branch-table td {
   padding: 0.35em 0.5em;
   text-align: left;
   word-break: break-word;

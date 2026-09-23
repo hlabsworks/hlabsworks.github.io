@@ -8,94 +8,41 @@
   </header>
 
   <div class="post-content md-content">
-    {{ .Content }}
+    <div class="metrics-in-progress-card">
+      {{ .Content }}
+      <div id="metrics-intro-solar"></div>
+    </div>
 
-    <h2>太陽光・蓄電池・ポータブル電源の導入で、今いくら浮いているか</h2>
-    <div id="metrics-layer-summary"></div>
-
-    <h3>今月ここまで（途中集計）</h3>
-    <p>
-      請求期間が全日そろう確定月を待たず、今そろっているデータだけで4層を試算した「今月ここまで」の速報です。
-      バッジ・用語の意味や算出ロジックの詳細は<a href="/metrics/methodology/">計測と推定の方法</a>をご覧ください。
-    </p>
+    <h2>
+      {{- with site.Data.metrics.layers.in_progress }}
+      今月ここまでの電気代（{{ (time.AsTime .usage_period.start).Format "1/2" }}〜{{ (time.AsTime .period_end_actual).Format "1/2" }}、{{ .days_elapsed }}日中{{ .days_covered }}日分）
+      {{- else }}
+      今月ここまでの電気代
+      {{- end }}
+    </h2>
     <div id="metrics-in-progress-card"></div>
+    <button id="layer-chart-toggle" type="button">卒FIT（8円）で計算</button>
 
-    <h3>日次の4層推移（円/日、簡易換算） <span id="metrics-daily-layers-badge"></span></h3>
-    <p>
-      {{ with site.Data.metrics.layers.params.profile_since }}{{ . }}{{ end }}以降、5分プロファイルが揃っている暦日ごとにL0〜L3を比較した折れ線です（簡易換算、L0〜L2は推定・L3は実測）。
-    </p>
+    <h2>日ごとの電気代（4つの構成で比較）</h2>
+    <p class="metrics-notes">試算の3本はシミュレーション、実際の1本は計測値です。</p>
     <div id="metrics-daily-layers-empty"></div>
     <canvas id="chart-daily-layers" height="140"></canvas>
 
-    <h3>確定月の4層比較</h3>
-    <p>
-      電気代を4つの層で比較しています。<strong>L0</strong> = 太陽光・蓄電池・SolarChargeControllerのいずれも
-      無かった場合（推定）、<strong>L1</strong> = 太陽光のみ導入した場合（推定）、
-      <strong>L2</strong> = 太陽光＋蓄電池のみ（推定）、<strong>L3</strong> = SolarChargeController導入（実測）です。
-      節約額は「導入前後の差（L0→L3）」と「SolarChargeController自体の導入効果（L2→L3）」を併記します。定義の詳細は
-      <a href="/metrics/methodology/">計測と推定の方法</a>を参照してください。
-    </p>
-    <div id="metrics-layer-chart-section">
-      <button id="layer-chart-toggle" type="button">卒FIT換算(8円/kWh)に切替</button>
-      <canvas id="chart-layer-bills" height="140"></canvas>
-      <h3>導入による累計節約額（4層すべてがそろう請求月）</h3>
-      <div id="metrics-layer-cumulative-table"></div>
-    </div>
+    <h2>月ごとの電気代と節約額</h2>
+    <div id="metrics-monthly-section"></div>
 
-    <h3>各請求月の開示情報（5分プロファイルの品質・蓄電池SOC・不確かさ帯・買売電の出典）</h3>
-    <p>
-      推定層（L0〜L2）が算出できていない請求月でも、実測（L3）の買電・売電の出典
-      （請求実績／公式メーター／センサー計測のいずれを採用したか）はこの表で確認できます。
-    </p>
-    <div id="metrics-layer-disclosure"></div>
-    <div id="metrics-daily-interpolation-table"></div>
-    <p class="metrics-notes">
-      蓄電池パラメータの出典・5分バケット欠落時の補間規則・確定月のスケーリング・不確かさ帯・
-      蓄電池SOCの境界バイアスなど、開示表の各列の算出根拠は
-      <a href="/metrics/methodology/">計測と推定の方法</a>にまとめています。
-      <span id="metrics-profile-source-note">5分プロファイルは退避済みCSV（単純平均集計、
-      power_history由来チャンネルに約+4.1%の既知バイアス）を暫定的に使用しており、Pi側の
-      dt加重集計（実装済み・本番投入待ち）に置き換わり次第、数値が変わる可能性があります。</span>
-    </p>
-
-    <h2>直近月のサマリー</h2>
-    <div id="metrics-summary"></div>
-
-    <h2>月次推移（発電・買電・売電・自家消費シフト）</h2>
-    <canvas id="chart-monthly-energy" height="140"></canvas>
-
-    <h2>月次の節約額試算（簡易・暦月集計）</h2>
-    <canvas id="chart-monthly-saving" height="140"></canvas>
-
-    <h2>日次推移（{{ with site.Data.metrics.meta }}{{ .publish_since }}{{ end }} 〜）</h2>
-    <canvas id="chart-daily-energy" height="140"></canvas>
-
-    <h2>請求実績単価による請求額再現（請求期間ベース）</h2>
-    <p>
-      契約中の新電力プランの<strong>請求実績単価</strong>を使い、請求期間（毎月2日〜翌月1日）ごとに
-      実測（上記L3と同じ）の請求額を再現しています。「反実仮想（太陽光なし）」列は上記L0と同じ算出方法で、
-      復元負荷が請求期間の全日分そろっている月のみ表示します。詳細は
-      <a href="/metrics/methodology/">計測と推定の方法</a>を参照してください。
-    </p>
-    <canvas id="chart-bill-reproduction" height="140"></canvas>
-    <canvas id="chart-saving-layers" height="140"></canvas>
-    <div id="metrics-bills-table"></div>
-
+    <h2>このデータについて</h2>
     {{- with site.Data.metrics.meta }}
-    <p class="metrics-notes">
-      公開データは、太陽光・蓄電池・ポータブル電源のすべての計測が揃った {{ .publish_since }} 以降に限定しています。<br>
-      月次の節約額試算 = 自家消費分（太陽光発電 − 売電）× 買電単価 {{ .buy_price_yen_per_kwh }}円/kWh + 売電分 × 売電単価 {{ .sell_price_yen_per_kwh }}円/kWh
-      （{{ .buy_sell_price_effective_month }} 時点、{{ .buy_sell_price_source }}）。<br>
-      請求額再現の対象月の条件・売電買電の出典優先順位など詳細は<a href="/metrics/methodology/">計測と推定の方法</a>を参照してください。<br>
-      最終更新: {{ .generated_at }}
+    <p>
+      自宅で計測した実測値と、電力会社からの請求額をもとにしています。試算はシミュレーションです。
+      公開しているのは全ての機器の計測が揃った {{ .publish_since }} 以降の日次・月次の集計だけで、
+      時間帯ごとのデータや機器の識別情報は公開しません。詳しくは<a href="/metrics/methodology/">このデータについて</a>をご覧ください。
     </p>
     {{- end }}
   </div>
 </article>
 
 <script id="metrics-daily-data" type="application/json">{{ site.Data.metrics.daily | jsonify | safeJS }}</script>
-<script id="metrics-monthly-data" type="application/json">{{ site.Data.metrics.monthly | jsonify | safeJS }}</script>
-<script id="metrics-bills-data" type="application/json">{{ site.Data.metrics.bills | jsonify | safeJS }}</script>
 <script id="metrics-layers-data" type="application/json">{{ site.Data.metrics.layers | jsonify | safeJS }}</script>
 
 {{- /* footer.html は partialCached でラップされ .Type をキーに含まないため、

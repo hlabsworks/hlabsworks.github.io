@@ -32,3 +32,40 @@
 .metrics-in-progress-card ul {
   margin: 0.4em 0 0;
 }
+
+/*
+ * オーナー指摘（2026-09-23）: 「4つの値の関係が分からない（足し算の関係？）」への対応。
+ * 今月ここまでカード・月ごとの比較表を「1つ前の構成との差」を挟んだ階段表示にした。
+ * table-layout:fixed + word-break で、列数の多い月ごとの比較表を含めモバイル幅でも
+ * テーブルが横スクロールせずに折り返すようにする（新しい列を追加してもここは変更不要）。
+ */
+.metrics-in-progress-card table,
+#metrics-layer-cumulative-table table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+
+.metrics-in-progress-card th,
+.metrics-in-progress-card td,
+#metrics-layer-cumulative-table th,
+#metrics-layer-cumulative-table td {
+  padding: 0.35em 0.5em;
+  text-align: left;
+  word-break: break-word;
+  border-bottom: 1px solid var(--border, #ddd);
+  font-size: 0.92em;
+}
+
+/* 電気代が1つ前の構成より下がった(緑)/上がった(控えめな赤)場合の色分け。
+   既存のグラフ配色（LAYER_COLORS.L2の緑）に合わせ、上昇側はそれより彩度を落とした赤にする。 */
+.metrics-diff-decrease {
+  color: #2f8f5d;
+  font-weight: 600;
+}
+
+.metrics-diff-increase {
+  color: #a24a4a;
+  font-weight: 600;
+}

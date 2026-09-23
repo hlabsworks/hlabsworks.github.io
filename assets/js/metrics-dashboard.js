@@ -59,6 +59,32 @@
     return { year: parseInt(parts[0], 10), month: parseInt(parts[1], 10) };
   }
 
+  // "2026-09-02" -> "9/2"（月・日とも先頭ゼロなし）。今月ここまでカードの案内文で使う。
+  function formatMD(dateStr) {
+    if (!dateStr) return "";
+    var parts = dateStr.split("-");
+    return parseInt(parts[1], 10) + "/" + parseInt(parts[2], 10);
+  }
+
+  // 階段表示（オーナー指摘2026-09-23: 「4つの値の関係が分からない」への対応）の色分け。
+  // 1つ前の構成より電気代が下がった(diff<0)ら緑、上がった(diff>=0)ら控えめな赤。
+  function diffClass(diff) {
+    return diff < 0 ? "metrics-diff-decrease" : "metrics-diff-increase";
+  }
+
+  // 符号付きの金額文字列（例: "−11,497 円" / "+465 円"）。
+  function diffAmountText(diff) {
+    var sign = diff < 0 ? "−" : "+";
+    return sign + Math.round(Math.abs(diff)).toLocaleString("ja-JP") + " 円";
+  }
+
+  // 月ごとの比較表用: 見出し列が設備名を表すため、セル自体には金額だけを入れる。
+  function diffCellHtml(prevVal, curVal, tag) {
+    tag = tag || "td";
+    var diff = curVal - prevVal;
+    return "<" + tag + " class=\"" + diffClass(diff) + "\">" + diffAmountText(diff) + "</" + tag + ">";
+  }
+
   // --- 4つの構成（L0/L1/L2/L3、data/metrics/layers.json） -------------------------------
   // L0=太陽光も蓄電池もない場合（試算）／L1=太陽光だけの場合（試算）／
   // L2=太陽光＋蓄電池の場合（試算）／L3=太陽光＋蓄電池＋SolarChargeController（実際、実測）。
@@ -70,6 +96,9 @@
     L3: "太陽光＋蓄電池＋SolarChargeController（実際）",
   };
   var LAYER_COLORS = { L0: "#c9484f", L1: "#f4a92b", L2: "#3fa66b", L3: "#4d8fd6" };
+  var LAYER_ORDER = ["L0", "L1", "L2", "L3"];
+  // 階段表示で「1つ前の構成との差」に付ける設備名（その段で新たに足された設備）。
+  var LAYER_DIFF_SUBJECT = { L1: "太陽光", L2: "蓄電池", L3: "SolarChargeController" };
   var layerChartMetric = "net_cost_fit_yen"; // "net_cost_fit_yen"(売電16円) | "net_cost_post_fit_yen"(卒FIT8円)
   var layerChartInstance = null;
   var dailyLayerChartInstance = null;
@@ -105,8 +134,19 @@
     return yen(layer[layerChartMetric]);
   }
 
+  // 前後の構成の電気代の差を「設備名で ±金額」の形にする（階段表の3列目）。どちらかが
+  // 未算出(available:false)なら算出不能として "―" を返す。
+  function stepDiffCellHtml(subject, prevLayer, curLayer) {
+    if (!prevLayer || !prevLayer.available || !curLayer || !curLayer.available) {
+      return "<td>―</td>";
+    }
+    var diff = curLayer[layerChartMetric] - prevLayer[layerChartMetric];
+    return "<td class=\"" + diffClass(diff) + "\">" + escapeHtml(subject) + "で " + diffAmountText(diff) + "</td>";
+  }
+
   // 「今月ここまでの電気代」カード。確定月を待たず、今そろっているデータだけで
-  // 4つの構成を比較する（オーナー承認機能・2026-09-06、2026-09-23に読者向け文言へ簡素化）。
+  // 4つの構成を比較する（オーナー承認機能・2026-09-06、2026-09-23に読者向け文言へ簡素化、
+  // 同日オーナー指摘「4つの値の関係が分からない」を受けて階段表示に変更）。
   function renderInProgressCard(layers) {
     var el = document.getElementById("metrics-in-progress-card");
     if (!el) return;
@@ -117,26 +157,41 @@
     }
     var badges = [badge("試算"), badge("途中集計")];
     if (ip.tariff_provisional) badges.push(badge("電気料金は前月の単価で仮計算"));
-    var l0 = ip.layers.L0, l1 = ip.layers.L1, l2 = ip.layers.L2, l3 = ip.layers.L3;
-    var deltaText = (l0 && l0.available && l3 && l3.available)
-      ? yen(l0[layerChartMetric] - l3[layerChartMetric])
-      : "―";
+    var layersByKey = { L0: ip.layers.L0, L1: ip.layers.L1, L2: ip.layers.L2, L3: ip.layers.L3 };
+    var l0 = layersByKey.L0, l2 = layersByKey.L2, l3 = layersByKey.L3;
+
+    var introText = "";
+    if (ip.usage_period) {
+      introText = "<p>同じ期間（" + formatMD(ip.usage_period.start) + "〜" + formatMD(ip.period_end_actual) +
+        " の " + escapeHtml(ip.days_covered) + " 日分）の電気代（買った電気の料金 − 売った電気の収入）を、" +
+        "設備構成ごとに計算して並べています。上から順に設備を足していくと、電気代がどう変わるかが分かります。</p>";
+    }
+
+    var rows = LAYER_ORDER.map(function (key, i) {
+      var cur = layersByKey[key];
+      var diffCell = i === 0 ? "<td>―</td>" : stepDiffCellHtml(LAYER_DIFF_SUBJECT[key], layersByKey[LAYER_ORDER[i - 1]], cur);
+      return "<tr><td>" + LAYER_NAMES[key] + "</td><td>" + inProgressAmountText(cur) + "</td>" + diffCell + "</tr>";
+    }).join("");
+
+    var l0l3Available = l0 && l0.available && l3 && l3.available;
+    var totalDiff = l0l3Available ? (l3[layerChartMetric] - l0[layerChartMetric]) : null;
+    var totalHtml = l0l3Available
+      ? "<p><strong>合計の効果（何もない場合 → 実際）: <span class=\"" + diffClass(totalDiff) + "\">" +
+        diffAmountText(totalDiff) + "</span></strong></p>"
+      : "";
+
     var l2l3Available = l2 && l2.available && l3 && l3.available;
-    var l2l3Delta = l2l3Available ? (l2[layerChartMetric] - l3[layerChartMetric]) : null;
-    var l2l3DeltaText = l2l3Available ? yen(l2l3Delta) : "―";
-    var cloudyNote = (l2l3Available && l2l3Delta < 0)
+    var l2l3Diff = l2l3Available ? (l3[layerChartMetric] - l2[layerChartMetric]) : null;
+    var cloudyNote = (l2l3Available && l2l3Diff > 0)
       ? "<p class=\"metrics-notes\">曇りの日が多い月は、ポータブル電源の充放電ロスの分だけ、蓄電池だけの場合より少し高くなることがあります。</p>"
       : "";
+
     el.innerHTML =
       "<p>" + badges.join(" ") + "</p>" +
-      "<ul>" +
-      "<li>" + LAYER_NAMES.L0 + ": " + inProgressAmountText(l0) + "</li>" +
-      "<li>" + LAYER_NAMES.L1 + ": " + inProgressAmountText(l1) + "</li>" +
-      "<li>" + LAYER_NAMES.L2 + ": " + inProgressAmountText(l2) + "</li>" +
-      "<li>" + LAYER_NAMES.L3 + ": " + inProgressAmountText(l3) + "</li>" +
-      "<li>太陽光・蓄電池・SolarChargeControllerを全部入れた効果: " + deltaText + "</li>" +
-      "<li>そのうち SolarChargeController の効果: " + l2l3DeltaText + "</li>" +
-      "</ul>" +
+      introText +
+      "<table><thead><tr><th>構成</th><th>電気代</th><th>1つ前の構成との差</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody></table>" +
+      totalHtml +
       cloudyNote;
   }
 
@@ -217,6 +272,8 @@
     });
   }
 
+  // 月ごとの比較表。カードと同じ「1つ前の構成との差」を各構成の間に列として挟む
+  // （オーナー指摘2026-09-23「4つの値の関係が分からない」対応、カードと同じ階段の考え方）。
   function renderLayerCumulativeTable(layers) {
     var el = document.getElementById("metrics-layer-cumulative-table");
     if (!el) return;
@@ -229,30 +286,37 @@
     (layers.months || []).forEach(function (m) { monthsByKey[m.billing_month] = m; });
     var rows = cumulative.billing_months.map(function (billing_month) {
       var m = monthsByKey[billing_month];
-      var l0 = m.layers.L0, l1 = m.layers.L1, l2 = m.layers.L2, l3 = m.layers.L3;
+      var l0 = m.layers.L0.net_cost_fit_yen, l1 = m.layers.L1.net_cost_fit_yen;
+      var l2 = m.layers.L2.net_cost_fit_yen, l3 = m.layers.L3.net_cost_fit_yen;
       var monthLabel = escapeHtml(billing_month) +
-        (l0.estimation === "scaled" ? " " + badge("一部の日を補って計算") : "");
+        (m.layers.L0.estimation === "scaled" ? " " + badge("一部の日を補って計算") : "");
       return "<tr>" +
         "<td>" + monthLabel + "</td>" +
-        "<td>" + yen(l0.net_cost_fit_yen) + "</td>" +
-        "<td>" + yen(l1.net_cost_fit_yen) + "</td>" +
-        "<td>" + yen(l2.net_cost_fit_yen) + "</td>" +
-        "<td>" + yen(l3.net_cost_fit_yen) + "</td>" +
-        "<td>" + yen(l0.net_cost_fit_yen - l3.net_cost_fit_yen) + "</td>" +
-        "<td>" + yen(l2.net_cost_fit_yen - l3.net_cost_fit_yen) + "</td>" +
+        "<td>" + yen(l0) + "</td>" +
+        diffCellHtml(l0, l1) +
+        "<td>" + yen(l1) + "</td>" +
+        diffCellHtml(l1, l2) +
+        "<td>" + yen(l2) + "</td>" +
+        diffCellHtml(l2, l3) +
+        "<td>" + yen(l3) + "</td>" +
+        diffCellHtml(l0, l3) +
         "</tr>";
     }).join("");
     var c = cumulative.net_cost_fit_yen;
     el.innerHTML =
       "<table>" +
       "<thead><tr><th>請求月</th>" +
-      "<th>" + LAYER_NAMES.L0 + "</th><th>" + LAYER_NAMES.L1 + "</th>" +
-      "<th>" + LAYER_NAMES.L2 + "</th><th>" + LAYER_NAMES.L3 + "</th>" +
-      "<th>全部入れた効果</th><th>SolarChargeControllerの効果</th></tr></thead>" +
+      "<th>" + LAYER_NAMES.L0 + "</th><th>太陽光の効果</th>" +
+      "<th>" + LAYER_NAMES.L1 + "</th><th>蓄電池の効果</th>" +
+      "<th>" + LAYER_NAMES.L2 + "</th><th>SolarChargeControllerの効果</th>" +
+      "<th>" + LAYER_NAMES.L3 + "</th><th>合計の効果</th></tr></thead>" +
       "<tbody>" + rows + "</tbody>" +
-      "<tfoot><tr><th>累計（" + escapeHtml(cumulative.months_included) + "請求月）</th><th>" + yen(c.L0) +
-      "</th><th>" + yen(c.L1) + "</th><th>" + yen(c.L2) + "</th><th>" + yen(c.L3) +
-      "</th><th>" + yen(cumulative.saving_yen_fit) + "</th><th>" + yen(c.L2 - c.L3) + "</th></tr></tfoot>" +
+      "<tfoot><tr><th>累計（" + escapeHtml(cumulative.months_included) + "請求月）</th>" +
+      "<th>" + yen(c.L0) + "</th>" + diffCellHtml(c.L0, c.L1, "th") +
+      "<th>" + yen(c.L1) + "</th>" + diffCellHtml(c.L1, c.L2, "th") +
+      "<th>" + yen(c.L2) + "</th>" + diffCellHtml(c.L2, c.L3, "th") +
+      "<th>" + yen(c.L3) + "</th>" + diffCellHtml(c.L0, c.L3, "th") +
+      "</tr></tfoot>" +
       "</table>";
   }
 

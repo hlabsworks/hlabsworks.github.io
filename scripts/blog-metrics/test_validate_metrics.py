@@ -200,6 +200,13 @@ class BaselineTest(unittest.TestCase):
         self.assertGreater(len(layers["daily"]), 0)
         self.assertGreater(len(bills["months"]), 0)
 
+        # DDR §7: L1S（太陽光＋SolarChargeController試算）が退化したままG4を素通りしていない
+        # こと（build_self_consistent_golden_periodで生成した確定月はreplayゲートに合格する
+        # はずなので、L1Sもavailable:trueで、検証用のl1s_replay/params.l1s_modelを持つ）。
+        self.assertTrue(available_months[0]["layers"]["L1S"]["available"])
+        self.assertIsNotNone(available_months[0].get("l1s_replay"))
+        self.assertIn("l1s_model", layers["params"])
+
         with tempfile.TemporaryDirectory() as tmp:
             incoming = write_incoming(Path(tmp), bills=bills, layers=layers)
             warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)

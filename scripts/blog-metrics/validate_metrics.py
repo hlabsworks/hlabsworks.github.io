@@ -87,7 +87,7 @@ BILLS_KEYS = {
     "tariff_source", "total_yen", "usage_period",
 }
 LAYERS_KEYS = {
-    "L0", "L1", "L2", "L3", "_note", "_source", "available", "basic_fee_yen",
+    "L0", "L1", "L1S", "L2", "L3", "_note", "_source", "available", "basic_fee_yen",
     "battery_charge_kwh_per_100soc", "battery_discharge_kwh_per_100soc",
     "battery_max_discharge_kw", "bill", "billing_month", "billing_months",
     "boundary_storage_kwh", "buy_kwh", "buy_source", "capacity_contribution_yen",
@@ -107,6 +107,13 @@ LAYERS_KEYS = {
     "soc_start_pct", "source", "start", "status", "tariff_basis",
     "tariff_provisional", "tariff_source_month", "total_yen",
     "unavailable_reason", "uncertainty", "usage_period",
+    # L1S（太陽光＋SolarChargeController、家庭用蓄電池なし試算。DDR §5.7）
+    "l1s_model", "l1s_replay", "ac_in_error_pct", "buy_error_pct", "sell_error_pct",
+    "units", "capacity_kwh_nominal", "capacity_kwh_effective", "charge_efficiency",
+    "discharge_efficiency", "idle_w_per_unit", "tracking_margin_w", "speedup_threshold_w",
+    "full_soc_pct", "emergency_soc_pct", "emergency_exit_soc_pct",
+    "replay_tolerance_ac_in_pct", "replay_tolerance_buy_pct", "replay_tolerance_sell_pct",
+    "calibrated_on",
 }
 PIPELINE_KEYS = {
     "schema_version", "generated_at", "source", "bundle_rev", "profile_window_days",
@@ -122,7 +129,7 @@ DATE_VALUE_KEYS = {
     "date", "start", "end", "period_end_actual",
     "profile_since", "profile_rows_since",
     "power_history_since", "nichicon_data_since", "ecoflow_data_since",
-    "publish_since",
+    "publish_since", "calibrated_on",
 }
 MONTH_VALUE_KEYS = {"month", "billing_month", "buy_sell_price_effective_month", "tariff_source_month"}
 

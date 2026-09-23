@@ -31,7 +31,10 @@ TESTDATA_DIR = SCRIPT_DIR / "testdata"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import build_daily  # noqa: E402  buy_sell_price_sourceの文言を二重実装しないため再利用する
+import layer_model as lm  # noqa: E402  DEFAULT_DELTA_FLEET_PARAMS を再利用する
 import test_layer_model as tlm  # noqa: E402  合成ゴールデンデイ生成関数を再利用する
+
+L1S_ANCHOR_SOC_PCT = 50.0  # 較正前の初期SOC（テスト用固定値、実測値ではない）
 
 BILLING_MONTH = "2026-08"
 START = date(2026, 7, 2)
@@ -44,17 +47,23 @@ _PROFILE_FIELDS = (
 )
 
 
-def build_profile_csv() -> str:
-    """START〜END の全日を、合成ゴールデンデイパターン（実測値を含まない）で埋めたCSVを作る。"""
+def build_profile_and_ecoflow_daily() -> tuple[str, list[dict]]:
+    """START〜ENDの全日を、合成ゴールデンデイパターン（実測値を含まない）をベースに、
+    layer_model.DEFAULT_DELTA_FLEET_PARAMS でreplayモードのDELTA群シミュレーションを通して
+    eco_ac_in_w/buy_w/sell_wを上書きしたCSVを作る（DDR §5.8）。合成golden dayのままだと
+    L1S replayゲートが不合格になりL1Sがunavailableのままとなって、G4のallowlistがL1S
+    availableなキーを一度も収穫できない（QA指摘#1と同型の見落とし経路）。戻り値は
+    (profile CSV文字列, ecoflow_daily.json相当の[{date, soc_start_pct}, ...])。"""
+    buckets, soc_by_date = tlm.build_self_consistent_golden_period(
+        START.isoformat(), END.isoformat(), lm.DEFAULT_DELTA_FLEET_PARAMS, L1S_ANCHOR_SOC_PCT
+    )
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=_PROFILE_FIELDS)
     writer.writeheader()
-    d = START
-    while d <= END:
-        for bucket in tlm.build_synthetic_golden_day_buckets(d.isoformat()):
-            writer.writerow({f: getattr(bucket, f) for f in _PROFILE_FIELDS})
-        d += timedelta(days=1)
-    return buf.getvalue()
+    for bucket in buckets:
+        writer.writerow({f: getattr(bucket, f) for f in _PROFILE_FIELDS})
+    ecoflow_daily_rows = [{"date": d, "soc_start_pct": pct} for d, pct in sorted(soc_by_date.items())]
+    return buf.getvalue(), ecoflow_daily_rows
 
 
 def build_daily_json(tmp_dir: Path) -> Path:
@@ -83,9 +92,13 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        profile_csv = build_profile_csv()
+        profile_csv, ecoflow_daily_rows = build_profile_and_ecoflow_daily()
         daily_path = build_daily_json(tmp_dir)
         tariff_path = SCRIPT_DIR / "tariff.json"
+        ecoflow_daily_path = tmp_dir / "ecoflow_daily.json"
+        ecoflow_daily_path.write_text(
+            json.dumps(ecoflow_daily_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
 
         layers_out = tmp_dir / "layers.json"
         daily_load_out = tmp_dir / "daily_load.json"
@@ -96,7 +109,8 @@ def main() -> None:
              "--out", str(layers_out),
              "--daily-load-out", str(daily_load_out),
              "--today", TODAY_FOR_GENERATION,
-             "--profile-source", "synthetic_test_fixture"],
+             "--profile-source", "synthetic_test_fixture",
+             "--ecoflow-daily", str(ecoflow_daily_path)],
             input=profile_csv, text=True, check=True,
         )
 

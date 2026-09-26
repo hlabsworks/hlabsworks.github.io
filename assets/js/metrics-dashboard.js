@@ -403,6 +403,31 @@
       "</table>";
   }
 
+  // 追補(2026-09-26「速報＋改訂」方式): layers.preliminary_months[]（確定条件
+  // (is_closable、請求書の実額・検針値の反映)を満たさないが、請求期間が終了済みで暫定単価
+  // により試算できる月）を「速報」バッジ付きで表示する。確定月(months[])とは別の小さな表で、
+  // 累計(cumulative)には含めない（追補A': 確定した月はmonths[]にだけ入る）。
+  function renderPreliminaryMonths(layers) {
+    var el = document.getElementById("metrics-preliminary-months");
+    if (!el) return;
+    var months = (layers && layers.preliminary_months) || [];
+    var rows = months
+      .filter(function (m) { return m.layers && m.layers.L3 && m.layers.L3.available; })
+      .map(function (m) {
+        return "<tr><td>" + escapeHtml(m.billing_month) + " " + badge("速報") + "</td>" +
+          "<td>" + yen(m.layers.L3.net_cost_fit_yen) + "</td></tr>";
+      })
+      .join("");
+    if (!rows) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML =
+      "<table><thead><tr><th>請求月</th><th>実質電気代（速報）</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody></table>" +
+      "<p class=\"metrics-notes\">電気料金は前月の単価で仮計算。請求書の反映後に確定値へ更新します。</p>";
+  }
+
   // 「月ごとの電気代と節約額」。確定月（4層すべてがそろう請求月）が無い間は、いつ最初の
   // 月が表示されるかだけを1文で示す（グラフ・表・長い説明文は出さない）。
   function renderMonthlySection(layers) {
@@ -418,6 +443,8 @@
       } else {
         el.innerHTML = "<p>月ごとの電気代を表示するためのデータがまだありません。</p>";
       }
+      el.innerHTML += "<div id=\"metrics-preliminary-months\"></div>";
+      renderPreliminaryMonths(layers);
       return;
     }
     var c = cumulative.net_cost_fit_yen;
@@ -427,10 +454,12 @@
       "</strong> 節約できています（そのうち SolarChargeController の効果: " + yen(savingL2L3Yen) + "）。</p>" +
       "<canvas id=\"chart-layer-bills\" height=\"140\"></canvas>" +
       "<div id=\"metrics-layer-cumulative-table\"></div>" +
-      "<div id=\"metrics-l1s-branch-table\"></div>";
+      "<div id=\"metrics-l1s-branch-table\"></div>" +
+      "<div id=\"metrics-preliminary-months\"></div>";
     renderLayerBillsChart(layers);
     renderLayerCumulativeTable(layers);
     renderL1sBranchTable(layers);
+    renderPreliminaryMonths(layers);
   }
 
   // 「FIT期間中16円／FIT終了後8円」の2択セグメント。今月ここまでカード・日次グラフ・

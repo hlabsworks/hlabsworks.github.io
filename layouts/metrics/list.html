@@ -13,15 +13,6 @@
       <div id="metrics-intro-solar"></div>
     </div>
 
-    <h2>
-      {{- with site.Data.metrics.layers.in_progress }}
-      今月ここまでの電気代（{{ (time.AsTime .usage_period.start).Format "1/2" }}〜{{ (time.AsTime .period_end_actual).Format "1/2" }}、{{ .days_elapsed }}日中{{ .days_covered }}日分）
-      {{- else }}
-      今月ここまでの電気代
-      {{- end }}
-    </h2>
-    <div id="metrics-in-progress-card"></div>
-
     <div class="metrics-price-toggle">
       <p class="metrics-price-toggle-title">売電単価の前提</p>
       <div class="metrics-price-toggle-group" role="group" aria-label="売電単価の前提">
@@ -37,6 +28,15 @@
         太陽光の固定価格買取（FIT）が終わると売電単価が下がります。終了後の電気代がどうなるかも見られます。
       </p>
     </div>
+
+    <h2>
+      {{- with site.Data.metrics.layers.in_progress }}
+      今月ここまでの電気代（{{ (time.AsTime .usage_period.start).Format "1/2" }}〜{{ (time.AsTime .period_end_actual).Format "1/2" }}、{{ .days_elapsed }}日中{{ .days_covered }}日分）
+      {{- else }}
+      今月ここまでの電気代
+      {{- end }}
+    </h2>
+    <div id="metrics-in-progress-card"></div>
 
     <h2>日ごとの電気代（5つの構成で比較）</h2>
     <p class="metrics-notes">試算の4本はシミュレーション、実際の1本は計測値です。</p>

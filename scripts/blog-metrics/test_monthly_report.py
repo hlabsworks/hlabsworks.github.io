@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import monthly_report as mr  # noqa: E402
 
 FIRST_MONTH = "2026-10"  # このテストファイル内で使う基準（本番既定値と同じ）
+METER_READ_DAY = 2  # 実際のtariff.jsonと同じ値。usage_period(start,end)はこれに基づく
 
 
 def _layer(available: bool, buy_kwh: float = 0.0, sell_kwh: float = 0.0, net_fit: int = 0, net_post_fit: int = 0, extra: dict | None = None) -> dict:
@@ -161,7 +162,7 @@ class BuildSnapshotBodyTest(unittest.TestCase):
 
     def test_final_snapshot_matches_expected_schema(self):
         layers, daily_by_date = self._layers_and_daily()
-        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final")
+        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY)
         self.assertIsNotNone(body)
         self.assertEqual(body["billing_month"], "2026-10")
         self.assertEqual(body["report_month"], "2026-09")
@@ -175,25 +176,25 @@ class BuildSnapshotBodyTest(unittest.TestCase):
 
     def test_unavailable_layer_returns_none(self):
         layers, daily_by_date = self._layers_and_daily(all_available=False)
-        self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final"))
+        self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY))
 
     def test_final_stage_rejects_sensor_sourced_month(self):
         layers, daily_by_date = self._layers_and_daily(l3_buy_source="sensor")
-        self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final"))
+        self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY))
 
     def test_preliminary_stage_accepts_sensor_sourced_month(self):
         rec = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_buy_source="sensor")
         layers = {"months": [], "preliminary_months": [rec]}
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         daily_by_date = {r["date"]: r for r in daily_rows}
-        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "preliminary")
+        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "preliminary", METER_READ_DAY)
         self.assertIsNotNone(body)
         self.assertEqual(body["stage"], "preliminary")
         self.assertEqual(body["tariff_basis"], "provisional")
 
     def test_scaled_month_reports_partial_days_usable(self):
         layers, daily_by_date = self._layers_and_daily(estimation="scaled", days_usable=25)
-        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final")
+        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY)
         self.assertEqual(body["estimation"], "scaled")
         self.assertEqual(body["days_usable"], 25)
         self.assertLess(body["days_usable"], body["days_total"])
@@ -201,13 +202,28 @@ class BuildSnapshotBodyTest(unittest.TestCase):
     def test_incomplete_energy_period_is_null(self):
         layers, daily_by_date = self._layers_and_daily()
         del daily_by_date["2026-09-15"]  # 1日欠測させるとenergy.*は全部null
-        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final")
+        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY)
         for key in body["energy"]:
             self.assertIsNone(body["energy"][key])
 
     def test_missing_billing_month_returns_none(self):
         layers, daily_by_date = self._layers_and_daily()
-        self.assertIsNone(mr.build_snapshot_body("2099-01", layers, daily_by_date, "final"))
+        self.assertIsNone(mr.build_snapshot_body("2099-01", layers, daily_by_date, "final", METER_READ_DAY))
+
+    def test_billing_month_before_first_report_month_returns_none(self):
+        # QA指摘2026-09-26 item3: build_snapshot_body自身もFIRST_REPORT_BILLING_MONTHの
+        # 防波堤を強制する（呼び出し側がrun()を経由しない直接呼び出しでも安全なように）。
+        layers, daily_by_date = self._layers_and_daily(billing_month="2026-09", start="2026-08-02", end="2026-09-01")
+        self.assertIsNone(mr.build_snapshot_body("2026-09", layers, daily_by_date, "final", METER_READ_DAY))
+
+    def test_usage_period_mismatch_with_billing_period_returns_none(self):
+        # QA指摘2026-09-26 item3: usage_periodがbill_model.billing_period(billing_month,
+        # meter_read_day)と一致しないレコードは作らない（billing_monthを騙って別期間の
+        # usage_periodを埋め込む攻撃を防ぐ）。
+        rec = make_month_record("2026-10", "2026-09-01", "2026-09-30")  # 本来は09-02〜10-01
+        layers = {"months": [rec], "preliminary_months": []}
+        daily_by_date = {r["date"]: r for r in make_daily_rows(date(2026, 9, 1), date(2026, 9, 30))}
+        self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY))
 
 
 class RunTest(unittest.TestCase):
@@ -224,7 +240,7 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             self.assertEqual(written, 1)
             snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["first_published"], "2026-10-24")
@@ -238,9 +254,9 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             before = (posts_dir / "2026-10.json").read_bytes()
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 25), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 25), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             after = (posts_dir / "2026-10.json").read_bytes()
             self.assertEqual(written, 0)
             self.assertEqual(before, after)
@@ -251,13 +267,13 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
 
             corrected = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_net_fit=3111)
             layers["months"] = [corrected]
             (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-            mr.run(data_dir, posts_dir, date(2026, 11, 1), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 11, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["revision"], 2)
             self.assertEqual(snapshot["revised"], "2026-11-01")
@@ -270,13 +286,13 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             before = (posts_dir / "2026-10.json").read_bytes()
 
             # 420日窓の外に出てmonths[]から消えた状態を模す。
             layers["months"] = []
             (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            written = mr.run(data_dir, posts_dir, date(2028, 1, 1), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2028, 1, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             after = (posts_dir / "2026-10.json").read_bytes()
             self.assertEqual(written, 0)
             self.assertEqual(before, after)
@@ -287,7 +303,7 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 8, 2), date(2026, 9, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 1), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             self.assertEqual(written, 0)
             self.assertFalse((posts_dir / "2026-09.json").exists())
 
@@ -300,7 +316,7 @@ class RunTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
             # 使用期間終了(2026-10-01)からPRELIMINARY_DELAY_DAYS(2)後。
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             self.assertEqual(written, 1)
             snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["stage"], "preliminary")
@@ -313,7 +329,7 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 2), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 2), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             self.assertEqual(written, 0)
             self.assertFalse((posts_dir / "2026-10.json").exists())
 
@@ -323,13 +339,13 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             before = (posts_dir / "2026-10.json").read_bytes()
 
             changed = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_buy_source="sensor", l3_net_fit=9999)
             layers["preliminary_months"] = [changed]
             (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            written = mr.run(data_dir, posts_dir, date(2026, 10, 10), first_report_billing_month=FIRST_MONTH)
+            written = mr.run(data_dir, posts_dir, date(2026, 10, 10), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             after = (posts_dir / "2026-10.json").read_bytes()
             self.assertEqual(written, 0)
             self.assertEqual(before, after)
@@ -340,12 +356,12 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 3), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
 
             final = make_month_record("2026-10", "2026-09-02", "2026-10-01")  # billed/official_meterに確定
             layers = {"months": [final], "preliminary_months": []}
             (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            mr.run(data_dir, posts_dir, date(2026, 10, 25), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 25), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
 
             snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["stage"], "final")
@@ -359,10 +375,72 @@ class RunTest(unittest.TestCase):
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         with tempfile.TemporaryDirectory() as tmp:
             data_dir, posts_dir = self._write(tmp, layers, daily_rows)
-            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
             snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
             self.assertEqual(snapshot["revision"], 1)
             self.assertEqual(snapshot["stage"], "final")
+
+    # --- QA指摘2026-09-26 item6: 確定後の改版はlayer由来の項目だけで判定する -------------------
+
+    def test_revision_unchanged_when_only_energy_weather_comparison_would_differ(self):
+        # daily.jsonの420日窓が動く等でenergy/weather/comparisonの再計算結果が変わっても、
+        # layers/l2_band/l3_source/stage/estimation/days_*が変わらなければ改版しない。
+        rec = make_month_record("2026-10", "2026-09-02", "2026-10-01")
+        layers = {"months": [rec], "preliminary_months": []}
+        daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir, posts_dir = self._write(tmp, layers, daily_rows)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
+            before = (posts_dir / "2026-10.json").read_bytes()
+
+            # solar_kwhだけ変える(layersの数値には影響しない、energyだけ変わる想定の変更)。
+            changed_daily = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1), solar=999.0)
+            (data_dir / "daily.json").write_text(json.dumps(changed_daily, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            written = mr.run(data_dir, posts_dir, date(2026, 11, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
+            after = (posts_dir / "2026-10.json").read_bytes()
+            self.assertEqual(written, 0)
+            self.assertEqual(before, after)
+
+    def test_revision_bump_inherits_old_energy_weather_comparison(self):
+        rec = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_net_fit=3000)
+        layers = {"months": [rec], "preliminary_months": []}
+        daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1), solar=20.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir, posts_dir = self._write(tmp, layers, daily_rows)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
+            original = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
+
+            # layers(net_cost_fit_yen)とdaily(solar_kwh)を両方変える。
+            corrected = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_net_fit=3111)
+            layers["months"] = [corrected]
+            (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            changed_daily = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1), solar=999.0)
+            (data_dir / "daily.json").write_text(json.dumps(changed_daily, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            mr.run(data_dir, posts_dir, date(2026, 11, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
+            snapshot = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["revision"], 2)
+            self.assertEqual(snapshot["layers"]["L3"]["net_cost_fit_yen"], 3111)  # layer由来は更新
+            self.assertEqual(snapshot["energy"], original["energy"])  # energyは旧値を引き継ぐ
+            self.assertEqual(snapshot["weather"], original["weather"])
+            self.assertEqual(snapshot["comparison"], original["comparison"])
+
+    def test_revision_limit_exceeded_raises(self):
+        rec = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_net_fit=3000)
+        layers = {"months": [rec], "preliminary_months": []}
+        daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir, posts_dir = self._write(tmp, layers, daily_rows)
+            mr.run(data_dir, posts_dir, date(2026, 10, 24), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
+            existing = json.loads((posts_dir / "2026-10.json").read_text(encoding="utf-8"))
+            existing["revision"] = mr.MAX_REVISION  # 上限まで既に改版済みの状態を模す
+            (posts_dir / "2026-10.json").write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            corrected = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_net_fit=4444)
+            layers["months"] = [corrected]
+            (data_dir / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaises(mr.RevisionLimitExceededError):
+                mr.run(data_dir, posts_dir, date(2026, 11, 1), first_report_billing_month=FIRST_MONTH, meter_read_day=METER_READ_DAY)
 
 
 if __name__ == "__main__":

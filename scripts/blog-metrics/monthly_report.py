@@ -9,10 +9,12 @@ homelab が侵害されても自由文が公開側に渡らない。
 
 homelab の run-daily.sh と CI 側の validate_metrics.py の両方が本モジュールの
 is_closable()/build_snapshot_body() を import して使うため、同じ確定判定・同じ再計算ロジックを
-共有する（1箇所直せば両方に効く）。stdlib のみで書き、Python 3.12/3.13 両方で動く構文に限る。
+共有する（1箇所直せば両方に効く）。stdlib + bill_model/layer_model のみで書き、Python
+3.12/3.13 両方で動く構文に限る。
 
 使い方（homelab の run-daily.sh から呼ばれる）:
-  python3 monthly_report.py --data-dir CLONE/data/metrics --posts-dir CLONE/posts --today 2026-09-26
+  python3 monthly_report.py --data-dir CLONE/data/metrics --posts-dir CLONE/posts \
+      --tariff /opt/blog-metrics/inputs/tariff.json --today 2026-09-26
 """
 from __future__ import annotations
 
@@ -22,20 +24,41 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bill_model  # noqa: E402  billing_period()を二重実装しない
+import layer_model  # noqa: E402  PRELIMINARY_DELAY_DAYS の正本を1箇所にする(QA指摘2026-09-26)
+
 # 追補(2026-09-26「速報＋改訂」方式) A': 最初の自動記事は請求月2026-10（使用期間2026-09-02〜
 # 2026-10-01）。過去月を後から埋めても記事が一度に大量公開されないようにする防波堤。
 FIRST_REPORT_BILLING_MONTH = "2026-10"
 
-# 追補 A': 請求期間の終了からこの日数以上経てば、確定条件を満たさない月でも速報として出す。
-PRELIMINARY_DELAY_DAYS = 2
+# QA指摘2026-09-26: layer_model.build_layers() の preliminary_months[] 候補判定と同じ値を
+# 使う（正本は layer_model.py 側の1箇所）。
+PRELIMINARY_DELAY_DAYS = layer_model.PRELIMINARY_DELAY_DAYS
 
-_META_KEYS = ("first_published", "revision", "revised")
+# QA指摘2026-09-26: 確定後の改版がrevision上限を超えたら書き込まずログを出して非ゼロ終了する
+# （通常運用では起こらないはずの異常系。無限に改版し続ける不具合の暴走を止める安全弁）。
+MAX_REVISION = 12
+
+_META_KEYS = ("first_published", "revision", "revised", "transitioned_from_preliminary")
+# 改版の要否は「layer由来」の項目だけで判定する(QA指摘2026-09-26): energy/weather/comparison
+# はdaily.jsonの420日窓が動くだけで(意味のあるデータ変化なしに)値が変わることがあるため、
+# 確定後の改版判定・inherit対象から除く。
+_LAYER_DERIVED_KEYS = ("layers", "l2_band", "l3_source", "stage", "estimation", "days_usable", "days_total")
 
 
-def _body_without_meta(snapshot: dict) -> dict:
+class RevisionLimitExceededError(RuntimeError):
+    """確定後の改版でrevisionがMAX_REVISIONを超える場合に送出する（安全弁）。"""
+
+
+def body_without_meta(snapshot: dict) -> dict:
     """スナップショットから first_published/revision/revised を除いた「本体」を返す
     （G15の再計算一致比較・冪等性の差分検出はこの本体だけで行う）。"""
     return {k: v for k, v in snapshot.items() if k not in _META_KEYS}
+
+
+def layer_derived_subset(snapshot: dict) -> dict:
+    return {k: snapshot[k] for k in _LAYER_DERIVED_KEYS}
 
 
 def is_closable(month_rec: dict | None, *, first_report_billing_month: str = FIRST_REPORT_BILLING_MONTH) -> bool:
@@ -162,32 +185,27 @@ def _shift_billing_month(billing_month: str, delta_months: int) -> str:
     return f"{new_year:04d}-{new_month0 + 1:02d}"
 
 
-def _find_usage_period(layers: dict, billing_month: str) -> tuple[date, date] | None:
-    """billing_monthのusage_periodを、months[]/preliminary_months[]のいずれかから探す
-    （比較対象の月が正確にどの範囲だったか分からなければnullにする。§B）。"""
-    for key in ("months", "preliminary_months"):
-        for rec in layers.get(key, []):
-            if rec["billing_month"] == billing_month:
-                up = rec["usage_period"]
-                return date.fromisoformat(up["start"]), date.fromisoformat(up["end"])
-    return None
-
-
-def _comparison(layers: dict, daily_by_date: dict, billing_month: str) -> dict:
-    prev_period = _find_usage_period(layers, _shift_billing_month(billing_month, -1))
-    yoy_period = _find_usage_period(layers, _shift_billing_month(billing_month, -12))
+def _comparison(daily_by_date: dict, billing_month: str, meter_read_day: int) -> dict:
+    """QA指摘2026-09-26: 比較対象の期間は layers.json の months[]/preliminary_months[] を
+    探すのではなく bill_model.billing_period() で直接求める（420日窓の外に出て一覧から
+    消えた月でも、前月比・前年同月比の期間自体は変わらないため）。"""
+    prev_start, prev_end = bill_model.billing_period(_shift_billing_month(billing_month, -1), meter_read_day)
+    yoy_start, yoy_end = bill_model.billing_period(_shift_billing_month(billing_month, -12), meter_read_day)
     return {
-        "prev_solar_kwh": _sum_field_if_complete(daily_by_date, "solar_kwh", *prev_period) if prev_period else None,
-        "yoy_solar_kwh": _sum_field_if_complete(daily_by_date, "solar_kwh", *yoy_period) if yoy_period else None,
+        "prev_solar_kwh": _sum_field_if_complete(daily_by_date, "solar_kwh", prev_start, prev_end),
+        "yoy_solar_kwh": _sum_field_if_complete(daily_by_date, "solar_kwh", yoy_start, yoy_end),
     }
 
 
-def build_snapshot_body(billing_month: str, layers: dict, daily_by_date: dict, stage: str) -> dict | None:
+def build_snapshot_body(billing_month: str, layers: dict, daily_by_date: dict, stage: str, meter_read_day: int) -> dict | None:
     """§B スナップショットv1の本体（first_published/revision/revisedを除く）を組み立てる。
     stage=="final" は layers["months"]、stage=="preliminary" は layers["preliminary_months"]
     からbilling_monthのレコードを探す。L0〜L3のいずれかがunavailable、L2の不確かさ帯が無い、
-    または final で L3 が buy_source=="billed"/sell_source=="official_meter" でない場合は
-    None を返す（作れない月）。"""
+    final で L3 が buy_source=="billed"/sell_source=="official_meter" でない、または
+    billing_month が FIRST_REPORT_BILLING_MONTH より前の場合は None を返す（作れない月）。"""
+    if billing_month < FIRST_REPORT_BILLING_MONTH:
+        return None
+
     source_key = "months" if stage == "final" else "preliminary_months"
     record = next((m for m in layers.get(source_key, []) if m["billing_month"] == billing_month), None)
     if record is None:
@@ -207,8 +225,10 @@ def build_snapshot_body(billing_month: str, layers: dict, daily_by_date: dict, s
         return None
 
     usage_period = record["usage_period"]
-    start = date.fromisoformat(usage_period["start"])
-    end = date.fromisoformat(usage_period["end"])
+    expected_start, expected_end = bill_model.billing_period(billing_month, meter_read_day)
+    if usage_period["start"] != expected_start.isoformat() or usage_period["end"] != expected_end.isoformat():
+        return None  # billing_month と usage_period が矛盾するレコードは作らない
+    start, end = expected_start, expected_end
     days = usage_period["days"]
 
     l0 = layer_map["L0"]
@@ -236,7 +256,7 @@ def build_snapshot_body(billing_month: str, layers: dict, daily_by_date: dict, s
         },
         "energy": _sum_energy(daily_by_date, start, end),
         "weather": classify_weather(daily_by_date, start, end),
-        "comparison": _comparison(layers, daily_by_date, billing_month),
+        "comparison": _comparison(daily_by_date, billing_month, meter_read_day),
         # 追補(2026-09-26) B': tariff_basis は stage との1対1対応で固定する
         # （tariff_basis=="confirmed" <=> stage=="final"、validate_metrics.py G14で検査）。
         "stage": stage,
@@ -260,10 +280,13 @@ def run(
     posts_dir: Path,
     today: date,
     *,
+    meter_read_day: int,
     first_report_billing_month: str = FIRST_REPORT_BILLING_MONTH,
 ) -> int:
     """確定した月・速報段階に入った月ごとに posts/YYYY-MM.json を作成・改版する。
-    戻り値: 新規に書き込んだファイル数（改版・凍結は含まない。ログ用）。"""
+    戻り値: 新規に書き込んだファイル数（改版・凍結は含まない。ログ用）。
+    確定後の改版でrevisionがMAX_REVISIONを超える場合は RevisionLimitExceededError を送出する
+    （呼び出し側のCLIはこれを非ゼロ終了に変換する。QA指摘2026-09-26の安全弁）。"""
     layers = json.loads((data_dir / "layers.json").read_text(encoding="utf-8"))
     daily_rows = json.loads((data_dir / "daily.json").read_text(encoding="utf-8"))
     daily_by_date = {row["date"]: row for row in daily_rows}
@@ -284,40 +307,64 @@ def run(
 
         if existing is not None and existing.get("stage") == "final":
             # 確定後は凍結が既定。420日窓の外に出てmonths[]から消えても一切触らない。
-            # 元データが正当に変わって本体が変化した場合だけ改版する（tariff訂正等）。
+            # 改版の要否はlayer由来の項目だけで判定し、energy/weather/comparisonは既存値を
+            # 引き継ぐ（QA指摘2026-09-26: daily.jsonの420日窓が動くだけで無意味な改版が
+            # 発生しないようにする）。
             if not closable:
                 continue
-            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final")
-            if new_body is None or new_body == _body_without_meta(existing):
+            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
+            if new_body is None:
                 continue
+            if layer_derived_subset(new_body) == layer_derived_subset(existing):
+                continue
+            if existing["revision"] >= MAX_REVISION:
+                raise RevisionLimitExceededError(
+                    f"{billing_month}: revisionが上限({MAX_REVISION})に達したため書き込みません"
+                )
+            new_body["energy"] = existing["energy"]
+            new_body["weather"] = existing["weather"]
+            new_body["comparison"] = existing["comparison"]
             existing["revision"] = existing["revision"] + 1
             existing["revised"] = today.isoformat()
+            # この改版は速報からの遷移ではなく確定後の訂正（QA指摘2026-09-26 item10:
+            # render_monthly_posts.py が改版文の表現を選ぶための目印）。
+            existing["transitioned_from_preliminary"] = False
             existing.update(new_body)
             _write_snapshot(path, existing)
             continue
 
         if existing is not None and existing.get("stage") == "preliminary":
-            # 速報は初回公開後は凍結する（revision==1を維持）。確定したときだけ確定版へ遷移する。
+            # 速報は初回公開後は凍結する（revision==1を維持）。確定したときだけ確定版へ遷移する
+            # （遷移時は新規公開に近いため、energy/weather/comparisonも新しく計算し直す）。
             if not closable:
                 continue
-            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final")
+            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
             if new_body is None:
                 continue
+            if existing["revision"] >= MAX_REVISION:
+                raise RevisionLimitExceededError(
+                    f"{billing_month}: revisionが上限({MAX_REVISION})に達したため書き込みません"
+                )
             snapshot = {
                 **new_body,
                 "first_published": existing["first_published"],
                 "revision": existing["revision"] + 1,
                 "revised": today.isoformat(),
+                # 速報からの確定遷移の目印（QA指摘2026-09-26 item10）。
+                "transitioned_from_preliminary": True,
             }
             _write_snapshot(path, snapshot)
             continue
 
         # 新規（この請求月のposts/*.jsonがまだ無い）
         if closable:
-            body = build_snapshot_body(billing_month, layers, daily_by_date, "final")
+            body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
             if body is None:
                 continue
-            snapshot = {**body, "first_published": today.isoformat(), "revision": 1, "revised": None}
+            snapshot = {
+                **body, "first_published": today.isoformat(), "revision": 1, "revised": None,
+                "transitioned_from_preliminary": False,
+            }
             _write_snapshot(path, snapshot)
             written += 1
             continue
@@ -328,10 +375,13 @@ def run(
         period_end = date.fromisoformat(prelim_rec["usage_period"]["end"])
         if today < period_end + timedelta(days=PRELIMINARY_DELAY_DAYS):
             continue
-        body = build_snapshot_body(billing_month, layers, daily_by_date, "preliminary")
+        body = build_snapshot_body(billing_month, layers, daily_by_date, "preliminary", meter_read_day)
         if body is None:
             continue
-        snapshot = {**body, "first_published": today.isoformat(), "revision": 1, "revised": None}
+        snapshot = {
+            **body, "first_published": today.isoformat(), "revision": 1, "revised": None,
+            "transitioned_from_preliminary": False,
+        }
         _write_snapshot(path, snapshot)
         written += 1
 
@@ -342,6 +392,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, required=True, help="layers.json/daily.json のあるディレクトリ")
     parser.add_argument("--posts-dir", type=Path, required=True, help="posts/YYYY-MM.json の出力先")
+    parser.add_argument("--tariff", type=Path, default=bill_model.DEFAULT_TARIFF_PATH, help="tariff.json のパス（meter_read_dayの取得用）")
     parser.add_argument("--today", type=str, default=None, help="基準日('YYYY-MM-DD'、省略時は実行日）")
     parser.add_argument(
         "--first-report-month", type=str, default=FIRST_REPORT_BILLING_MONTH,
@@ -349,8 +400,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    tariff = json.loads(args.tariff.read_text(encoding="utf-8"))
+    meter_read_day = tariff["meter_read_day"]
     today = date.fromisoformat(args.today) if args.today else date.today()
-    written = run(args.data_dir, args.posts_dir, today, first_report_billing_month=args.first_report_month)
+    try:
+        written = run(
+            args.data_dir, args.posts_dir, today,
+            meter_read_day=meter_read_day, first_report_billing_month=args.first_report_month,
+        )
+    except RevisionLimitExceededError as exc:
+        print(f"monthly_report.py: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"monthly_report.py: wrote {written} new post(s) under {args.posts_dir}")
 
 

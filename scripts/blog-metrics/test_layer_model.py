@@ -1037,6 +1037,51 @@ class BuildLayersPreliminaryMonthsTest(unittest.TestCase):
         self.assertIn("2026-08", month_keys)
         self.assertIn("2026-08", prelim_keys)  # 両方に入って良い(is_closable判定は上位層の責務)
 
+    def test_fully_confirmed_month_is_not_added_to_preliminary_months(self):
+        # QA再指摘2026-09-26 N1: 単価確定・L3がbilled/official_meter・L2の不確かさ帯ありの
+        # 「完全に確定した」月はpreliminary_monthsに入れない（months[]にだけ入る）。
+        tariff = make_tariff()  # 2026-09は確定済み
+        daily = _full_month_daily("2026-09")
+        profile_by_date = _full_profile_month("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        official_buy_by_month = {
+            "2026-09": {
+                "settlement_month": "2026-09", "period_from": start.isoformat(), "period_to": end.isoformat(),
+                "official_buy_kwh": 100.0, "billed_yen": 4000,
+            }
+        }
+        official_sell_by_month = {
+            "2026-09": {
+                "settlement_month": "2026-09", "period_from": start.isoformat(), "period_to": end.isoformat(),
+                "official_sell_kwh": 200.0, "sell_revenue_yen": 3200,
+            }
+        }
+        result = lm.build_layers(
+            tariff, daily, official_sell_by_month, official_buy_by_month, profile_by_date, today=date(2026, 9, 10),
+        )
+        month = next(m for m in result["months"] if m["billing_month"] == "2026-09")
+        self.assertEqual(month["layers"]["L3"]["buy_source"], "billed")
+        self.assertEqual(month["layers"]["L3"]["sell_source"], "official_meter")
+        self.assertIn("net_cost_fit_yen_min", month["uncertainty"]["L2"])
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+
+    def test_preliminary_boundary_end_plus_1_day_is_excluded(self):
+        # QA再指摘2026-09-26 N2: 境界はperiod_end+PRELIMINARY_DELAY_DAYS<=todayであること。
+        # end+1日(todayがperiod_end+1)はまだ対象外。
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        # 2026-09の請求期間終了は2026-09-01。end+1日 = 2026-09-02。
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 2))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+
+    def test_preliminary_boundary_end_plus_2_days_is_included(self):
+        # end+2日(PRELIMINARY_DELAY_DAYS)以降は対象になる。
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 3))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-09", prelim_keys)
+
     def test_month_still_in_progress_is_not_added_to_preliminary_months(self):
         tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
         # todayを請求期間の最終日(2026-09-01)自体にすると、period_end_actual(=today-1日)より

@@ -1717,6 +1717,29 @@ def build_in_progress(
     }
 
 
+def _is_confirmed_final_record(record: dict) -> bool:
+    """QA指摘2026-09-26 N1: build_month_layers()のレコードが「確定」とみなせる最小条件
+    （monthly_report.is_closable()の条件1〜4相当）。5番目のFIRST_REPORT_BILLING_MONTH
+    防波堤はmonthly_report.py側の公開方針であり、layer_model.pyが持つべき知識ではないため
+    ここには含めない。monthly_report.pyはlayer_model.pyをimportするため、逆方向のimport
+    （layer_model.py -> monthly_report.py）は循環importになり不可。そのためこの最小判定を
+    ここに複製する（is_closableの条件1〜4と完全に同じロジックを保つこと）。"""
+    layers = record.get("layers", {})
+    for key in ("L0", "L1", "L2", "L3"):
+        if not layers.get(key, {}).get("available"):
+            return False
+    l3 = layers["L3"]
+    if l3.get("buy_source") != "billed":
+        return False
+    if l3.get("sell_source") != "official_meter":
+        return False
+    uncertainty = record.get("uncertainty") or {}
+    l2_band = uncertainty.get("L2") or {}
+    if "net_cost_fit_yen_min" not in l2_band or "net_cost_fit_yen_max" not in l2_band:
+        return False
+    return True
+
+
 def build_layers(
     tariff: dict,
     daily_by_date: dict,
@@ -1785,13 +1808,15 @@ def build_layers(
                 "layer_reasons": {key: layer.get("unavailable_reason") for key, layer in layers.items()},
             })
 
-        # 追補(2026-09-26「速報＋改訂」方式、QA指摘2026-09-26で修正): L0〜L2がavailable
-        # (usable日数が閾値以上)で請求期間が終了済みの月はpreliminary_months候補にする。
-        # months[]にavailableな状態で既に入っていても構わない（「単価は確定済みだが
-        # L3がまだセンサー値(buy_source=="sensor"等)」のような、確定条件(is_closable、
-        # monthly_report.py側の責務)を満たさない月もここでは候補にするため）。L3だけが
-        # availableな月(L0〜L2がunavailable)はpreliminaryにしない。
-        if period_end < today_resolved - timedelta(days=PRELIMINARY_DELAY_DAYS):
+        # 追補(2026-09-26「速報＋改訂」方式、QA指摘2026-09-26で修正、QA再指摘N1/N2で再修正):
+        # L0〜L2がavailable(usable日数が閾値以上)で請求期間が終了済みの月はpreliminary_months
+        # 候補にする。ただし既に確定済み(_is_confirmed_final_record)の月は対象外にする
+        # （確定した月はmonths[]にだけ入れる。is_closableの完全な判定はFIRST_REPORT_
+        # BILLING_MONTHの防波堤を含めmonthly_report.py側の責務だが、循環importを避けるため
+        # 「計算上確定しているか」の最小判定はここに複製する）。L3だけがavailableな月
+        # (L0〜L2がunavailable)はpreliminaryにしない。境界はperiod_end+PRELIMINARY_DELAY_DAYS
+        # <= today_resolved（=today_resolvedがperiod_end+2日以降）。
+        if not _is_confirmed_final_record(record) and period_end + timedelta(days=PRELIMINARY_DELAY_DAYS) <= today_resolved:
             preliminary_record = build_month_layers(
                 tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month,
                 profile_by_date, ecoflow_soc_by_date=ecoflow_soc_by_date, allow_provisional_tariff=True,

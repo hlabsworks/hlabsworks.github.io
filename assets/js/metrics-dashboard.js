@@ -413,8 +413,15 @@
     var el = document.getElementById("metrics-preliminary-months");
     if (!el) return;
     var months = (layers && layers.preliminary_months) || [];
+    // QA再指摘2026-09-26 N1(二重防御): L3がbuy_source=="billed"かつsell_source==
+    // "official_meter"（=完全に確定した月）はlayer_model.py側で既に除外されるはずだが、
+    // ダッシュボード側でも同じ条件で除外する。
+    var isFullyConfirmed = function (m) {
+      var l3 = m.layers && m.layers.L3;
+      return !!l3 && l3.buy_source === "billed" && l3.sell_source === "official_meter";
+    };
     var rows = months
-      .filter(function (m) { return m.layers && m.layers.L3 && m.layers.L3.available; })
+      .filter(function (m) { return m.layers && m.layers.L3 && m.layers.L3.available && !isFullyConfirmed(m); })
       .map(function (m) {
         var ym = yearMonthOf(m.usage_period.start);
         var label = ym.year + "年" + ym.month + "月分";

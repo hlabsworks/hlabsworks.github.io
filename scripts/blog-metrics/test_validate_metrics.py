@@ -1804,6 +1804,41 @@ class Gate9TariffConfirmationExceptionTest(unittest.TestCase):
             self.assertEqual(ctx.exception.gate, "G9")
 
 
+    def test_g9_conflicting_previous_tariff_months_does_not_widen_exception_to_base_months(self):
+        """再 QA 指摘 R1: 前コミットの tariff_months が base と矛盾（2026-08 の燃料費が 1 円違う）し、
+        今回それを除去したコミット（run-daily の tariff_conflict 自動除去と同じ形）でも、
+        base 単独で確定済みの 2026-08 に属する日の saving_yen 書き換えは G9 で拒否されること。"""
+        old_daily_rows = _old_daily_fixture()
+        confirmed_day = dict(old_daily_rows[0], date="2026-07-15", saving_yen=100)
+        old_daily_rows = [confirmed_day] + old_daily_rows[1:]
+        new_daily_rows = [dict(confirmed_day, saving_yen=999)] + old_daily_rows[1:]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            conflicting = make_tariff_months_fixture(fuel={"2026-08": 11.38}, capacity={"2026-08": 213})
+            write_incoming(
+                base, daily=old_daily_rows, monthly=make_monthly_fixture(old_daily_rows),
+                inputs={"tariff_months.json": conflicting},
+            )
+            subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit1(conflicting tariff_months)"], cwd=base, check=True)
+
+            cleaned = make_tariff_months_fixture(excluded={"2026-08": "tariff_conflict"})
+            write_incoming(
+                base, daily=new_daily_rows, monthly=make_monthly_fixture(new_daily_rows),
+                inputs={"tariff_months.json": cleaned},
+            )
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit2(conflict removed)"], cwd=base, check=True)
+
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G9")
+
+
 class CheckInputsDirTest(unittest.TestCase):
     def test_valid_inputs_dir_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

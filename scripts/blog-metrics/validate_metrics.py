@@ -1406,7 +1406,10 @@ def validate(
         try:
             prev_confirmed = bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, prev_overlay))
         except ValueError:
-            prev_confirmed = set()
+            # 前回の overlay が base と矛盾している（tariff.json 変更直後など）場合でも、
+            # base 単独の確定月を下限にする。空集合に戻すと base の全月が「新たに確定」
+            # 扱いになり G9 の例外が過去全体に広がる（再 QA 指摘 R1）。
+            prev_confirmed = bill_model.confirmed_tariff_months(tariff_base)
         newly_confirmed_months = cur_confirmed - prev_confirmed
 
     gate8_date_health(daily, incoming, allow_history_change)

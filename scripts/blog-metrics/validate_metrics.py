@@ -159,7 +159,7 @@ OFFICIAL_BUY_TOP_KEYS = {"months", "generated_at", "source_note"}
 OFFICIAL_BUY_MONTH_KEYS = {"settlement_month", "period_from", "period_to", "official_buy_kwh", "billed_yen"}
 OFFICIAL_SELL_TOP_KEYS = {"months", "generated_at", "source_note"}
 OFFICIAL_SELL_MONTH_KEYS = {"settlement_month", "period_from", "period_to", "official_sell_kwh", "sell_revenue_yen"}
-EXCLUDED_MONTH_REASONS = {"reconcile_mismatch", "levy_conflict", "parse_incomplete", "missing_official_buy"}
+EXCLUDED_MONTH_REASONS = {"reconcile_mismatch", "levy_conflict", "parse_incomplete", "missing_official_buy", "tariff_conflict"}
 _LEVY_RANGE_RE = re.compile(r"^(\d{4}-\d{2})\.\.(\d{4}-\d{2})\Z", re.ASCII)
 MAX_INPUT_MONTHLY_ROWS = 240
 
@@ -218,11 +218,14 @@ _DENY_PATTERNS = [
         r"|203\.0\.113\.\d{1,3})\b"
     ),
     re.compile(r"\b\d{13,}\b"),  # 13桁以上の数字（電話番号・契約番号等）
-    # ハイフン区切りの供給地点特定番号様の数字列（例: '1234-5678-9012-3456'）。
+    # 区切り文字入りの供給地点特定番号様の数字列（例: '1234-5678-9012-3456'）。
     # 一般送配電事業者の供給地点特定番号は22桁を4桁区切りにした表記が使われることが
-    # あるため、13桁未満の数字列(上のパターンでは検出できない)もハイフン区切りの
+    # あるため、13桁未満の数字列(上のパターンでは検出できない)も区切り文字入りの
     # 塊が3個以上あれば検出する（月次確定の自動化、DDR実装手順S1、G6追加分）。
-    re.compile(r"\b\d{2,4}(?:-\d{4}){3,}\b"),
+    # QA指摘L3: 区切り文字はASCIIハイフンだけでなく全角ハイフンマイナス(－)・
+    # Unicodeハイフン(‐)・半角スペースも見る（表計算ソフトのコピペ・PDF抽出で
+    # ハイフンが全角化したり空白区切りになることがあるため）。
+    re.compile(r"\b\d{2,4}(?:[-－‐ ]\d{4}){3,}\b"),
     re.compile(r"\b[A-Z][A-Z0-9]{9,}\b"),  # S/N 様の大文字英数字列
     re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),  # メールアドレス
     # 住所様。「都市ガス」「京都市」等の一般語誤検知を避けるため、都道府県文字と市区町村文字の
@@ -1015,6 +1018,8 @@ def _check_input_month_sequence(months: list[dict], relpath: str) -> None:
         raise ValidationFailure("G18", f"{relpath}: months が上限({MAX_INPUT_MONTHLY_ROWS})を超えています ({len(months)})")
     prev = None
     for month in months:
+        if not isinstance(month, dict):
+            raise ValidationFailure("G18", f"{relpath}: months の要素は object である必要があります: {month!r}")
         sm = month.get("settlement_month")
         if not isinstance(sm, str) or not _MONTH_RE.match(sm):
             raise ValidationFailure("G18", f"{relpath}: settlement_month の書式が不正です: {sm!r}")
@@ -1119,7 +1124,9 @@ def _gate18_tariff_months(data: object, relpath: str) -> None:
     for m, reason in excluded.items():
         if not isinstance(m, str) or not _MONTH_RE.match(m):
             raise ValidationFailure("G18", f"{relpath}: excluded_months のキーの書式が不正です: {m!r}")
-        if reason not in EXCLUDED_MONTH_REASONS:
+        # QA指摘L1: reasonがlist/dict等の非文字列だと `in EXCLUDED_MONTH_REASONS`（set）が
+        # unhashableでTypeErrorになり、ValidationFailureではなく未処理例外として漏れる。
+        if not isinstance(reason, str) or reason not in EXCLUDED_MONTH_REASONS:
             raise ValidationFailure("G18", f"{relpath}: excluded_months[{m}] の値が許可された列挙値ではありません: {reason!r}")
 
 
@@ -1137,21 +1144,46 @@ def gate18_input_files_schema(parsed_inputs: dict[str, object], meter_read_day: 
 def gate19_official_buy_reconcile(tariff_base: dict, official_buy: dict | None, tariff_months: dict | None) -> None:
     """G19: merge_tariff(base tariff, incoming の tariff_months) で確定している請求月のうち
     inputs/official_buy.json にある月は、すべて reconcile_bill()==0（請求総額と一致）で
-    あることを要求する（fatal）。official_buy が無ければ何もしない。"""
-    if official_buy is None:
-        return
+    あることを要求する（fatal）。
+
+    QA指摘F1: overlay(tariff_months)が base に対して新たに確定させた月
+    （base単独では未確定だった月）は、inputs/official_buy.json に対応する月が
+    存在し reconcile_bill()==0 であることを**必須**にする（無ければ fatal。
+    official_buy 自体が無いのに overlay が新規確定月を追加している場合も fatal）。
+    base が単独で既に確定していた月（overlayが関与しない）は、official_buy に
+    たまたま存在する場合だけ突合を要求する（従来の一般則）。"""
+    base_confirmed = bill_model.confirmed_tariff_months(tariff_base)
     try:
         effective = bill_model.merge_tariff(tariff_base, tariff_months)
     except ValueError as exc:
         raise ValidationFailure("G19", f"inputs/tariff_months.json が base tariff と競合しています: {exc}") from exc
     confirmed = bill_model.confirmed_tariff_months(effective)
-    for month in official_buy.get("months", []):
-        sm = month.get("settlement_month")
-        if sm not in confirmed:
-            continue
+    overlay_added_months = confirmed - base_confirmed
+
+    official_buy_by_month = {
+        month.get("settlement_month"): month for month in (official_buy.get("months", []) if official_buy is not None else [])
+    }
+
+    for sm in sorted(overlay_added_months):
+        month = official_buy_by_month.get(sm)
+        if month is None:
+            raise ValidationFailure(
+                "G19",
+                f"inputs/tariff_months.json: {sm} は新たに確定した請求月ですが、"
+                "inputs/official_buy.json に対応する月がありません（新規確定月は請求突合が必須です）",
+            )
         diff = bill_model.reconcile_bill(effective, sm, month["official_buy_kwh"], month["billed_yen"])
         if diff != 0:
             raise ValidationFailure("G19", f"inputs/official_buy.json: {sm} の請求突合が一致しません（diff={diff}円）")
+
+    if official_buy is not None:
+        for month in official_buy.get("months", []):
+            sm = month.get("settlement_month")
+            if sm not in confirmed or sm in overlay_added_months:
+                continue  # overlay_added_monthsは上のループで既に検査済み
+            diff = bill_model.reconcile_bill(effective, sm, month["official_buy_kwh"], month["billed_yen"])
+            if diff != 0:
+                raise ValidationFailure("G19", f"inputs/official_buy.json: {sm} の請求突合が一致しません（diff={diff}円）")
 
 
 def check_inputs_dir(inputs_dir: Path, tariff_path: Path) -> None:
@@ -1245,17 +1277,23 @@ def gate13_pipeline(pipeline: dict, incoming: Path, input_paths: dict[str, Path]
     inputs = pipeline.get("inputs", {})
     for key, real_path in input_paths.items():
         expected = inputs.get(key)
-        if not expected:
-            continue
         incoming_relpath = _G13_INCOMING_INPUT_RELPATHS.get(key)
         if incoming_relpath is not None:
             incoming_path = incoming / incoming_relpath
             if incoming_path.exists():
+                # QA指摘L2: incomingに対応ファイルが実在するのにpipeline.jsonがshaキーを
+                # 持たない（=検証されずに素通りする穴）ことをfatalにする。
+                if not expected:
+                    raise ValidationFailure(
+                        "G13", f"pipeline.json.inputs.{key} がありませんが incoming/{incoming_relpath} が存在します"
+                    )
                 actual = hashlib.sha256(incoming_path.read_bytes()).hexdigest()
                 if actual != expected:
                     raise ValidationFailure("G13", f"pipeline.json.inputs.{key} が incoming/{incoming_relpath} と一致しません")
                 continue
-            # incoming に inputs/ が無い移行期間 → 従来どおり main と照合して警告のみ
+            # incoming に対応ファイルが無い移行期間 → 従来どおり main と照合して警告のみ
+        if not expected:
+            continue
         if not real_path.exists():
             continue
         actual = hashlib.sha256(real_path.read_bytes()).hexdigest()
@@ -1360,11 +1398,13 @@ def validate(
             cur_confirmed = bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, overlay))
         except ValueError:
             cur_confirmed = set()
+        # QA指摘F2: prev_overlayが無い（初めてtariff_months.jsonが現れた回、または
+        # 前コミットに読めるtariff_months.jsonが無い）場合、prev_confirmedを空集合にすると
+        # base単独で以前から確定済みだった月まで「今回新たに確定した」扱いになり、G9の
+        # 例外(saving_yenのみ許容)が過剰に適用されてしまう。overlay無し(=base単独)の
+        # confirmed_tariff_monthsを基準にする。
         try:
-            prev_confirmed = (
-                bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, prev_overlay))
-                if prev_overlay is not None else set()
-            )
+            prev_confirmed = bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, prev_overlay))
         except ValueError:
             prev_confirmed = set()
         newly_confirmed_months = cur_confirmed - prev_confirmed

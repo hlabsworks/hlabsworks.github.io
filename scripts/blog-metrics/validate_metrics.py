@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """validate_metrics.py — 別リポジトリ hlabsworks/solar-metrics-data（homelab が毎日 push する
 公開メトリクスデータ）から取り込む内容を、Hugo ビルドに反映する前に検査するゲート集
-(G1〜G17)。
+(G1〜G19)。
 
 必ず main ブランチのこのファイル（信頼されたコード）で実行し、_incoming 側からは JSON/
 Markdown のテキストしか読まない。ゲートを1つでも満たさない場合は非ゼロ終了し、
@@ -16,9 +16,11 @@ Markdown のテキストしか読まない。ゲートを1つでも満たさな�
   G4  キーallowlist(再帰)     G5  文字列フォーマット           G6  秘匿情報deny
   G7  時間帯粒度の禁止        G8  日付健全性                   G9  履歴不変性
   G10 物理レンジ              G11 前回比異常                   G12 整合性チェック
-  G13 pipeline.json（警告のみ）
+  G13 pipeline.json（inputs/*.json不在時は警告のみ、存在時はincomingと直接fatal照合）
   G14 posts/*.jsonのスキーマ・型   G15 posts/*.jsonの再計算一致・確定判定
   G16 posts/*.jsonの履歴整合       G17 render_monthly_posts.pyの自己検査（別プロセスで実行）
+  G18 inputs/*.jsonのスキーマ・型（月次確定の自動化、DDR実装手順S1）
+  G19 inputs/official_buy.jsonの請求突合（同上、確定済み月はreconcile_bill==0が必須）
 
 posts/YYYY-MM.json（月締めレポートの数値スナップショット、設計判断2026-09-23/26
 「速報＋改訂」方式）は monthly_report.py の is_closable()/build_snapshot_body() を
@@ -40,6 +42,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bill_model  # noqa: E402  billing_period()を二重実装しない(G14のusage_period検査用)
+import import_official_buy  # noqa: E402  SOURCE_NOTEをG18で共有する(二重実装しない)
+import import_official_sell  # noqa: E402  SOURCE_NOTEをG18で共有する(二重実装しない)
 import monthly_report  # noqa: E402
 
 JST = timezone(timedelta(hours=9))
@@ -60,6 +64,11 @@ ALLOWED_FILES = DATA_FILES | {"README.md", "pipeline.json"}
 # re.ASCII を付ける。$ は文字列末尾の改行の直前にもマッチしうるため \Z にする。
 POST_FILE_RE = re.compile(r"^posts/(\d{4}-\d{2})\.json\Z", re.ASCII)
 MAX_POST_FILES = 240
+
+# inputs/official_buy.json・inputs/official_sell.json・inputs/tariff_months.json（月次確定の
+# 自動化、DDR §「月次確定の自動化」・実装手順S1）。0〜3件、固定ファイル名のみで任意
+# （必須ファイルではない。handoffが無い運用ではこれまでどおり存在しない）。
+OPTIONAL_INPUT_FILES = {"inputs/official_buy.json", "inputs/official_sell.json", "inputs/tariff_months.json"}
 
 # --- G3: サイズ・行数上限 ---------------------------------------------------
 MAX_FILE_BYTES = 1 * 1024 * 1024
@@ -137,8 +146,22 @@ LAYERS_KEYS = {
 PIPELINE_KEYS = {
     "schema_version", "generated_at", "source", "bundle_rev", "profile_window_days",
     "inputs", "tariff_sha256", "official_buy_sha256", "official_sell_sha256",
-    "row_counts", "daily", "monthly", "db_query_seconds",
+    "tariff_months_sha256", "row_counts", "daily", "monthly", "db_query_seconds",
 }
+
+# --- G18: inputs/*.json のスキーマ(キー・型・範囲) -----------------------------------------
+TARIFF_MONTHS_KEYS = {
+    "schema_version", "generated_at", "fuel_cost_adjustment_yen_per_kwh",
+    "capacity_contribution_yen_per_month", "renewable_levy_yen_per_kwh_observed",
+    "excluded_months",
+}
+OFFICIAL_BUY_TOP_KEYS = {"months", "generated_at", "source_note"}
+OFFICIAL_BUY_MONTH_KEYS = {"settlement_month", "period_from", "period_to", "official_buy_kwh", "billed_yen"}
+OFFICIAL_SELL_TOP_KEYS = {"months", "generated_at", "source_note"}
+OFFICIAL_SELL_MONTH_KEYS = {"settlement_month", "period_from", "period_to", "official_sell_kwh", "sell_revenue_yen"}
+EXCLUDED_MONTH_REASONS = {"reconcile_mismatch", "levy_conflict", "parse_incomplete", "missing_official_buy", "tariff_conflict"}
+_LEVY_RANGE_RE = re.compile(r"^(\d{4}-\d{2})\.\.(\d{4}-\d{2})\Z", re.ASCII)
+MAX_INPUT_MONTHLY_ROWS = 240
 
 # posts/YYYY-MM.json（月締めレポートのスナップショットv1）のキー allowlist（DDR §B・追補B'）。
 POST_KEYS = {
@@ -195,6 +218,14 @@ _DENY_PATTERNS = [
         r"|203\.0\.113\.\d{1,3})\b"
     ),
     re.compile(r"\b\d{13,}\b"),  # 13桁以上の数字（電話番号・契約番号等）
+    # 区切り文字入りの供給地点特定番号様の数字列（例: '1234-5678-9012-3456'）。
+    # 一般送配電事業者の供給地点特定番号は22桁を4桁区切りにした表記が使われることが
+    # あるため、13桁未満の数字列(上のパターンでは検出できない)も区切り文字入りの
+    # 塊が3個以上あれば検出する（月次確定の自動化、DDR実装手順S1、G6追加分）。
+    # QA指摘L3: 区切り文字はASCIIハイフンだけでなく全角ハイフンマイナス(－)・
+    # Unicodeハイフン(‐)・半角スペースも見る（表計算ソフトのコピペ・PDF抽出で
+    # ハイフンが全角化したり空白区切りになることがあるため）。
+    re.compile(r"\b\d{2,4}(?:[-－‐ ]\d{4}){3,}\b"),
     re.compile(r"\b[A-Z][A-Z0-9]{9,}\b"),  # S/N 様の大文字英数字列
     re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),  # メールアドレス
     # 住所様。「都市ガス」「京都市」等の一般語誤検知を避けるため、都道府県文字と市区町村文字の
@@ -221,7 +252,7 @@ _TIME_OF_DAY_RE = re.compile(r"\d{1,2}:\d{2}")
 
 
 class ValidationFailure(Exception):
-    """1つのゲート違反。gate: 'G1'〜'G13' / message: 違反箇所を含む説明。"""
+    """1つのゲート違反。gate: 'G1'〜'G19' / message: 違反箇所を含む説明。"""
 
     def __init__(self, gate: str, message: str) -> None:
         self.gate = gate
@@ -280,15 +311,19 @@ def _previous_commit_json(incoming: Path, relpath: str) -> list | dict | None:
     return None
 
 
-def gate1_file_allowlist(incoming: Path) -> list[str]:
+def gate1_file_allowlist(incoming: Path) -> tuple[list[str], list[str]]:
     """G1: incoming の追跡ファイルが、既存7ファイル(ALLOWED_FILES、完全一致)＋
-    posts/YYYY-MM.json（0〜MAX_POST_FILES件、命名パターン一致のみ要求）で構成されること。
-    戻り値: 見つかった posts/*.json の相対パスのリスト（既存の呼び出し側は無視できる）。"""
+    posts/YYYY-MM.json（0〜MAX_POST_FILES件、命名パターン一致のみ要求）＋
+    inputs/{official_buy,official_sell,tariff_months}.json（0〜3件、OPTIONAL_INPUT_FILES、
+    月次確定の自動化。必須ファイルではない）で構成されること。
+    戻り値: (見つかった posts/*.json の相対パスのリスト, 見つかった inputs/*.json の
+    相対パスのリスト)。"""
     tracked = set(_list_tracked_files(incoming))
     post_files = sorted(p for p in tracked if p.startswith("posts/"))
+    input_files = sorted(p for p in tracked if p in OPTIONAL_INPUT_FILES)
     non_post_tracked = tracked - set(post_files)
     invalid_post_files = sorted(p for p in post_files if not POST_FILE_RE.match(p))
-    unexpected = sorted(non_post_tracked - ALLOWED_FILES) + invalid_post_files
+    unexpected = sorted(non_post_tracked - ALLOWED_FILES - set(input_files)) + invalid_post_files
     missing = sorted(ALLOWED_FILES - non_post_tracked)
     if unexpected:
         raise ValidationFailure("G1", f"許可されていないファイルが含まれています: {unexpected}")
@@ -296,7 +331,7 @@ def gate1_file_allowlist(incoming: Path) -> list[str]:
         raise ValidationFailure("G1", f"必須ファイルが不足しています: {missing}")
     if len(post_files) > MAX_POST_FILES:
         raise ValidationFailure("G1", f"posts/ のファイル数が上限({MAX_POST_FILES})を超えています ({len(post_files)})")
-    return [p for p in post_files if p not in invalid_post_files]
+    return [p for p in post_files if p not in invalid_post_files], input_files
 
 
 def gate2_encoding(path: Path, relpath: str) -> str:
@@ -440,9 +475,20 @@ def gate8_date_health(daily: list[dict], incoming: Path, allow_history_change: b
         raise ValidationFailure("G8", f"data/metrics/daily.json: 行数が前コミットより減少しています ({len(dates)} < {len(prev_daily)})")
 
 
-def gate9_history_immutability(daily: list[dict], incoming: Path, allow_history_change: bool) -> None:
+def gate9_history_immutability(
+    daily: list[dict], incoming: Path, allow_history_change: bool,
+    *, meter_read_day: int | None = None, newly_confirmed_months: set[str] | None = None,
+) -> None:
     """G9: today-20日以前の daily 行は前コミットと値まで一致すること。
-    --allow-history-change でスキップ可能。"""
+    --allow-history-change でスキップ可能。
+
+    例外（月次確定の自動化、DDR実装手順S1「G9 の例外」、allow-history-once/手動dispatchを
+    不要にする）: 行の日付が属する請求月(billing_month_for_date)が newly_confirmed_months
+    （今回のtariff_months.json取り込みで新たに確定した請求月の集合）に含まれる場合は、
+    前コミットとの差分キーが {"saving_yen"} の部分集合のときだけ許可する（tariff確定で
+    暫定単価から実額に置き換わり saving_yen だけが動くケースを想定。他のキーが動く場合は
+    従来どおり拒否する）。meter_read_day が None（未確定・inputs/tariff_months.json が
+    incomingに無い等）なら例外は適用せず従来どおり厳密一致を要求する。"""
     if allow_history_change:
         return
     prev_daily = _previous_commit_json(incoming, "data/metrics/daily.json")
@@ -451,6 +497,7 @@ def gate9_history_immutability(daily: list[dict], incoming: Path, allow_history_
     prev_by_date = {row["date"]: row for row in prev_daily}
     today_jst = datetime.now(JST).date()
     cutoff = today_jst - timedelta(days=20)
+    newly_confirmed_months = newly_confirmed_months or set()
     for row in daily:
         d = date.fromisoformat(row["date"])
         if d > cutoff:
@@ -458,8 +505,18 @@ def gate9_history_immutability(daily: list[dict], incoming: Path, allow_history_
         prev_row = prev_by_date.get(row["date"])
         if prev_row is None:
             continue
-        if row != prev_row:
-            raise ValidationFailure("G9", f"data/metrics/daily.json: 確定済み日({row['date']})の値が前コミットと異なります（--allow-history-change が必要）")
+        if row == prev_row:
+            continue
+        if meter_read_day is not None and bill_model.billing_month_for_date(d, meter_read_day) in newly_confirmed_months:
+            changed_keys = {k for k in set(row) | set(prev_row) if row.get(k) != prev_row.get(k)}
+            if changed_keys <= {"saving_yen"}:
+                continue
+            raise ValidationFailure(
+                "G9",
+                f"data/metrics/daily.json: 確定済み日({row['date']})の値が前コミットと異なります"
+                f"（新たに確定した請求月ですが saving_yen 以外も変化しています: {sorted(changed_keys)}）",
+            )
+        raise ValidationFailure("G9", f"data/metrics/daily.json: 確定済み日({row['date']})の値が前コミットと異なります（--allow-history-change が必要）")
 
 
 def _check_range(value, low, high, relpath, label) -> None:
@@ -913,6 +970,262 @@ def gate16_post_history(posts_by_relpath: dict[str, dict], incoming: Path, allow
             raise ValidationFailure("G16", f"{relpath}: 本体が変わったのにrevisionが+1になっていません（--allow-history-changeが必要）: {prev['revision']} -> {cur['revision']}")
 
 
+def _require_exact_keys(data: object, relpath: str, keys: set[str]) -> None:
+    if not isinstance(data, dict):
+        raise ValidationFailure("G18", f"{relpath}: トップレベルは object である必要があります")
+    unexpected = set(data) - keys
+    if unexpected:
+        raise ValidationFailure("G18", f"{relpath}: 許可されていないキーです: {sorted(unexpected)}")
+    missing = keys - set(data)
+    if missing:
+        raise ValidationFailure("G18", f"{relpath}: 必須キーが不足しています: {sorted(missing)}")
+
+
+def _check_input_int_range(value, low, high, relpath, label) -> None:
+    # G14の_check_yen_valueと同じ流儀(type(...) is int、boolを弾く)に揃える。
+    if type(value) is not int:
+        raise ValidationFailure("G18", f"{relpath}: {label} は整数である必要があります: {value!r}")
+    if not (low <= value <= high):
+        raise ValidationFailure("G18", f"{relpath}: {label} が範囲外です: {value} (許容 {low}〜{high})")
+
+
+def _check_input_whole_yen_range(value, low, high, relpath, label) -> None:
+    """円額の範囲検査。official_buy.json/official_sell.json の billed_yen/sell_revenue_yen は
+    既存データ（import_official_buy.py/import_official_sell.py が私有の抽出元から
+    そのまま転記する値）がJSON上float(例: 2563.0)で保存されていることがあるため、整数値と
+    等しいfloatも許容する（tariff_months.jsonのcapacity_contribution_yen_per_monthのように
+    新規生成されるフィールドは_check_input_int_rangeで厳密にintのみ要求し続ける）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationFailure("G18", f"{relpath}: {label} は整数である必要があります: {value!r}")
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        raise ValidationFailure("G18", f"{relpath}: {label} は整数である必要があります: {value!r}")
+    ivalue = int(value)
+    if not (low <= ivalue <= high):
+        raise ValidationFailure("G18", f"{relpath}: {label} が範囲外です: {value} (許容 {low}〜{high})")
+
+
+def _check_input_finite_range(value, low, high, relpath, label) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationFailure("G18", f"{relpath}: {label} は数値である必要があります: {value!r}")
+    if not math.isfinite(value):
+        raise ValidationFailure("G18", f"{relpath}: {label} が有限値ではありません: {value!r}")
+    if not (low <= value <= high):
+        raise ValidationFailure("G18", f"{relpath}: {label} が範囲外です: {value} (許容 {low}〜{high})")
+
+
+def _check_input_month_sequence(months: list[dict], relpath: str) -> None:
+    if len(months) > MAX_INPUT_MONTHLY_ROWS:
+        raise ValidationFailure("G18", f"{relpath}: months が上限({MAX_INPUT_MONTHLY_ROWS})を超えています ({len(months)})")
+    prev = None
+    for month in months:
+        if not isinstance(month, dict):
+            raise ValidationFailure("G18", f"{relpath}: months の要素は object である必要があります: {month!r}")
+        sm = month.get("settlement_month")
+        if not isinstance(sm, str) or not _MONTH_RE.match(sm):
+            raise ValidationFailure("G18", f"{relpath}: settlement_month の書式が不正です: {sm!r}")
+        if prev is not None and sm <= prev:
+            raise ValidationFailure("G18", f"{relpath}: settlement_month が昇順・重複なしではありません: {prev!r} -> {sm!r}")
+        prev = sm
+
+
+def _check_input_period(month: dict, meter_read_day: int, relpath: str) -> None:
+    sm = month["settlement_month"]
+    period_from, period_to = month.get("period_from"), month.get("period_to")
+    if not isinstance(period_from, str) or not _DATE_RE.match(period_from):
+        raise ValidationFailure("G18", f"{relpath}: {sm} period_from の書式が不正です: {period_from!r}")
+    if not isinstance(period_to, str) or not _DATE_RE.match(period_to):
+        raise ValidationFailure("G18", f"{relpath}: {sm} period_to の書式が不正です: {period_to!r}")
+    expected_from, expected_to = bill_model.billing_period(sm, meter_read_day)
+    if (period_from, period_to) != (expected_from.isoformat(), expected_to.isoformat()):
+        raise ValidationFailure(
+            "G18", f"{relpath}: {sm} の period が billing_period と一致しません: ({period_from}, {period_to}) != ({expected_from}, {expected_to})"
+        )
+
+
+def _gate18_official_buy(data: object, relpath: str, meter_read_day: int) -> None:
+    _require_exact_keys(data, relpath, OFFICIAL_BUY_TOP_KEYS)
+    generated_at = data.get("generated_at")
+    if not isinstance(generated_at, str) or not _DATETIME_RE.match(generated_at):
+        raise ValidationFailure("G18", f"{relpath}: generated_at の書式が不正です: {generated_at!r}")
+    if data.get("source_note") != import_official_buy.SOURCE_NOTE:
+        raise ValidationFailure("G18", f"{relpath}: source_note が既知の文言と一致しません")
+    months = data.get("months")
+    if not isinstance(months, list):
+        raise ValidationFailure("G18", f"{relpath}: months は配列である必要があります")
+    _check_input_month_sequence(months, relpath)
+    for month in months:
+        _require_exact_keys(month, relpath, OFFICIAL_BUY_MONTH_KEYS)
+        _check_input_period(month, meter_read_day, relpath)
+        sm = month["settlement_month"]
+        _check_input_finite_range(month.get("official_buy_kwh"), 0, 6200, relpath, f"{sm} official_buy_kwh")
+        _check_input_whole_yen_range(month.get("billed_yen"), 0, 300000, relpath, f"{sm} billed_yen")
+
+
+def _gate18_official_sell(data: object, relpath: str, meter_read_day: int, sell_fit: float) -> None:
+    _require_exact_keys(data, relpath, OFFICIAL_SELL_TOP_KEYS)
+    generated_at = data.get("generated_at")
+    if not isinstance(generated_at, str) or not _DATETIME_RE.match(generated_at):
+        raise ValidationFailure("G18", f"{relpath}: generated_at の書式が不正です: {generated_at!r}")
+    if data.get("source_note") != import_official_sell.SOURCE_NOTE:
+        raise ValidationFailure("G18", f"{relpath}: source_note が既知の文言と一致しません")
+    months = data.get("months")
+    if not isinstance(months, list):
+        raise ValidationFailure("G18", f"{relpath}: months は配列である必要があります")
+    _check_input_month_sequence(months, relpath)
+    for month in months:
+        _require_exact_keys(month, relpath, OFFICIAL_SELL_MONTH_KEYS)
+        _check_input_period(month, meter_read_day, relpath)
+        sm = month["settlement_month"]
+        kwh = month.get("official_sell_kwh")
+        _check_input_finite_range(kwh, 0, 6200, relpath, f"{sm} official_sell_kwh")
+        yen = month.get("sell_revenue_yen")
+        _check_input_whole_yen_range(yen, 0, 300000, relpath, f"{sm} sell_revenue_yen")
+        if abs(yen / sell_fit - kwh) > 1.0:
+            raise ValidationFailure("G18", f"{relpath}: {sm} sell_revenue_yen/fit と official_sell_kwh の差が許容(1.0kWh)を超えています")
+
+
+def _gate18_tariff_months(data: object, relpath: str) -> None:
+    _require_exact_keys(data, relpath, TARIFF_MONTHS_KEYS)
+    if data.get("schema_version") != 1:
+        raise ValidationFailure("G18", f"{relpath}: schema_version が1ではありません: {data.get('schema_version')!r}")
+    generated_at = data.get("generated_at")
+    if not isinstance(generated_at, str) or not _DATETIME_RE.match(generated_at):
+        raise ValidationFailure("G18", f"{relpath}: generated_at の書式が不正です: {generated_at!r}")
+
+    fuel = data.get("fuel_cost_adjustment_yen_per_kwh")
+    capacity = data.get("capacity_contribution_yen_per_month")
+    if not isinstance(fuel, dict) or not isinstance(capacity, dict):
+        raise ValidationFailure("G18", f"{relpath}: fuel_cost_adjustment_yen_per_kwh / capacity_contribution_yen_per_month は object である必要があります")
+    if set(fuel) != set(capacity):
+        raise ValidationFailure("G18", f"{relpath}: fuel_cost_adjustment_yen_per_kwh と capacity_contribution_yen_per_month のキー集合が一致しません")
+    if len(fuel) > MAX_INPUT_MONTHLY_ROWS:
+        raise ValidationFailure("G18", f"{relpath}: 月数が上限({MAX_INPUT_MONTHLY_ROWS})を超えています ({len(fuel)})")
+    if list(fuel) != sorted(fuel):
+        raise ValidationFailure("G18", f"{relpath}: fuel_cost_adjustment_yen_per_kwh の月が昇順ではありません")
+    for m in fuel:
+        if not isinstance(m, str) or not _MONTH_RE.match(m):
+            raise ValidationFailure("G18", f"{relpath}: fuel_cost_adjustment_yen_per_kwh のキーの書式が不正です: {m!r}")
+        _check_input_finite_range(fuel[m], -20, 30, relpath, f"fuel_cost_adjustment_yen_per_kwh[{m}]")
+    for m in capacity:
+        _check_input_int_range(capacity[m], 0, 5000, relpath, f"capacity_contribution_yen_per_month[{m}]")
+
+    levy = data.get("renewable_levy_yen_per_kwh_observed")
+    if not isinstance(levy, dict):
+        raise ValidationFailure("G18", f"{relpath}: renewable_levy_yen_per_kwh_observed は object である必要があります")
+    for rng, value in levy.items():
+        m = _LEVY_RANGE_RE.match(rng) if isinstance(rng, str) else None
+        if not m or m.group(1) != m.group(2):
+            raise ValidationFailure("G18", f"{relpath}: renewable_levy_yen_per_kwh_observed のキーは単月レンジ(YYYY-MM..YYYY-MM)である必要があります: {rng!r}")
+        _check_input_finite_range(value, 0, 10, relpath, f"renewable_levy_yen_per_kwh_observed[{rng}]")
+
+    excluded = data.get("excluded_months")
+    if not isinstance(excluded, dict):
+        raise ValidationFailure("G18", f"{relpath}: excluded_months は object である必要があります")
+    for m, reason in excluded.items():
+        if not isinstance(m, str) or not _MONTH_RE.match(m):
+            raise ValidationFailure("G18", f"{relpath}: excluded_months のキーの書式が不正です: {m!r}")
+        # QA指摘L1: reasonがlist/dict等の非文字列だと `in EXCLUDED_MONTH_REASONS`（set）が
+        # unhashableでTypeErrorになり、ValidationFailureではなく未処理例外として漏れる。
+        if not isinstance(reason, str) or reason not in EXCLUDED_MONTH_REASONS:
+            raise ValidationFailure("G18", f"{relpath}: excluded_months[{m}] の値が許可された列挙値ではありません: {reason!r}")
+
+
+def gate18_input_files_schema(parsed_inputs: dict[str, object], meter_read_day: int, sell_fit: float) -> None:
+    """G18: inputs/{official_buy,official_sell,tariff_months}.json（存在するものだけ）の
+    キー・型・範囲・書式を厳密に検査する（月次確定の自動化、DDR実装手順S1）。"""
+    if "inputs/official_buy.json" in parsed_inputs:
+        _gate18_official_buy(parsed_inputs["inputs/official_buy.json"], "inputs/official_buy.json", meter_read_day)
+    if "inputs/official_sell.json" in parsed_inputs:
+        _gate18_official_sell(parsed_inputs["inputs/official_sell.json"], "inputs/official_sell.json", meter_read_day, sell_fit)
+    if "inputs/tariff_months.json" in parsed_inputs:
+        _gate18_tariff_months(parsed_inputs["inputs/tariff_months.json"], "inputs/tariff_months.json")
+
+
+def gate19_official_buy_reconcile(tariff_base: dict, official_buy: dict | None, tariff_months: dict | None) -> None:
+    """G19: merge_tariff(base tariff, incoming の tariff_months) で確定している請求月のうち
+    inputs/official_buy.json にある月は、すべて reconcile_bill()==0（請求総額と一致）で
+    あることを要求する（fatal）。
+
+    QA指摘F1: overlay(tariff_months)が base に対して新たに確定させた月
+    （base単独では未確定だった月）は、inputs/official_buy.json に対応する月が
+    存在し reconcile_bill()==0 であることを**必須**にする（無ければ fatal。
+    official_buy 自体が無いのに overlay が新規確定月を追加している場合も fatal）。
+    base が単独で既に確定していた月（overlayが関与しない）は、official_buy に
+    たまたま存在する場合だけ突合を要求する（従来の一般則）。"""
+    base_confirmed = bill_model.confirmed_tariff_months(tariff_base)
+    try:
+        effective = bill_model.merge_tariff(tariff_base, tariff_months)
+    except ValueError as exc:
+        raise ValidationFailure("G19", f"inputs/tariff_months.json が base tariff と競合しています: {exc}") from exc
+    confirmed = bill_model.confirmed_tariff_months(effective)
+    overlay_added_months = confirmed - base_confirmed
+
+    official_buy_by_month = {
+        month.get("settlement_month"): month for month in (official_buy.get("months", []) if official_buy is not None else [])
+    }
+
+    for sm in sorted(overlay_added_months):
+        month = official_buy_by_month.get(sm)
+        if month is None:
+            raise ValidationFailure(
+                "G19",
+                f"inputs/tariff_months.json: {sm} は新たに確定した請求月ですが、"
+                "inputs/official_buy.json に対応する月がありません（新規確定月は請求突合が必須です）",
+            )
+        diff = bill_model.reconcile_bill(effective, sm, month["official_buy_kwh"], month["billed_yen"])
+        if diff != 0:
+            raise ValidationFailure("G19", f"inputs/official_buy.json: {sm} の請求突合が一致しません（diff={diff}円）")
+
+    if official_buy is not None:
+        for month in official_buy.get("months", []):
+            sm = month.get("settlement_month")
+            if sm not in confirmed or sm in overlay_added_months:
+                continue  # overlay_added_monthsは上のループで既に検査済み
+            diff = bill_model.reconcile_bill(effective, sm, month["official_buy_kwh"], month["billed_yen"])
+            if diff != 0:
+                raise ValidationFailure("G19", f"inputs/official_buy.json: {sm} の請求突合が一致しません（diff={diff}円）")
+
+
+def check_inputs_dir(inputs_dir: Path, tariff_path: Path) -> None:
+    """--check-inputs-dir 用: inputs_dir 内の official_buy.json/official_sell.json/
+    tariff_months.json（存在するものだけ）に G2/G3/G6/G7/G18/G19 をかける。
+    run-daily.sh の stage_inputs が、handoff を clone/inputs へ反映する前に呼ぶ
+    （不合格なら clone/inputs を変更せず既存を維持させるため）。"""
+    names = ("official_buy.json", "official_sell.json", "tariff_months.json")
+    present = [n for n in names if (inputs_dir / n).exists()]
+
+    texts: dict[str, str] = {}
+    parsed: dict[str, object] = {}
+    total_bytes = 0
+    for name in present:
+        relpath = f"inputs/{name}"
+        path = inputs_dir / name
+        raw_bytes = path.stat().st_size
+        total_bytes += raw_bytes
+        if raw_bytes > MAX_FILE_BYTES:
+            raise ValidationFailure("G3", f"{relpath}: サイズが上限({MAX_FILE_BYTES}bytes)を超えています ({raw_bytes}bytes)")
+        text = gate2_encoding(path, relpath)
+        texts[relpath] = text
+        try:
+            parsed[relpath] = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValidationFailure("G2", f"{relpath}: JSON として不正です ({exc})") from exc
+    if total_bytes > MAX_TOTAL_BYTES:
+        raise ValidationFailure("G3", f"inputs 合計サイズが上限({MAX_TOTAL_BYTES}bytes)を超えています ({total_bytes}bytes)")
+
+    for relpath, text in texts.items():
+        gate6_secret_deny(text, relpath)
+    for relpath, data in parsed.items():
+        gate7_no_time_of_day(data, relpath)
+
+    tariff_base = json.loads(tariff_path.read_text(encoding="utf-8"))
+    meter_read_day = tariff_base["meter_read_day"]
+    sell_fit = tariff_base["sell_price_yen_per_kwh"]["fit"]
+
+    gate18_input_files_schema(parsed, meter_read_day, sell_fit)
+    gate19_official_buy_reconcile(tariff_base, parsed.get("inputs/official_buy.json"), parsed.get("inputs/tariff_months.json"))
+
+
 def default_input_paths(repo: Path) -> dict[str, Path]:
     """--repo（Hugoリポジトリのフルチェックアウト）を前提にした、G13入力ハッシュ照合先の
     既定パス。homelab の /opt/blog-metrics/ のようなフラットなbundleレイアウトでは
@@ -921,12 +1234,28 @@ def default_input_paths(repo: Path) -> dict[str, Path]:
         "tariff_sha256": repo / "scripts" / "blog-metrics" / "tariff.json",
         "official_buy_sha256": repo / "data" / "metrics" / "official_buy.json",
         "official_sell_sha256": repo / "data" / "metrics" / "official_sell.json",
+        "tariff_months_sha256": repo / "data" / "metrics" / "tariff_months.json",
     }
 
 
-def gate13_pipeline(pipeline: dict, input_paths: dict[str, Path]) -> list[str]:
-    """G13: pipeline.json のスキーマ・鮮度・入力ハッシュ。鮮度・ハッシュ不一致は
-    警告のみ（GitHub Actions の ::warning:: 形式で返す。fatalにしない）。"""
+# G13でincoming(data repo)側のinputs/*.jsonと直接照合するキー（一致しなければfatal）。
+# tariff_sha256はここに含めない(base tariff.jsonはmainにしか存在しないため従来どおり警告のみ)。
+_G13_INCOMING_INPUT_RELPATHS = {
+    "official_buy_sha256": "inputs/official_buy.json",
+    "official_sell_sha256": "inputs/official_sell.json",
+    "tariff_months_sha256": "inputs/tariff_months.json",
+}
+
+
+def gate13_pipeline(pipeline: dict, incoming: Path, input_paths: dict[str, Path]) -> list[str]:
+    """G13: pipeline.json のスキーマ・鮮度・入力ハッシュ。鮮度・main実ファイルとの
+    ハッシュ不一致は警告のみ（GitHub Actions の ::warning:: 形式で返す。fatalにしない）。
+
+    ただし official_buy_sha256・official_sell_sha256・tariff_months_sha256 は、incoming
+    （data repo自身、今回pushしようとしているコミット）に対応する inputs/*.json が
+    存在するならそちらと直接照合し、不一致は fatal にする（月次確定の自動化、
+    DDR実装手順S1「G13 は incoming 内で fatal 照合」）。incoming に inputs/ が無い
+    移行期間は、従来どおり input_paths（main側の実ファイル）との照合で警告のみに留める。"""
     warnings: list[str] = []
     if pipeline.get("schema_version") != 1:
         raise ValidationFailure("G13", f"pipeline.json: schema_version が 1 ではありません: {pipeline.get('schema_version')!r}")
@@ -948,7 +1277,24 @@ def gate13_pipeline(pipeline: dict, input_paths: dict[str, Path]) -> list[str]:
     inputs = pipeline.get("inputs", {})
     for key, real_path in input_paths.items():
         expected = inputs.get(key)
-        if not expected or not real_path.exists():
+        incoming_relpath = _G13_INCOMING_INPUT_RELPATHS.get(key)
+        if incoming_relpath is not None:
+            incoming_path = incoming / incoming_relpath
+            if incoming_path.exists():
+                # QA指摘L2: incomingに対応ファイルが実在するのにpipeline.jsonがshaキーを
+                # 持たない（=検証されずに素通りする穴）ことをfatalにする。
+                if not expected:
+                    raise ValidationFailure(
+                        "G13", f"pipeline.json.inputs.{key} がありませんが incoming/{incoming_relpath} が存在します"
+                    )
+                actual = hashlib.sha256(incoming_path.read_bytes()).hexdigest()
+                if actual != expected:
+                    raise ValidationFailure("G13", f"pipeline.json.inputs.{key} が incoming/{incoming_relpath} と一致しません")
+                continue
+            # incoming に対応ファイルが無い移行期間 → 従来どおり main と照合して警告のみ
+        if not expected:
+            continue
+        if not real_path.exists():
             continue
         actual = hashlib.sha256(real_path.read_bytes()).hexdigest()
         if actual != expected:
@@ -972,8 +1318,8 @@ def validate(
     bundle レイアウト(/opt/blog-metrics/inputs/*)向けに明示的に渡す）。
     today: G14(first_published<=today)の基準日のoverride（省略時は実行日のJST日付。
     monthly_report.run()と同じ流儀でテストから注入できるようにする）。"""
-    post_files = gate1_file_allowlist(incoming)
-    all_files = sorted(ALLOWED_FILES) + post_files
+    post_files, input_files = gate1_file_allowlist(incoming)
+    all_files = sorted(ALLOWED_FILES) + post_files + input_files
 
     texts: dict[str, str] = {}
     total_bytes = 0
@@ -984,7 +1330,7 @@ def validate(
         texts[relpath] = gate2_encoding(path, relpath)
 
     parsed: dict[str, object] = {}
-    for relpath in sorted(DATA_FILES | {"pipeline.json"}) + post_files:
+    for relpath in sorted(DATA_FILES | {"pipeline.json"}) + post_files + input_files:
         try:
             parsed[relpath] = json.loads(texts[relpath])
         except json.JSONDecodeError as exc:
@@ -996,7 +1342,13 @@ def validate(
         raw_bytes = incoming.joinpath(relpath).stat().st_size
         if raw_bytes > MAX_POST_BYTES:
             raise ValidationFailure("G3", f"{relpath}: サイズが上限({MAX_POST_BYTES}bytes)を超えています ({raw_bytes}bytes)")
+    for relpath in input_files:
+        raw_bytes = incoming.joinpath(relpath).stat().st_size
+        if raw_bytes > MAX_FILE_BYTES:
+            raise ValidationFailure("G3", f"{relpath}: サイズが上限({MAX_FILE_BYTES}bytes)を超えています ({raw_bytes}bytes)")
 
+    # G4(再帰キーallowlist)・G5(文字列フォーマット) は inputs/ には適用しない
+    # （専用の厳密スキーマ G18 で検査するため。DDR実装手順S1）。
     key_allowlists = {
         "data/metrics/meta.json": META_KEYS,
         "data/metrics/bills.json": BILLS_KEYS,
@@ -1015,6 +1367,8 @@ def validate(
     for relpath in sorted(DATA_FILES | {"pipeline.json"}) + post_files:
         gate5_string_format(parsed[relpath], relpath)
         gate7_no_time_of_day(parsed[relpath], relpath)
+    for relpath in input_files:
+        gate7_no_time_of_day(parsed[relpath], relpath)
 
     for relpath in all_files:
         gate6_secret_deny(texts[relpath], relpath)
@@ -1024,39 +1378,99 @@ def validate(
     meta = parsed["data/metrics/meta.json"]
     layers_json = parsed["data/metrics/layers.json"]
 
+    resolved_input_paths = input_paths if input_paths is not None else default_input_paths(repo)
+
+    # QA再指摘2026-09-26 R2 を踏襲: tariff.jsonの読み込み(meter_read_day取得)はpostsか
+    # inputs/のどちらかが1件以上あるときだけ行う（posts/もinputs/も無い日にファイル
+    # アクセス・I/Oを増やさない）。
+    tariff_base: dict | None = None
+    meter_read_day: int | None = None
+    newly_confirmed_months: set[str] = set()
+    if post_files or input_files:
+        tariff_path = resolved_input_paths["tariff_sha256"]
+        tariff_base = json.loads(tariff_path.read_text(encoding="utf-8"))
+        meter_read_day = tariff_base["meter_read_day"]
+
+    if "inputs/tariff_months.json" in input_files:
+        overlay = parsed["inputs/tariff_months.json"]
+        prev_overlay = _previous_commit_json(incoming, "inputs/tariff_months.json")
+        try:
+            cur_confirmed = bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, overlay))
+        except ValueError:
+            cur_confirmed = set()
+        # QA指摘F2: prev_overlayが無い（初めてtariff_months.jsonが現れた回、または
+        # 前コミットに読めるtariff_months.jsonが無い）場合、prev_confirmedを空集合にすると
+        # base単独で以前から確定済みだった月まで「今回新たに確定した」扱いになり、G9の
+        # 例外(saving_yenのみ許容)が過剰に適用されてしまう。overlay無し(=base単独)の
+        # confirmed_tariff_monthsを基準にする。
+        try:
+            prev_confirmed = bill_model.confirmed_tariff_months(bill_model.merge_tariff(tariff_base, prev_overlay))
+        except ValueError:
+            # 前回の overlay が base と矛盾している（tariff.json 変更直後など）場合でも、
+            # base 単独の確定月を下限にする。空集合に戻すと base の全月が「新たに確定」
+            # 扱いになり G9 の例外が過去全体に広がる（再 QA 指摘 R1）。
+            prev_confirmed = bill_model.confirmed_tariff_months(tariff_base)
+        newly_confirmed_months = cur_confirmed - prev_confirmed
+
     gate8_date_health(daily, incoming, allow_history_change)
-    gate9_history_immutability(daily, incoming, allow_history_change)
+    gate9_history_immutability(
+        daily, incoming, allow_history_change,
+        meter_read_day=meter_read_day, newly_confirmed_months=newly_confirmed_months,
+    )
     gate10_physical_range(daily, monthly)
     gate11_anomaly(daily, monthly, incoming)
     gate12_consistency(daily, monthly, meta)
 
-    resolved_input_paths = input_paths if input_paths is not None else default_input_paths(repo)
-
-    # QA再指摘2026-09-26 R2: tariff.jsonの読み込み(meter_read_day取得)はpostが1件以上
-    # あるときだけ行う（posts/が無い日にファイルアクセス・I/Oを増やさない）。
     posts_by_relpath = {relpath: parsed[relpath] for relpath in post_files}
     if posts_by_relpath:
         today_jst = today if today is not None else datetime.now(JST).date()
-        tariff_path = resolved_input_paths["tariff_sha256"]
-        meter_read_day = json.loads(tariff_path.read_text(encoding="utf-8"))["meter_read_day"]
     for relpath, post in posts_by_relpath.items():
         gate14_post_schema(post, relpath, today_jst, meter_read_day)
     for relpath, post in posts_by_relpath.items():
         gate15_post_recompute(post, relpath, layers_json, daily, incoming, meter_read_day)
     gate16_post_history(posts_by_relpath, incoming, allow_history_change)
 
-    return gate13_pipeline(parsed["pipeline.json"], resolved_input_paths)
+    if input_files:
+        sell_fit = tariff_base["sell_price_yen_per_kwh"]["fit"]
+        gate18_input_files_schema({relpath: parsed[relpath] for relpath in input_files}, meter_read_day, sell_fit)
+        gate19_official_buy_reconcile(
+            tariff_base, parsed.get("inputs/official_buy.json"), parsed.get("inputs/tariff_months.json"),
+        )
+
+    return gate13_pipeline(parsed["pipeline.json"], incoming, resolved_input_paths)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--incoming", type=Path, required=True, help="別リポジトリ solar-metrics-data のチェックアウト先ディレクトリ")
-    parser.add_argument("--repo", type=Path, required=True, help="このリポジトリ(main)のルートディレクトリ（G13入力ハッシュ照合の既定パス算出に使う）")
+    parser.add_argument("--incoming", type=Path, default=None, help="別リポジトリ solar-metrics-data のチェックアウト先ディレクトリ（--check-inputs-dir 未指定時は必須）")
+    parser.add_argument("--repo", type=Path, default=None, help="このリポジトリ(main)のルートディレクトリ（G13入力ハッシュ照合の既定パス算出に使う。--check-inputs-dir 未指定時は必須）")
     parser.add_argument("--allow-history-change", action="store_true", help="G9(履歴不変性)をスキップする（workflow_dispatch の入力用）")
-    parser.add_argument("--tariff-path", type=Path, default=None, help="G13でtariff_sha256と照合する実ファイルのパス（既定: --repo基準）")
+    parser.add_argument("--tariff-path", type=Path, default=None, help="G13でtariff_sha256と照合する実ファイルのパス（既定: --repo基準）。--check-inputs-dir指定時はG18/G19のbase tariffとして必須")
     parser.add_argument("--official-buy-path", type=Path, default=None, help="G13でofficial_buy_sha256と照合する実ファイルのパス（既定: --repo基準）")
     parser.add_argument("--official-sell-path", type=Path, default=None, help="G13でofficial_sell_sha256と照合する実ファイルのパス（既定: --repo基準）")
+    parser.add_argument(
+        "--check-inputs-dir", type=Path, default=None,
+        help="このディレクトリ内の official_buy.json/official_sell.json/tariff_months.json（存在するものだけ）に"
+        "G2/G3/G6/G7/G18/G19だけをかけて終了する（--tariff-pathが必須。--incoming/--repoは不要。"
+        "run-daily.sh の stage_inputs が handoff を clone/inputs へ反映する前の検査に使う）",
+    )
     args = parser.parse_args()
+
+    if args.check_inputs_dir is not None:
+        if args.tariff_path is None:
+            print("validate_metrics.py: --check-inputs-dir には --tariff-path が必須です", file=sys.stderr)
+            sys.exit(1)
+        try:
+            check_inputs_dir(args.check_inputs_dir, args.tariff_path)
+        except ValidationFailure as exc:
+            print(f"validate_metrics.py: {exc.gate}: {exc.message}", file=sys.stderr)
+            sys.exit(1)
+        print("validate_metrics.py: OK（inputs 検査通過）")
+        return
+
+    if args.incoming is None or args.repo is None:
+        print("validate_metrics.py: --incoming と --repo が必要です（--check-inputs-dir 指定時を除く）", file=sys.stderr)
+        sys.exit(1)
 
     input_paths = default_input_paths(args.repo)
     if args.tariff_path is not None:

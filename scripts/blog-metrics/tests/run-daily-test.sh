@@ -186,6 +186,12 @@ STUBEOF
   cp "$BLOG_METRICS_SRC/layer_model.py" "$BUNDLE/layer_model.py"
   cp "$BLOG_METRICS_SRC/bill_model.py" "$BUNDLE/bill_model.py"
   cp "$BLOG_METRICS_SRC/delta_model.py" "$BUNDLE/delta_model.py"
+  # import_official_buy.py/import_official_sell.py: validate_metrics.py が G18(inputsスキーマ)の
+  # source_note照合用にimportする（月次確定の自動化、DDR実装手順S1）。deploy-homelab.shも
+  # 同じ3本をbundleに同梱する。
+  cp "$BLOG_METRICS_SRC/import_official_buy.py" "$BUNDLE/import_official_buy.py"
+  cp "$BLOG_METRICS_SRC/import_official_sell.py" "$BUNDLE/import_official_sell.py"
+  cp "$BLOG_METRICS_SRC/import_official_inputs.py" "$BUNDLE/import_official_inputs.py"
   cp "$BLOG_METRICS_SRC/tariff.json" "$BUNDLE/inputs/tariff.json"
   cp "$REPO_ROOT/data/metrics/official_buy.json" "$BUNDLE/inputs/official_buy.json"
   cp "$REPO_ROOT/data/metrics/official_sell.json" "$BUNDLE/inputs/official_sell.json"
@@ -313,18 +319,28 @@ tariff_path.write_text(json.dumps(tariff, ensure_ascii=False, indent=2) + "\n", 
 
 buy_path = bundle / "inputs" / "official_buy.json"
 official_buy = json.loads(buy_path.read_text(encoding="utf-8"))
+# 月次確定の自動化(DDR実装手順S1)のG19(突合)がbase tariffのみ(overlay無し)で
+# confirmed_tariff_months(target_month含む)に対しreconcile_bill==0を要求するため、
+# billed_yenは手計算の固定値ではなくcompute_billで実際に算出する。
+target_billed_yen = bill_model.compute_bill(tariff, 80.0, target_month).total_yen
+official_buy["months"] = [m for m in official_buy["months"] if m["settlement_month"] != target_month]
 official_buy["months"].append({
     "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
-    "official_buy_kwh": 80.0, "billed_yen": 3500,
+    "official_buy_kwh": 80.0, "billed_yen": target_billed_yen,
 })
+official_buy["months"].sort(key=lambda m: m["settlement_month"])
 buy_path.write_text(json.dumps(official_buy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 sell_path = bundle / "inputs" / "official_sell.json"
 official_sell = json.loads(sell_path.read_text(encoding="utf-8"))
+# 実データのofficial_sell.jsonは既にtarget_month("2026-09")分を含んでいるため、単純appendだと
+# G18(settlement_month昇順・重複なし)に抵触する。既存分を置き換えてから昇順に並べ直す。
+official_sell["months"] = [m for m in official_sell["months"] if m["settlement_month"] != target_month]
 official_sell["months"].append({
     "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
     "official_sell_kwh": 300.0, "sell_revenue_yen": 4800,
 })
+official_sell["months"].sort(key=lambda m: m["settlement_month"])
 sell_path.write_text(json.dumps(official_sell, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 mr_path = bundle / "monthly_report.py"
@@ -785,6 +801,179 @@ AFTER=$(origin_log_count)
 assert_eq "20 commit count unchanged" "$AFTER" "$BEFORE"
 WT_STATUS=$(git -C "$CLONE" status --porcelain)
 assert_eq "20 working tree clean" "$WT_STATUS" ""
+teardown
+
+# --- 月次確定の自動化(DDR実装手順S1)のstage_inputs用シナリオ ------------------------------
+# handoff(--auto-inputs-dir)に official_buy.json/official_sell.json/tariff_months.json を
+# 合成データで用意する。base tariff(BUNDLE/inputs/tariff.json)は2026-08までしか確定して
+# いないため、まだ確定していない"2026-09"を対象月にする。
+setup_handoff_dir() {
+  # $1 = 出力先ディレクトリ。billed_yen/sell_revenue_yenはbill_model.merge_tariffの結果と
+  # 突合(G19)するため、compute_billで実際に算出する。
+  local out="$1"
+  mkdir -p "$out"
+  python3 - "$BUNDLE" "$out" <<'PY'
+import json, sys
+from datetime import datetime
+from pathlib import Path
+
+bundle, out = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(bundle))
+import bill_model  # noqa: E402
+import import_official_buy  # noqa: E402
+import import_official_sell  # noqa: E402
+
+base = json.loads((bundle / "inputs" / "tariff.json").read_text(encoding="utf-8"))
+target_month = "2026-09"
+start, end = bill_model.billing_period(target_month, base["meter_read_day"])
+generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+tariff_months = {
+    "schema_version": 1,
+    "generated_at": generated_at,
+    "fuel_cost_adjustment_yen_per_kwh": {target_month: 5.0},
+    "capacity_contribution_yen_per_month": {target_month: 200},
+    "renewable_levy_yen_per_kwh_observed": {},
+    "excluded_months": {},
+}
+effective = bill_model.merge_tariff(base, tariff_months)
+usage_kwh = 50.0
+billed_yen = bill_model.compute_bill(effective, usage_kwh, target_month).total_yen
+(out / "tariff_months.json").write_text(json.dumps(tariff_months, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+official_buy = {
+    "months": [{
+        "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
+        "official_buy_kwh": usage_kwh, "billed_yen": billed_yen,
+    }],
+    "generated_at": generated_at,
+    "source_note": import_official_buy.SOURCE_NOTE,
+}
+(out / "official_buy.json").write_text(json.dumps(official_buy, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+sell_fit = base["sell_price_yen_per_kwh"]["fit"]
+sell_kwh = 40.0
+official_sell = {
+    "months": [{
+        "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
+        "official_sell_kwh": sell_kwh, "sell_revenue_yen": int(sell_kwh * sell_fit),
+    }],
+    "generated_at": generated_at,
+    "source_note": import_official_sell.SOURCE_NOTE,
+}
+(out / "official_sell.json").write_text(json.dumps(official_sell, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+echo "# 21. handoff正常: 検査に合格し clone/inputs へ反映されてcommitされる"
+setup
+HANDOFF="$T/handoff"
+setup_handoff_dir "$HANDOFF"
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$BUNDLE" --clone-dir "$CLONE" --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" --log-file "$LOG_FILE" --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export.sh" --profile-since-days 1 \
+  --auto-inputs-dir "$HANDOFF" >/dev/null 2>&1
+RC=$?
+assert_eq "21 exit" "$RC" "0"
+AFTER=$(origin_log_count)
+assert_eq "21 commit count +1" "$AFTER" "$((BEFORE + 1))"
+if [ -f "$CLONE/inputs/tariff_months.json" ]; then ok; else fail "21 clone/inputs/tariff_months.json not created"; fi
+STAGED_FUEL=$(python3 -c "import json; print(json.load(open('$CLONE/inputs/tariff_months.json'))['fuel_cost_adjustment_yen_per_kwh']['2026-09'])" 2>/dev/null)
+assert_eq "21 staged tariff_months content" "$STAGED_FUEL" "5.0"
+assert_contains "21 log mentions success" "$(cat "$LOG_FILE" 2>/dev/null)" "検査に合格したため clone/inputs へ反映しました"
+teardown
+
+echo "# 22. handoff不正: clone/inputsは変更されず、データのcommitは続行(+1)、run全体は失敗(exit1)扱いになる"
+setup
+HANDOFF="$T/handoff"
+setup_handoff_dir "$HANDOFF"
+# tariff_months.jsonのschema_versionを壊してG18違反にする
+python3 -c "
+import json
+p = '$HANDOFF/tariff_months.json'
+d = json.load(open(p))
+d['schema_version'] = 2
+json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2, sort_keys=True)
+"
+# 1回目: 正常なhandoffなしでcommitを作り、clone/inputsに何も無い状態を確定させる
+run_daily_success_args >/dev/null 2>&1
+BEFORE=$(origin_log_count)
+# QA指摘L5: データに変更が無いと「変更なし」でcommit自体がskipされ、+1を検証できない。
+# scenario 8と同じ要領で新しい日を1件追加し「データに変更あり」を作る(G9は新規日には適用されない)。
+export STUB_DAILY_JSON='[{"date":"2026-09-01","solar_kwh":20.0,"buy_kwh":0.0,"sell_kwh":5.0,"nichicon_charge_kwh":1.5,"ecoflow_charge_kwh":null,"status":"COMPLETE"},{"date":"2026-09-02","solar_kwh":18.0,"buy_kwh":0.5,"sell_kwh":4.0,"nichicon_charge_kwh":1.0,"ecoflow_charge_kwh":null,"status":"COMPLETE"}]'
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$BUNDLE" --clone-dir "$CLONE" --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" --log-file "$LOG_FILE" --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export.sh" --profile-since-days 1 \
+  --auto-inputs-dir "$HANDOFF" >/dev/null 2>&1
+RC=$?
+assert_eq "22 exit" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "22 data commit still happened" "$AFTER" "$((BEFORE + 1))"
+[ -f "$CLONE/inputs/tariff_months.json" ] && fail "22 clone/inputs/tariff_months.json should not be created" || ok
+assert_contains "22 log mentions failure" "$(cat "$LOG_FILE" 2>/dev/null)" "検査に失敗したため clone/inputs を維持します"
+teardown
+
+echo "# 23. handoffが存在しないディレクトリ: 従来どおり(移行措置でbundleのofficial_*をコピー)"
+setup
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$BUNDLE" --clone-dir "$CLONE" --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" --log-file "$LOG_FILE" --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export.sh" --profile-since-days 1 \
+  --auto-inputs-dir "$T/does-not-exist" >/dev/null 2>&1
+RC=$?
+assert_eq "23 exit" "$RC" "0"
+AFTER=$(origin_log_count)
+assert_eq "23 commit count +1" "$AFTER" "$((BEFORE + 1))"
+if [ -f "$CLONE/inputs/official_buy.json" ]; then ok; else fail "23 clone/inputs/official_buy.json not created via migration"; fi
+[ -f "$CLONE/inputs/tariff_months.json" ] && fail "23 tariff_months.json should not be created without handoff" || ok
+teardown
+
+echo "# 24. tariff_conflict: baseと衝突する月をtariff_months.jsonから自動除去し、除去後もcommit/pushされる"
+setup
+# 1回目: 通常どおり実行してclone/inputsを用意する(移行措置でofficial_*.jsonが入る)
+run_daily_success_args >/dev/null 2>&1
+# 衝突対象月は daily.json に登場する日(2026-09-01/02、billing_month="2026-09"/"2026-10")とも
+# 実tariff.json確定済み月(〜2026-08)とも重ならない将来月(2027-02)を使う。既存の確定済み日の
+# saving_yenやG19(請求突合)に副作用を与えないため。
+# clone/inputs/tariff_months.jsonを手動で用意する(2027-02。build_effective_tariffは
+# validate_metrics.pyのG18/G19を経由せず直接bill_model.merge_tariff/tariff_conflictsを
+# 呼ぶだけなので、ここでは未検証のまま置いてよい)。
+python3 -c "
+import json
+d = {
+    'schema_version': 1,
+    'generated_at': '2026-09-01 00:00:00',
+    'fuel_cost_adjustment_yen_per_kwh': {'2027-02': 5.0},
+    'capacity_contribution_yen_per_month': {'2027-02': 200},
+    'renewable_levy_yen_per_kwh_observed': {},
+    'excluded_months': {},
+}
+json.dump(d, open('$CLONE/inputs/tariff_months.json', 'w'), ensure_ascii=False, indent=2, sort_keys=True)
+"
+# BUNDLEのtariff.json(base)に、異なる値で2027-02を直接追加する（手動編集を模す→衝突を作る）
+python3 -c "
+import json
+p = '$BUNDLE/inputs/tariff.json'
+d = json.load(open(p))
+d['fuel_cost_adjustment_yen_per_kwh']['2027-02'] = 999.0
+d['capacity_contribution_yen_per_month']['2027-02'] = 1
+json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2)
+"
+BEFORE=$(origin_log_count)
+run_daily_success_args >/dev/null 2>&1
+RC=$?
+assert_eq "24 exit" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "24 commit count +1 despite conflict" "$AFTER" "$((BEFORE + 1))"
+STAGED_FUEL_AFTER=$(python3 -c "import json; print(json.load(open('$CLONE/inputs/tariff_months.json'))['fuel_cost_adjustment_yen_per_kwh'].get('2027-02'))")
+assert_eq "24 conflicting month removed from tariff_months.json" "$STAGED_FUEL_AFTER" "None"
+STAGED_EXCLUDED_REASON=$(python3 -c "import json; print(json.load(open('$CLONE/inputs/tariff_months.json'))['excluded_months'].get('2027-02'))")
+assert_eq "24 conflicting month recorded as tariff_conflict" "$STAGED_EXCLUDED_REASON" "tariff_conflict"
+assert_contains "24 log mentions tariff_conflict removal" "$(cat "$LOG_FILE" 2>/dev/null)" "tariff_conflict"
 teardown
 
 echo "passed=$PASSES failed=$FAILS"

@@ -316,6 +316,117 @@ def compute_bill(tariff: dict, buy_kwh: float, billing_month: str) -> BillBreakd
     )
 
 
+def merge_tariff(base: dict, overlay: dict | None) -> dict:
+    """base（main の tariff.json、料金体系の骨格）に overlay（data repo の
+    inputs/tariff_months.json、毎月観測する値。無ければ None）を重ね合わせた実効tariffを
+    返す（コピー、base/overlayは変更しない）。
+
+    overlay の fuel_cost_adjustment_yen_per_kwh / capacity_contribution_yen_per_month は、
+    base に無い月だけ追加する。両方にある月は値が一致していなければ ValueError
+    （メッセージは "tariff_conflict: " で始まる）を送出する — 値を捏造しない方針
+    （モジュールdocstring参照）を保ちつつ、自動取得側の観測値が手動更新済みの base と
+    食い違った場合に黙って上書きせず検知するため。
+
+    overlay の renewable_levy_yen_per_kwh_observed は単月レンジ('YYYY-MM..YYYY-MM')の
+    辞書として渡され、base の年度レンジ(renewable_levy_yen_per_kwh)が既に覆っている月は
+    追加せず、値が一致していなければ同様に ValueError にする。覆っていない月だけ
+    そのままのキー形式で base 側の辞書に追加する。"""
+    merged = dict(base)
+    if overlay is None:
+        return merged
+
+    def _merge_month_dict(field: str) -> None:
+        merged_field = dict(merged.get(field, {}))
+        for month, value in overlay.get(field, {}).items():
+            if month.startswith("_"):
+                continue
+            existing = merged_field.get(month)
+            if existing is None:
+                merged_field[month] = value
+            elif existing != value:
+                raise ValueError(
+                    f"tariff_conflict: {field}[{month!r}] が base({existing!r})とoverlay({value!r})で異なります"
+                )
+        merged[field] = merged_field
+
+    _merge_month_dict("fuel_cost_adjustment_yen_per_kwh")
+    _merge_month_dict("capacity_contribution_yen_per_month")
+
+    merged_levy = dict(merged.get("renewable_levy_yen_per_kwh", {}))
+    for rng, value in overlay.get("renewable_levy_yen_per_kwh_observed", {}).items():
+        if rng.startswith("_") or ".." not in rng:
+            continue
+        lo, _hi = rng.split("..")
+        try:
+            existing = renewable_levy_rate({"renewable_levy_yen_per_kwh": merged_levy}, lo)
+        except KeyError:
+            existing = None
+        if existing is None:
+            merged_levy[rng] = value
+        elif existing != value:
+            raise ValueError(
+                f"tariff_conflict: renewable_levy_yen_per_kwh[{lo!r}] が base({existing!r})とoverlay({value!r})で異なります"
+            )
+    merged["renewable_levy_yen_per_kwh"] = merged_levy
+
+    return merged
+
+
+def confirmed_tariff_months(tariff: dict) -> set[str]:
+    """fuel_cost_adjustment_yen_per_kwh と capacity_contribution_yen_per_month の
+    両方に実額がある請求月('YYYY-MM')の集合を返す（'_'始まりのコメントキーは除く）。
+    merge_tariff() の戻り値に対して使い、「自動取り込みで新たに確定した月」の判定に使う。"""
+    fuel_months = {m for m in tariff.get("fuel_cost_adjustment_yen_per_kwh", {}) if not m.startswith("_")}
+    capacity_months = {m for m in tariff.get("capacity_contribution_yen_per_month", {}) if not m.startswith("_")}
+    return fuel_months & capacity_months
+
+
+def tariff_conflicts(base: dict, overlay: dict | None) -> list[tuple[str, str]]:
+    """overlay(inputs/tariff_months.json)のうち base と値が食い違う月・レンジを
+    (field, key) のリストとして列挙する（merge_tariff()は最初の矛盾で ValueError を
+    送出して打ち切るため、衝突が複数あっても全件は分からない。run-daily.sh の
+    build_effective_tariff が、衝突した月だけを tariff_months.json から機械的に
+    除去してから実効tariffを作り直す際に使う）。
+
+    field は "fuel_cost_adjustment_yen_per_kwh" / "capacity_contribution_yen_per_month" /
+    "renewable_levy_yen_per_kwh_observed"、key はそれぞれの overlay 側のキー
+    （fuel/capacityは'YYYY-MM'、levyは単月レンジ'YYYY-MM..YYYY-MM'のまま）。
+    overlay が None、または衝突が無ければ空リストを返す。"""
+    if overlay is None:
+        return []
+    conflicts: list[tuple[str, str]] = []
+
+    for field in ("fuel_cost_adjustment_yen_per_kwh", "capacity_contribution_yen_per_month"):
+        base_field = base.get(field, {})
+        for month, value in overlay.get(field, {}).items():
+            if month.startswith("_"):
+                continue
+            existing = base_field.get(month)
+            if existing is not None and existing != value:
+                conflicts.append((field, month))
+
+    base_levy = base.get("renewable_levy_yen_per_kwh", {})
+    for rng, value in overlay.get("renewable_levy_yen_per_kwh_observed", {}).items():
+        if rng.startswith("_") or ".." not in rng:
+            continue
+        lo, _hi = rng.split("..")
+        try:
+            existing = renewable_levy_rate({"renewable_levy_yen_per_kwh": base_levy}, lo)
+        except KeyError:
+            existing = None
+        if existing is not None and existing != value:
+            conflicts.append(("renewable_levy_yen_per_kwh_observed", rng))
+
+    return conflicts
+
+
+def reconcile_bill(tariff: dict, billing_month: str, usage_kwh: float, billed_yen: int) -> int:
+    """compute_bill(tariff, usage_kwh, billing_month).total_yen と billed_yen の差額(円)を
+    返す（0なら一致）。import_official_inputs.py の突合・validate_metrics.py の G19 で使う。"""
+    breakdown = compute_bill(tariff, usage_kwh, billing_month)
+    return breakdown.total_yen - billed_yen
+
+
 def load_daily(path: Path) -> dict[str, dict]:
     rows = json.loads(path.read_text(encoding="utf-8"))
     return {r["date"]: r for r in rows}

@@ -135,11 +135,12 @@ def make_pipeline_fixture(generated_at: str | None = None) -> dict:
 
 def write_incoming(
     base: Path, *, daily=None, monthly=None, meta=None, bills=None, layers=None, pipeline=None, readme=None,
-    posts: dict[str, dict] | None = None,
+    posts: dict[str, dict] | None = None, inputs: dict[str, dict] | None = None,
 ) -> Path:
     """有効な incoming ディレクトリを作る（値渡しがあれば差し替え）。
     posts: {"2026-10.json": {...}} のように相対ファイル名をキーにした辞書（QA指摘に
-    倣い任意）。"""
+    倣い任意）。inputs: {"official_buy.json": {...}} のように OPTIONAL_INPUT_FILES の
+    ファイル名(拡張子込み)をキーにした辞書（月次確定の自動化、DDR実装手順S1、任意）。"""
     (base / "data" / "metrics").mkdir(parents=True, exist_ok=True)
     daily = make_daily_fixture() if daily is None else daily
     monthly = make_monthly_fixture(daily) if monthly is None else monthly
@@ -160,6 +161,10 @@ def write_incoming(
         (base / "posts").mkdir(parents=True, exist_ok=True)
         for name, content in posts.items():
             (base / "posts" / name).write_text(json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if inputs:
+        (base / "inputs").mkdir(parents=True, exist_ok=True)
+        for name, content in inputs.items():
+            (base / "inputs" / name).write_text(json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return base
 
 
@@ -1291,6 +1296,610 @@ class EndToEndWithPostsTest(unittest.TestCase):
                 incoming, REPO_ROOT, allow_history_change=False, today=date(2026, 10, 3),
             )
             self.assertEqual(warnings, [])
+
+
+# --- inputs/*.json（月次確定の自動化、DDR実装手順S1）用フィクスチャ ------------------------
+import import_official_buy  # noqa: E402
+import import_official_sell  # noqa: E402
+
+REAL_TARIFF = json.loads((REPO_ROOT / "scripts" / "blog-metrics" / "tariff.json").read_text(encoding="utf-8"))
+REAL_METER_READ_DAY = REAL_TARIFF["meter_read_day"]
+REAL_SELL_FIT = REAL_TARIFF["sell_price_yen_per_kwh"]["fit"]
+
+
+def make_official_buy_fixture(*, generated_at=None, months=None) -> dict:
+    if generated_at is None:
+        generated_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    if months is None:
+        # 実tariff.jsonで確定済みの2026-08、ReconciledMonthsTestと同じ数値(diff=0)。
+        months = [
+            {
+                "settlement_month": "2026-08",
+                "period_from": "2026-07-02",
+                "period_to": "2026-08-01",
+                "official_buy_kwh": 83.0,
+                "billed_yen": 3661,
+            }
+        ]
+    return {"months": months, "generated_at": generated_at, "source_note": import_official_buy.SOURCE_NOTE}
+
+
+def make_official_sell_fixture(*, generated_at=None, months=None) -> dict:
+    if generated_at is None:
+        generated_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    if months is None:
+        months = [
+            {
+                "settlement_month": "2026-08",
+                "period_from": "2026-07-02",
+                "period_to": "2026-08-01",
+                "official_sell_kwh": 100.0,
+                "sell_revenue_yen": 1600,  # = 16.0(fit) * 100.0
+            }
+        ]
+    return {"months": months, "generated_at": generated_at, "source_note": import_official_sell.SOURCE_NOTE}
+
+
+def make_tariff_months_fixture(*, generated_at=None, fuel=None, capacity=None, levy=None, excluded=None) -> dict:
+    if generated_at is None:
+        generated_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "fuel_cost_adjustment_yen_per_kwh": {} if fuel is None else fuel,
+        "capacity_contribution_yen_per_month": {} if capacity is None else capacity,
+        "renewable_levy_yen_per_kwh_observed": {} if levy is None else levy,
+        "excluded_months": {} if excluded is None else excluded,
+    }
+
+
+class Gate1InputsTest(unittest.TestCase):
+    def test_optional_input_files_are_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(
+                Path(tmp),
+                inputs={
+                    "official_buy.json": make_official_buy_fixture(),
+                    "official_sell.json": make_official_sell_fixture(),
+                    "tariff_months.json": make_tariff_months_fixture(),
+                },
+            )
+            # G13はincomingにinputs/*.jsonがあれば実ファイルと直接照合(fatal)するため、
+            # pipeline.json側のハッシュも実際に書いたファイルに合わせておく。
+            pipeline = make_pipeline_fixture()
+            pipeline["inputs"]["official_buy_sha256"] = _sha256(incoming / "inputs" / "official_buy.json")
+            pipeline["inputs"]["official_sell_sha256"] = _sha256(incoming / "inputs" / "official_sell.json")
+            pipeline["inputs"]["tariff_months_sha256"] = _sha256(incoming / "inputs" / "tariff_months.json")
+            (incoming / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(warnings, [])
+
+    def test_unrecognized_file_under_inputs_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp))
+            (incoming / "inputs").mkdir()
+            (incoming / "inputs" / "evil.json").write_text("{}\n", encoding="utf-8")
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G1")
+
+
+class Gate6SpidTest(unittest.TestCase):
+    def test_hyphenated_supply_point_number_is_rejected(self):
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate6_secret_deny("spid: 1234-5678-9012-3456", "inputs/tariff_months.json")
+        self.assertEqual(ctx.exception.gate, "G6")
+
+    def test_short_hyphenated_number_below_three_groups_is_not_flagged(self):
+        # 2グループまでは供給地点番号らしさが弱いため誤検知しない（既存の日付表記等との
+        # 衝突を避ける）。
+        validate_metrics.gate6_secret_deny("1234-5678", "inputs/tariff_months.json")
+
+    def test_fullwidth_hyphen_separated_supply_point_number_is_rejected(self):
+        # QA指摘L3: 全角ハイフンマイナス(－)区切りも検出する。
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate6_secret_deny("spid: 1234－5678－9012－3456", "inputs/tariff_months.json")
+        self.assertEqual(ctx.exception.gate, "G6")
+
+    def test_unicode_hyphen_separated_supply_point_number_is_rejected(self):
+        # QA指摘L3: Unicodeハイフン(U+2010)区切りも検出する。
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate6_secret_deny("spid: 1234‐5678‐9012‐3456", "inputs/tariff_months.json")
+        self.assertEqual(ctx.exception.gate, "G6")
+
+    def test_space_separated_supply_point_number_is_rejected(self):
+        # QA指摘L3: 半角スペース区切りも検出する。
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate6_secret_deny("spid: 1234 5678 9012 3456", "inputs/tariff_months.json")
+        self.assertEqual(ctx.exception.gate, "G6")
+
+    def test_real_data_metrics_and_testdata_have_zero_false_positives(self):
+        # QA指摘L3: 区切り文字を広げたことで既存の公開済みデータに誤検知が出ないこと。
+        paths = list((REPO_ROOT / "data" / "metrics").glob("*.json")) + list(TESTDATA_DIR.glob("*.json"))
+        self.assertGreater(len(paths), 0)
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=str(path)):
+                validate_metrics.gate6_secret_deny(text, str(path))  # raiseしなければ合格
+
+
+class Gate18OfficialBuyTest(unittest.TestCase):
+    def test_valid_fixture_passes(self):
+        validate_metrics.gate18_input_files_schema(
+            {"inputs/official_buy.json": make_official_buy_fixture()}, REAL_METER_READ_DAY, REAL_SELL_FIT,
+        )
+
+    def test_unexpected_top_level_key_is_rejected(self):
+        data = dict(make_official_buy_fixture(), extra="x")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_wrong_source_note_is_rejected(self):
+        data = dict(make_official_buy_fixture(), source_note="不明な文言")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_period_mismatched_with_billing_period_is_rejected(self):
+        months = [dict(make_official_buy_fixture()["months"][0], period_from="2000-01-01")]
+        data = make_official_buy_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_billed_yen_as_fractional_float_is_rejected(self):
+        months = [dict(make_official_buy_fixture()["months"][0], billed_yen=3661.5)]
+        data = make_official_buy_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_billed_yen_as_integer_valued_float_is_accepted(self):
+        # 既存の data/metrics/official_buy.json は billed_yen が JSON 上 float(例: 2563.0)で
+        # 保存されている（import_official_buy.py が私有の抽出元の値をそのまま転記するため）。
+        # 移行措置(stage_inputsのbundleコピー)がこの既存データをそのまま使う前提を壊さない
+        # よう、整数値と等しいfloatは許容する。
+        months = [dict(make_official_buy_fixture()["months"][0], billed_yen=3661.0)]
+        data = make_official_buy_fixture(months=months)
+        validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+
+    def test_official_buy_kwh_out_of_range_is_rejected(self):
+        months = [dict(make_official_buy_fixture()["months"][0], official_buy_kwh=9999.0)]
+        data = make_official_buy_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_months_out_of_order_is_rejected(self):
+        m1 = dict(make_official_buy_fixture()["months"][0], settlement_month="2026-08")
+        m2 = dict(m1, settlement_month="2026-07", period_from="2026-06-02", period_to="2026-07-01")
+        data = make_official_buy_fixture(months=[m1, m2])
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_non_dict_month_element_is_rejected(self):
+        # QA指摘L1: months の要素が非dict（文字列等）だと month.get(...) がAttributeErrorに
+        # なり、ValidationFailureとして扱われず未処理例外が漏れる。
+        data = make_official_buy_fixture(months=["not-a-dict"])
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_buy.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+
+class Gate18OfficialSellTest(unittest.TestCase):
+    def test_valid_fixture_passes(self):
+        validate_metrics.gate18_input_files_schema(
+            {"inputs/official_sell.json": make_official_sell_fixture()}, REAL_METER_READ_DAY, REAL_SELL_FIT,
+        )
+
+    def test_revenue_fit_mismatch_beyond_tolerance_is_rejected(self):
+        months = [dict(make_official_sell_fixture()["months"][0], sell_revenue_yen=1600 + 100)]
+        data = make_official_sell_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/official_sell.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+
+class Gate18TariffMonthsTest(unittest.TestCase):
+    def test_valid_fixture_passes(self):
+        data = make_tariff_months_fixture(
+            fuel={"2026-09": 9.12}, capacity={"2026-09": 213}, levy={"2026-09..2026-09": 4.18},
+        )
+        validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+
+    def test_fuel_and_capacity_key_mismatch_is_rejected(self):
+        data = make_tariff_months_fixture(fuel={"2026-09": 9.12}, capacity={"2026-10": 213})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_capacity_as_float_is_rejected(self):
+        data = make_tariff_months_fixture(fuel={"2026-09": 9.12}, capacity={"2026-09": 213.5})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_fuel_rate_out_of_range_is_rejected(self):
+        data = make_tariff_months_fixture(fuel={"2026-09": 999.0}, capacity={"2026-09": 213})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_levy_range_not_single_month_is_rejected(self):
+        data = make_tariff_months_fixture(levy={"2026-09..2026-10": 4.18})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_unknown_excluded_reason_is_rejected(self):
+        data = make_tariff_months_fixture(excluded={"2026-09": "not_a_real_reason"})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_excluded_reason_as_list_is_rejected(self):
+        # QA指摘L1: reasonがlist(非文字列)だと `in EXCLUDED_MONTH_REASONS`（set）が
+        # unhashableでTypeErrorになり、ValidationFailureとして扱われず未処理例外が漏れる。
+        data = make_tariff_months_fixture(excluded={"2026-09": ["reconcile_mismatch"]})
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+    def test_tariff_conflict_is_an_allowed_excluded_reason(self):
+        # QA指摘L4: import_official_inputs.py の fuel/capacity 競合を表す理由コード
+        # "tariff_conflict" が validate_metrics.py 側の enum にも含まれること。
+        data = make_tariff_months_fixture(excluded={"2026-09": "tariff_conflict"})
+        validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+
+    def test_wrong_schema_version_is_rejected(self):
+        data = dict(make_tariff_months_fixture(), schema_version=2)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate18_input_files_schema({"inputs/tariff_months.json": data}, REAL_METER_READ_DAY, REAL_SELL_FIT)
+        self.assertEqual(ctx.exception.gate, "G18")
+
+
+class Gate19ReconcileTest(unittest.TestCase):
+    def test_matching_month_passes(self):
+        official_buy = make_official_buy_fixture()
+        validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy, None)
+
+    def test_one_yen_tampering_is_rejected(self):
+        months = [dict(make_official_buy_fixture()["months"][0], billed_yen=3661 + 1)]
+        official_buy = make_official_buy_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy, None)
+        self.assertEqual(ctx.exception.gate, "G19")
+
+    def test_unconfirmed_month_is_skipped_without_tariff_months(self):
+        # 2026-09は実tariff.jsonでは未確定(fuel/capacityが無い)ため、official_buyに含めても
+        # confirmed_tariff_monthsに入らずG19の対象外になる。
+        months = [
+            {
+                "settlement_month": "2026-09", "period_from": "2026-08-02", "period_to": "2026-09-01",
+                "official_buy_kwh": 1.0, "billed_yen": 999999,
+            }
+        ]
+        official_buy = make_official_buy_fixture(months=months)
+        validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy, None)
+
+    def test_newly_confirmed_month_via_tariff_months_is_checked(self):
+        tariff_months = make_tariff_months_fixture(
+            fuel={"2026-09": 5.0}, capacity={"2026-09": 200}, levy={"2026-09..2026-09": 4.18},
+        )
+        # compute_bill(merge(REAL_TARIFF, tariff_months), 50.0, "2026-09").total_yen = 2009
+        # (test_import_official_inputs.pyのCORRECT_BILLED_YENと同じ手計算)
+        months = [
+            {
+                "settlement_month": "2026-09", "period_from": "2026-08-02", "period_to": "2026-09-01",
+                "official_buy_kwh": 50.0, "billed_yen": 2009 + 1,
+            }
+        ]
+        official_buy = make_official_buy_fixture(months=months)
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy, tariff_months)
+        self.assertEqual(ctx.exception.gate, "G19")
+
+    def test_g19_rejects_tariff_month_without_reconciled_official_buy(self):
+        """QA指摘F1: overlay(tariff_months)がbaseに対して新たに確定させた月は、
+        official_buy.jsonに対応する月が存在しreconcile_bill==0であることを必須にする。
+        (a) official_buy自体が無い、(b) official_buyはあるが対象月が無い、の両方を拒否する。"""
+        tariff_months = make_tariff_months_fixture(
+            fuel={"2026-09": 5.0}, capacity={"2026-09": 200}, levy={"2026-09..2026-09": 4.18},
+        )
+        # (a) official_buy が None
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, None, tariff_months)
+        self.assertEqual(ctx.exception.gate, "G19")
+
+        # (b) official_buy はあるが 2026-09 が含まれない（既存の2026-08分のみ）
+        official_buy_without_target = make_official_buy_fixture()
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy_without_target, tariff_months)
+        self.assertEqual(ctx.exception.gate, "G19")
+
+    def test_g19_base_confirmed_month_without_official_buy_entry_is_not_required(self):
+        """overlay(tariff_months)が新規に確定させたのではなく、base単独で以前から確定
+        済みの月(2026-08)は、official_buy.jsonに対応する月が無くても reject されない
+        （F1はoverlay-added月にのみ厳密要求を課す）。"""
+        official_buy_without_2026_08 = {"months": [], "generated_at": make_official_buy_fixture()["generated_at"], "source_note": import_official_buy.SOURCE_NOTE}
+        validate_metrics.gate19_official_buy_reconcile(REAL_TARIFF, official_buy_without_2026_08, None)
+
+
+class Gate13IncomingInputsHashTest(unittest.TestCase):
+    def test_mismatch_against_incoming_inputs_is_fatal(self):
+        official_buy = make_official_buy_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), inputs={"official_buy.json": official_buy})
+            pipeline = make_pipeline_fixture()
+            pipeline["inputs"]["official_buy_sha256"] = "0" * 64  # incoming の実ファイルと不一致
+            (incoming / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G13")
+
+    def test_match_against_incoming_inputs_passes_without_warning(self):
+        official_buy = make_official_buy_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), inputs={"official_buy.json": official_buy})
+            expected_sha = hashlib.sha256((incoming / "inputs" / "official_buy.json").read_bytes()).hexdigest()
+            pipeline = make_pipeline_fixture()
+            pipeline["inputs"]["official_buy_sha256"] = expected_sha
+            (incoming / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertFalse(any("official_buy_sha256" in w for w in warnings))
+
+    def test_migration_period_without_incoming_inputs_falls_back_to_warning(self):
+        # incoming に inputs/official_buy.json が無ければ、従来どおり main 実ファイルとの
+        # 照合で警告のみ（fatalにしない）。
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp))
+            pipeline = make_pipeline_fixture()
+            pipeline["inputs"]["official_buy_sha256"] = "0" * 64
+            (incoming / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertTrue(any("official_buy_sha256" in w for w in warnings))
+
+    def test_missing_sha_key_while_incoming_file_exists_is_fatal(self):
+        # QA指摘L2: incomingにinputs/official_buy.jsonが実在するのに、pipeline.jsonに
+        # 対応するshaキーが無ければ（検証を素通りする穴になるため）fatalにする。
+        official_buy = make_official_buy_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), inputs={"official_buy.json": official_buy})
+            pipeline = make_pipeline_fixture()
+            del pipeline["inputs"]["official_buy_sha256"]
+            (incoming / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G13")
+
+
+class Gate9TariffConfirmationExceptionTest(unittest.TestCase):
+    """G9の例外（DDR実装手順S1「G9 の例外」）: 新たに確定した請求月に属する日は、
+    変化したキーが {"saving_yen"} の部分集合のときだけ許可する。"""
+
+    def test_saving_yen_only_change_in_newly_confirmed_month_is_allowed(self):
+        # billing_month_for_date("2026-07-15", meter_read_day=2) == "2026-08"
+        old_row = dict(make_daily_fixture()[0], date="2026-07-15", saving_yen=100)
+        new_row = dict(old_row, saving_yen=999)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            incoming = _git_repo_with_two_commits(base, old_daily=[old_row], new_daily=[new_row])
+            validate_metrics.gate9_history_immutability(
+                [new_row], incoming, allow_history_change=False,
+                meter_read_day=REAL_METER_READ_DAY, newly_confirmed_months={"2026-08"},
+            )  # 例外が無ければ ValidationFailure になるはず(raiseしなければ合格)
+
+    def test_change_of_other_field_in_newly_confirmed_month_is_still_rejected(self):
+        old_row = dict(make_daily_fixture()[0], date="2026-07-15", saving_yen=100, solar_kwh=10.0)
+        new_row = dict(old_row, saving_yen=999, solar_kwh=20.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            incoming = _git_repo_with_two_commits(base, old_daily=[old_row], new_daily=[new_row])
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate9_history_immutability(
+                    [new_row], incoming, allow_history_change=False,
+                    meter_read_day=REAL_METER_READ_DAY, newly_confirmed_months={"2026-08"},
+                )
+            self.assertEqual(ctx.exception.gate, "G9")
+
+    def test_change_outside_newly_confirmed_months_is_rejected(self):
+        old_row = dict(make_daily_fixture()[0], date="2026-08-03", saving_yen=100)
+        new_row = dict(old_row, saving_yen=999)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            incoming = _git_repo_with_two_commits(base, old_daily=[old_row], new_daily=[new_row])
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate9_history_immutability(
+                    [new_row], incoming, allow_history_change=False,
+                    meter_read_day=REAL_METER_READ_DAY, newly_confirmed_months=set(),
+                )
+            self.assertEqual(ctx.exception.gate, "G9")
+
+    def test_end_to_end_newly_confirmed_month_via_tariff_months_allows_saving_yen_change(self):
+        """validate()を通した統合テスト: 前回コミットにtariff_months.json(未確定)が無く、
+        今回のコミットで2026-09（実tariff.jsonでは未確定、overlayが新規に確定させる月）を
+        新たに確定させた場合、確定済み日(cutoff以前)のsaving_yenだけの変化がG9で許可される
+        ことを確認する。QA指摘F1によりoverlay-added月はofficial_buy.jsonでの請求突合が
+        必須になったため、対応するinputs/official_buy.jsonも合わせて用意する。"""
+        old_daily_rows = _old_daily_fixture()
+        # billing_month_for_date("2026-08-10", meter_read_day=2) == "2026-09"
+        confirmed_day = dict(old_daily_rows[0], date="2026-08-10", saving_yen=100)
+        old_daily_rows = [confirmed_day] + old_daily_rows[1:]
+        new_daily_rows = [dict(confirmed_day, saving_yen=999)] + old_daily_rows[1:]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write_incoming(base, daily=old_daily_rows, monthly=make_monthly_fixture(old_daily_rows))
+            subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit1(no tariff_months)"], cwd=base, check=True)
+
+            target_month = "2026-09"
+            self.assertNotIn(target_month, validate_metrics.bill_model.confirmed_tariff_months(REAL_TARIFF))
+            tariff_months = make_tariff_months_fixture(
+                fuel={target_month: 5.0}, capacity={target_month: 200},
+            )
+            effective = validate_metrics.bill_model.merge_tariff(REAL_TARIFF, tariff_months)
+            usage_kwh = 50.0
+            billed_yen = validate_metrics.bill_model.compute_bill(effective, usage_kwh, target_month).total_yen
+            start, end = validate_metrics.bill_model.billing_period(target_month, REAL_METER_READ_DAY)
+            official_buy = make_official_buy_fixture(months=[{
+                "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
+                "official_buy_kwh": usage_kwh, "billed_yen": billed_yen,
+            }])
+            write_incoming(
+                base, daily=new_daily_rows, monthly=make_monthly_fixture(new_daily_rows),
+                inputs={"tariff_months.json": tariff_months, "official_buy.json": official_buy},
+            )
+            # G13(L2)はinputs/official_buy.json・inputs/tariff_months.jsonが実在するなら
+            # pipeline.json側のハッシュも要求するため、実際に書いたファイルに合わせる。
+            pipeline = make_pipeline_fixture()
+            pipeline["inputs"]["official_buy_sha256"] = _sha256(base / "inputs" / "official_buy.json")
+            pipeline["inputs"]["tariff_months_sha256"] = _sha256(base / "inputs" / "tariff_months.json")
+            (base / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit2(newly confirmed 2026-09)"], cwd=base, check=True)
+
+            warnings = validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(warnings, [])
+
+    def test_g9_first_seed_does_not_treat_base_months_as_newly_confirmed(self):
+        """QA指摘F2の反例: tariff_months.jsonが今回のコミットで初めて現れても（前コミットに
+        tariff_months.json自体が無い＝prev_overlay is None）、base単独で以前から確定済み
+        だった月(2026-08)まで「新たに確定した」扱いにしてはならない。ここでは意図的に
+        saving_yenだけを変える（もし2026-08が誤って「新たに確定した」扱いになれば、修正前の
+        バグではG9の例外に該当し許可されてしまっていたはずの変更）。overlay(tariff_months)
+        は2026-08と無関係な月(2026-10)だけを追加する。"""
+        old_daily_rows = _old_daily_fixture()
+        # billing_month_for_date("2026-07-15", meter_read_day=2) == "2026-08"（base単独で確定済み）
+        confirmed_day = dict(old_daily_rows[0], date="2026-07-15", saving_yen=100)
+        old_daily_rows = [confirmed_day] + old_daily_rows[1:]
+        new_daily_rows = [dict(confirmed_day, saving_yen=999)] + old_daily_rows[1:]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write_incoming(base, daily=old_daily_rows, monthly=make_monthly_fixture(old_daily_rows))
+            subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit1(no tariff_months)"], cwd=base, check=True)
+
+            # tariff_monthsは2026-08と無関係な将来月(2026-10)だけを含む
+            tariff_months = make_tariff_months_fixture(fuel={"2026-10": 5.0}, capacity={"2026-10": 200})
+            write_incoming(
+                base, daily=new_daily_rows, monthly=make_monthly_fixture(new_daily_rows),
+                inputs={"tariff_months.json": tariff_months},
+            )
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit2(tariff_months first appears)"], cwd=base, check=True)
+
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G9")
+
+
+    def test_g9_conflicting_previous_tariff_months_does_not_widen_exception_to_base_months(self):
+        """再 QA 指摘 R1: 前コミットの tariff_months が base と矛盾（2026-08 の燃料費が 1 円違う）し、
+        今回それを除去したコミット（run-daily の tariff_conflict 自動除去と同じ形）でも、
+        base 単独で確定済みの 2026-08 に属する日の saving_yen 書き換えは G9 で拒否されること。"""
+        old_daily_rows = _old_daily_fixture()
+        confirmed_day = dict(old_daily_rows[0], date="2026-07-15", saving_yen=100)
+        old_daily_rows = [confirmed_day] + old_daily_rows[1:]
+        new_daily_rows = [dict(confirmed_day, saving_yen=999)] + old_daily_rows[1:]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            conflicting = make_tariff_months_fixture(fuel={"2026-08": 11.38}, capacity={"2026-08": 213})
+            write_incoming(
+                base, daily=old_daily_rows, monthly=make_monthly_fixture(old_daily_rows),
+                inputs={"tariff_months.json": conflicting},
+            )
+            subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit1(conflicting tariff_months)"], cwd=base, check=True)
+
+            cleaned = make_tariff_months_fixture(excluded={"2026-08": "tariff_conflict"})
+            write_incoming(
+                base, daily=new_daily_rows, monthly=make_monthly_fixture(new_daily_rows),
+                inputs={"tariff_months.json": cleaned},
+            )
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit2(conflict removed)"], cwd=base, check=True)
+
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G9")
+
+
+class CheckInputsDirTest(unittest.TestCase):
+    def test_valid_inputs_dir_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs_dir = Path(tmp) / "inputs"
+            inputs_dir.mkdir()
+            (inputs_dir / "official_buy.json").write_text(
+                json.dumps(make_official_buy_fixture(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+            tariff_path = Path(tmp) / "tariff.json"
+            tariff_path.write_text(json.dumps(REAL_TARIFF), encoding="utf-8")
+            validate_metrics.check_inputs_dir(inputs_dir, tariff_path)  # raiseしなければ合格
+
+    def test_invalid_inputs_dir_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs_dir = Path(tmp) / "inputs"
+            inputs_dir.mkdir()
+            months = [dict(make_official_buy_fixture()["months"][0], billed_yen=3661 + 1)]
+            (inputs_dir / "official_buy.json").write_text(
+                json.dumps(make_official_buy_fixture(months=months), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+            tariff_path = Path(tmp) / "tariff.json"
+            tariff_path.write_text(json.dumps(REAL_TARIFF), encoding="utf-8")
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.check_inputs_dir(inputs_dir, tariff_path)
+            self.assertEqual(ctx.exception.gate, "G19")
+
+    def test_cli_check_inputs_dir_exits_nonzero_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs_dir = Path(tmp) / "inputs"
+            inputs_dir.mkdir()
+            months = [dict(make_official_buy_fixture()["months"][0], billed_yen=3661 + 1)]
+            (inputs_dir / "official_buy.json").write_text(
+                json.dumps(make_official_buy_fixture(months=months), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+            tariff_path = Path(tmp) / "tariff.json"
+            tariff_path.write_text(json.dumps(REAL_TARIFF), encoding="utf-8")
+
+            script = str(Path(__file__).resolve().parent / "validate_metrics.py")
+            proc = subprocess.run(
+                [sys.executable, script, "--check-inputs-dir", str(inputs_dir), "--tariff-path", str(tariff_path)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("G19", proc.stderr)
+
+    def test_cli_check_inputs_dir_exits_zero_on_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs_dir = Path(tmp) / "inputs"
+            inputs_dir.mkdir()
+            (inputs_dir / "official_buy.json").write_text(
+                json.dumps(make_official_buy_fixture(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+            tariff_path = Path(tmp) / "tariff.json"
+            tariff_path.write_text(json.dumps(REAL_TARIFF), encoding="utf-8")
+
+            script = str(Path(__file__).resolve().parent / "validate_metrics.py")
+            proc = subprocess.run(
+                [sys.executable, script, "--check-inputs-dir", str(inputs_dir), "--tariff-path", str(tariff_path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

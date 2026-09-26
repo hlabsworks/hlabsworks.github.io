@@ -88,6 +88,13 @@ cp "${SCRIPT_DIR}/monthly_report.py" "${BUNDLE}/monthly_report.py"
 cp "${SCRIPT_DIR}/layer_model.py" "${BUNDLE}/layer_model.py"
 cp "${SCRIPT_DIR}/bill_model.py" "${BUNDLE}/bill_model.py"
 cp "${SCRIPT_DIR}/delta_model.py" "${BUNDLE}/delta_model.py"
+# import_official_buy.py/import_official_sell.py: validate_metrics.py が G18(inputsスキーマの
+# source_note照合)でimportする。import_official_inputs.py: 月次確定の自動化(DDR実装手順S1)で
+# handoffを作る側が使う想定のCLIを、run-daily.sh実行環境にも将来の手動フォールバック用に
+# 同梱しておく（official_*.jsonの手動同梱自体はまだ維持する。移行完了後にS7で見直す）。
+cp "${SCRIPT_DIR}/import_official_buy.py" "${BUNDLE}/import_official_buy.py"
+cp "${SCRIPT_DIR}/import_official_sell.py" "${BUNDLE}/import_official_sell.py"
+cp "${SCRIPT_DIR}/import_official_inputs.py" "${BUNDLE}/import_official_inputs.py"
 cp "${SCRIPT_DIR}/run-daily.sh" "${BUNDLE}/run-daily.sh"
 NEW_TARIFF="${BUNDLE}/inputs/tariff.json"
 cp "${SCRIPT_DIR}/tariff.json" "${NEW_TARIFF}"

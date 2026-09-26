@@ -39,6 +39,14 @@ DEFAULT_OUT_PATH = REPO_ROOT / "data" / "metrics" / "official_sell.json"
 
 REQUIRED_MONTH_FIELDS = ("settlement_month", "period_from", "period_to", "purchase_yen")
 
+# import_official_inputs.py（自動取り込み経路）とvalidate_metrics.pyのG18（inputs/official_sell.json
+# のsource_note完全一致検査）で共有するため、文字列リテラルをモジュール定数に切り出している
+# （挙動は従来のbuild_official_sell()と同一、二重実装しない）。
+SOURCE_NOTE = (
+    "電力会社の購入実績お知らせサービスの公式メーター指示数差分・"
+    "支払実績。供給地点番号・設備ID・検針日・指示数の生値は含まない。"
+)
+
 
 def extract_month(month: dict) -> dict:
     """purchase_monthly.json の1ヶ月分レコードから、公開可能な集計値のみを抽出する。"""
@@ -75,10 +83,7 @@ def build_official_sell(source: dict) -> dict:
     return {
         "months": extract_months(source),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source_note": (
-            "電力会社の購入実績お知らせサービスの公式メーター指示数差分・"
-            "支払実績。供給地点番号・設備ID・検針日・指示数の生値は含まない。"
-        ),
+        "source_note": SOURCE_NOTE,
     }
 
 

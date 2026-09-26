@@ -1839,6 +1839,24 @@ class Gate9TariffConfirmationExceptionTest(unittest.TestCase):
             self.assertEqual(ctx.exception.gate, "G9")
 
 
+class Gate6FloatNoiseTest(unittest.TestCase):
+    def test_float_rounding_noise_after_decimal_point_is_not_flagged(self):
+        meta = _load_real("data/metrics/meta.json")
+        meta["buy_price_yen_per_kwh"] = 40.339999999999996
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), meta=meta)
+            validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+
+    def test_bare_13_digit_number_is_still_flagged(self):
+        meta = _load_real("data/metrics/meta.json")
+        meta["buy_sell_price_source"] = meta["buy_sell_price_source"] + " 1234567890123"
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), meta=meta)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G6")
+
+
 class CheckInputsDirTest(unittest.TestCase):
     def test_valid_inputs_dir_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

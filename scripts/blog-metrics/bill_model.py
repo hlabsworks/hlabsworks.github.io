@@ -212,13 +212,13 @@ def per_kwh_prices(tariff: dict, billing_month: str) -> tuple[float, float, floa
 
     if billing_month in tariff["fuel_cost_adjustment_yen_per_kwh"]:
         fuel_rate = tariff["fuel_cost_adjustment_yen_per_kwh"][billing_month]
-        return tier1_rate + fuel_rate + levy_rate, sell_fit, sell_post_fit, False, None
+        return round(tier1_rate + fuel_rate + levy_rate, 2), sell_fit, sell_post_fit, False, None
 
     source_month = latest_confirmed_fuel_month(tariff, billing_month)
     if source_month is None:
         raise KeyError(f"fuel_cost_adjustment_yen_per_kwh に {billing_month} も暫定適用元も見つかりません")
     fuel_rate = tariff["fuel_cost_adjustment_yen_per_kwh"][source_month]
-    return tier1_rate + fuel_rate + levy_rate, sell_fit, sell_post_fit, True, source_month
+    return round(tier1_rate + fuel_rate + levy_rate, 2), sell_fit, sell_post_fit, True, source_month
 
 
 def renewable_levy_rate(tariff: dict, billing_month: str) -> float:

@@ -826,3 +826,19 @@ class LoadDailyLoadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerKwhPricesRoundingTest(unittest.TestCase):
+    def test_buy_price_is_rounded_to_2_decimals(self):
+        """27 + 9.16 + 4.18 は float では 40.339999999999996 になる。公開 JSON に丸め誤差の桁を
+        出さない（G6 の 13 桁検査に引っかかり公開が止まった実例 2026-09-27）。"""
+        tariff = {
+            "energy_tiers_yen_per_kwh": [{"yen_per_kwh": 27.0}],
+            "fuel_cost_adjustment_yen_per_kwh": {"2026-09": 9.16},
+            "capacity_contribution_yen_per_month": {"2026-09": 477},
+            "renewable_levy_yen_per_kwh": {"2026-05..2027-04": 4.18},
+            "sell_price_yen_per_kwh": {"fit": 16.0, "post_fit_assumed_for_readers": 8.0},
+        }
+        buy, _fit, _post, provisional, _src = bill_model.per_kwh_prices(tariff, "2026-09")
+        self.assertEqual(buy, 40.34)
+        self.assertFalse(provisional)

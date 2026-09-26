@@ -82,6 +82,9 @@ mkdir -p "${BUNDLE}/inputs" "${BUNDLE}/systemd"
 cp "${SCRIPT_DIR}/aggregate.sh" "${BUNDLE}/aggregate.sh"
 cp "${SCRIPT_DIR}/build_daily.py" "${BUNDLE}/build_daily.py"
 cp "${SCRIPT_DIR}/validate_metrics.py" "${BUNDLE}/validate_metrics.py"
+# 設計判断(2026-09-23/26「速報＋改訂」方式): monthly_report.py はhomelab側でposts/YYYY-MM.json
+# を作成・改版するために必要（render_monthly_posts.pyはmain側のみで実行するため不要）。
+cp "${SCRIPT_DIR}/monthly_report.py" "${BUNDLE}/monthly_report.py"
 cp "${SCRIPT_DIR}/layer_model.py" "${BUNDLE}/layer_model.py"
 cp "${SCRIPT_DIR}/bill_model.py" "${BUNDLE}/bill_model.py"
 cp "${SCRIPT_DIR}/delta_model.py" "${BUNDLE}/delta_model.py"

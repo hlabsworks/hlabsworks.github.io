@@ -80,6 +80,12 @@ jobs:
           python3 scripts/blog-metrics/validate_metrics.py --incoming _incoming --repo . "${ARGS[@]}"
       - name: Sync incoming metrics data into data/metrics
         run: cp _incoming/data/metrics/*.json data/metrics/
+      # 設計判断(2026-09-23/26「速報＋改訂」方式): posts/YYYY-MM.json（homelab生成の数値
+      # スナップショット、G1〜G16で検証済み）から記事Markdownを生成する。文言・分岐は
+      # main側のこのファイルにのみあり、G17(check_rendered)に失敗すれば非ゼロ終了して
+      # ここでビルド・デプロイを止める。
+      - name: Render monthly report posts
+        run: python3 scripts/blog-metrics/render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/auto
       - name: Build with Hugo
         env:
           HUGO_ENVIRONMENT: production

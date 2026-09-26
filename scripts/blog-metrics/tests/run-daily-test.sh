@@ -137,6 +137,7 @@ STUBEOF
   cp "$BLOG_METRICS_SRC/aggregate.sh" "$BUNDLE/aggregate.sh"
   cp "$BLOG_METRICS_SRC/build_daily.py" "$BUNDLE/build_daily.py"
   cp "$BLOG_METRICS_SRC/validate_metrics.py" "$BUNDLE/validate_metrics.py"
+  cp "$BLOG_METRICS_SRC/monthly_report.py" "$BUNDLE/monthly_report.py"
   cp "$BLOG_METRICS_SRC/layer_model.py" "$BUNDLE/layer_model.py"
   cp "$BLOG_METRICS_SRC/bill_model.py" "$BUNDLE/bill_model.py"
   cp "$BLOG_METRICS_SRC/delta_model.py" "$BUNDLE/delta_model.py"
@@ -553,6 +554,48 @@ if printf '%s' "$STDERR16" | /usr/bin/grep -qF "ecoflow_daily の取得に失敗
 else
   ok
 fi
+teardown
+
+echo "# 17. monthly_report.py 呼び出し: run.log に実行の証跡が残る（設計判断2026-09-23/26）"
+setup
+run_daily_success_args >/dev/null 2>&1
+RC=$?
+assert_eq "17 exit" "$RC" "0"
+assert_contains "17 log mentions monthly_report.py invocation" "$(cat "$LOG_FILE" 2>/dev/null)" "monthly_report.py: wrote"
+[ -d "$CLONE/posts" ] && ok || fail "17 posts/ directory not created in clone"
+teardown
+
+echo "# 18. monthly_report.py が失敗してもデータのcommit・pushは続き、run-daily.shはexit 1になる"
+setup
+BROKEN_MR_BUNDLE="$T/blog-metrics-broken-mr"
+cp -R "$BUNDLE" "$BROKEN_MR_BUNDLE"
+cat > "$BROKEN_MR_BUNDLE/monthly_report.py" <<'STUB'
+#!/usr/bin/env python3
+# validate_metrics.py が `import monthly_report` するため、CLI実行時だけ失敗させる
+# （import時に落とすとvalidate_metrics.py自体が動かなくなり、テストの意図と違う経路で
+# commitが取り消されてしまう）。
+import sys
+if __name__ == "__main__":
+    print("monthly_report.py: forced failure for test 18", file=sys.stderr)
+    sys.exit(1)
+STUB
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$BROKEN_MR_BUNDLE" \
+  --clone-dir "$CLONE" \
+  --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" \
+  --log-file "$LOG_FILE" \
+  --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export.sh" \
+  --profile-since-days 1 >/dev/null 2>&1
+RC=$?
+assert_eq "18 exit is 1 despite data being committed" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "18 data commit still happened" "$AFTER" "$((BEFORE + 1))"
+assert_contains "18 log names monthly_report.py failure" "$(cat "$LOG_FILE" 2>/dev/null)" "monthly_report.py が失敗しました"
+WT_STATUS=$(git -C "$CLONE" status --porcelain)
+assert_eq "18 working tree clean after posts revert" "$WT_STATUS" ""
 teardown
 
 echo "passed=$PASSES failed=$FAILS"

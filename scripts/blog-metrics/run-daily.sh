@@ -83,6 +83,7 @@ done
 INPUTS_DIR="${BLOG_METRICS_DIR}/inputs"
 AGGREGATE_SH="${BLOG_METRICS_DIR}/aggregate.sh"
 VALIDATE_PY="${BLOG_METRICS_DIR}/validate_metrics.py"
+MONTHLY_REPORT_PY="${BLOG_METRICS_DIR}/monthly_report.py"
 LAST_HASHES_FILE="${STATE_DIR}/last_hashes.json"
 FAIL_STATE_FILE="${STATE_DIR}/fail_state.json"
 ALLOW_HISTORY_ONCE_FLAG="${STATE_DIR}/allow-history-once"
@@ -130,9 +131,11 @@ notify() {
 }
 
 compute_hashes() {
-    # $1 = data/metrics ディレクトリ。generated_at を除いた内容のsha256をJSONで返す
-    # （generated_atだけが変わった日を「変更なし」として扱うための比較用ハッシュ）。
-    python3 - "$1" <<'PY'
+    # $1 = data/metrics ディレクトリ、$2 = posts ディレクトリ（省略可）。generated_at を
+    # 除いた内容のsha256をJSONで返す（generated_atだけが変わった日を「変更なし」として
+    # 扱うための比較用ハッシュ）。posts/*.json は設計判断2026-09-23/26「速報＋改訂」方式で
+    # 追加。キーは posts/<拡張子抜きファイル名>（例: posts/2026-10）でソート順。
+    python3 - "$1" "${2:-}" <<'PY'
 import sys, json, hashlib
 from pathlib import Path
 
@@ -143,14 +146,21 @@ def strip(obj):
         return [strip(v) for v in obj]
     return obj
 
+def digest(data) -> str:
+    stripped = strip(data)
+    return hashlib.sha256(json.dumps(stripped, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
 d = Path(sys.argv[1])
 result = {}
 for name in ("daily", "monthly", "meta", "bills", "layers"):
     data = json.loads((d / f"{name}.json").read_text(encoding="utf-8"))
-    stripped = strip(data)
-    result[name] = hashlib.sha256(
-        json.dumps(stripped, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    result[name] = digest(data)
+
+posts_dir = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
+if posts_dir and posts_dir.is_dir():
+    for post_path in sorted(posts_dir.glob("*.json")):
+        result[f"posts/{post_path.stem}"] = digest(json.loads(post_path.read_text(encoding="utf-8")))
+
 print(json.dumps(result, sort_keys=True))
 PY
 }
@@ -196,7 +206,7 @@ push_with_retry() {
     for attempt in 1 2 3; do
         if git -C "${CLONE_DIR}" push origin main -q 2>>"${LOG_FILE}"; then
             local new_hashes
-            if new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" 2>>"${LOG_FILE}") && [[ -n "${new_hashes}" ]]; then
+            if new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" 2>>"${LOG_FILE}") && [[ -n "${new_hashes}" ]]; then
                 mkdir -p "${STATE_DIR}" 2>>"${LOG_FILE}" || true
                 printf '%s\n' "${new_hashes}" > "${LAST_HASHES_FILE}"
             else
@@ -247,6 +257,7 @@ commit_and_maybe_push() {
     # ため、各コマンドの戻り値を明示的に確認する（QA指摘F3対応）。cp/compute_hashes が
     # クラッシュした場合にハッシュが空文字同士で一致し「変更なしでexit 0」に化ける事故を防ぐ。
     local out_dir="$1" db_query_seconds="$2"
+    local monthly_report_failed=false
 
     # data/metrics/ が無い clone は初回セットアップ未完了（README.md欠落チェックと同じ思想）
     # として扱い、自動作成せずに失敗させる。自動作成すると、seed commit が無い壊れた clone
@@ -262,8 +273,25 @@ commit_and_maybe_push() {
         return 1
     fi
 
+    # 設計判断(2026-09-23/26「速報＋改訂」方式): 確定・速報段階に入った月のposts/YYYY-MM.json
+    # を作成・改版する。失敗してもデータのcommit・pushは止めない（run-daily.shの主目的は
+    # メトリクスデータの公開であり、月次レポートはその上に乗る追加機能のため）。posts/だけ
+    # 元に戻し、この日は失敗として扱い run_once の最後で1を返す（既存の「3暦日連続失敗で
+    # LINE1通」の仕組みに乗せる。通知の追加は行わない）。
+    mkdir -p "${CLONE_DIR}/posts" 2>>"${LOG_FILE}" || true
+    if ! python3 "${MONTHLY_REPORT_PY}" \
+            --data-dir "${CLONE_DIR}/data/metrics" \
+            --posts-dir "${CLONE_DIR}/posts" \
+            --today "$(today_str)" \
+            >>"${LOG_FILE}" 2>&1; then
+        log "monthly_report.py が失敗しました（postsだけを元に戻します）"
+        git -C "${CLONE_DIR}" checkout -q -- posts 2>>"${LOG_FILE}" || true
+        git -C "${CLONE_DIR}" clean -fdq posts 2>>"${LOG_FILE}" || true
+        monthly_report_failed=true
+    fi
+
     local new_hashes old_hashes
-    if ! new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" 2>>"${LOG_FILE}") || [[ -z "${new_hashes}" ]]; then
+    if ! new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" 2>>"${LOG_FILE}") || [[ -z "${new_hashes}" ]]; then
         # compute_hashes(python3)の例外はLOG_FILEにリダイレクト済みでstdout(journal)には出さない。
         log "compute_hashes に失敗しました（コピー後のファイルが壊れている可能性があります）"
         return 1
@@ -273,8 +301,14 @@ commit_and_maybe_push() {
 
     if [[ "${new_hashes}" == "${old_hashes}" ]]; then
         log "データに実質的な変更が無いためcommitしません"
+        # git checkout/cleanは複数pathspecのうち1つでも「知られていないパス」だと全体が
+        # 失敗する(gitの既知の挙動)。postsはコミット履歴に一度も現れないことがあるため
+        # data/metrics とは別コマンドにする（QA再発防止: 2026-09-26発見の回帰）。
         git -C "${CLONE_DIR}" checkout -q -- data/metrics 2>>"${LOG_FILE}" || true
         git -C "${CLONE_DIR}" clean -fdq data/metrics 2>>"${LOG_FILE}" || true
+        git -C "${CLONE_DIR}" checkout -q -- posts 2>>"${LOG_FILE}" || true
+        git -C "${CLONE_DIR}" clean -fdq posts 2>>"${LOG_FILE}" || true
+        [[ "${monthly_report_failed}" == true ]] && return 1
         return 0
     fi
 
@@ -323,6 +357,7 @@ commit_and_maybe_push() {
         return 1
     fi
     log "commit・pushが完了しました"
+    [[ "${monthly_report_failed}" == true ]] && return 1
     return 0
 }
 

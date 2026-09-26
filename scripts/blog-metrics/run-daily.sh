@@ -26,6 +26,11 @@
 #                            （既定: /usr/local/bin/metrics-export.sh、接続先Pi上のパス）
 #   --profile-since-days N   5分プロファイル取得の遡り日数（既定: 420。テストで
 #                            420日分のSSH往復を避けるための上書き用）
+#   --auto-inputs-dir DIR    月次確定の自動化（DDR実装手順S1）。energy-fetch（別プロセス、
+#                            本スクリプトの対象外）が置く official_buy.json/official_sell.json/
+#                            tariff_months.json のhandoffディレクトリ（既定:
+#                            /var/lib/energy-fetch/handoff）。存在しない・中身が無ければ
+#                            何もしない（handoffが無ければ挙動は従来と同一）。
 #   -h, --help                このヘルプを表示
 #
 # 環境変数:
@@ -37,7 +42,8 @@
 #   - commit author は metrics-bot <metrics-bot@users.noreply.github.com> 固定。
 #   - 履歴は append のみ（force push しない）。
 #   - git操作順序: fetch -> (ローカルが進んでいれば先にpush) -> reset --hard origin/main
-#     -> 新データ配置 -> pipeline.json更新 -> (変更があれば)commit -> validate_metrics.py
+#     -> stage_inputs(handoffの検査・反映) -> 実効tariff生成 -> 新データ配置 ->
+#     pipeline.json更新 -> (変更があれば)commit -> validate_metrics.py
 #     -> 失敗ならcommitを取り消し / 成功ならpush(3回リトライ)。
 #   - データに実質的な変更が無い日（generated_at 以外が前回と同一）はcommitしない。
 #   - 失敗は「連続する暦日」でカウントし（間が空いたら1からカウントし直す）、3暦日連続で
@@ -45,6 +51,13 @@
 #   - ${STATE_DIR}/allow-history-once フラグ（deploy-homelab.sh が tariff.json の変更を
 #     検知したときだけ置く）を検出したら、そのcommit試行1回に限り validate_metrics.py に
 #     --allow-history-change を付与し、フラグを消費(削除)する。
+#   - 月次確定の自動化（DDR実装手順S1）: 料金体系の骨格は ${INPUTS_DIR}/tariff.json（bundle
+#     同梱、従来どおり手動更新）のまま。毎月観測する値（燃料費等調整単価・容量拠出金・賦課金
+#     観測値）と official_buy.json/official_sell.json は clone/inputs/ に置き、
+#     stage_inputs() が --auto-inputs-dir の handoff を検査した上で clone/inputs/ へ反映する
+#     （不合格・handoff無しなら clone/inputs/ の既存値を維持）。実効tariffは
+#     bill_model.merge_tariff(base, clone/inputs/tariff_months.json) で都度作り、
+#     aggregate.sh/monthly_report.py にはこの実効tariffと --official-dir clone/inputs を渡す。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,6 +71,7 @@ LOG_FILE="/var/log/blog-metrics/run.log"
 SSH_HOST="solarchgctl-metrics"
 EXPORT_CMD="/usr/local/bin/metrics-export.sh"
 PROFILE_SINCE_DAYS=420
+AUTO_INPUTS_DIR="/var/lib/energy-fetch/handoff"
 
 usage() {
     grep -E '^#( |$)' "${BASH_SOURCE[0]}" | sed -E 's/^# ?//'
@@ -75,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --ssh-host) SSH_HOST="$2"; shift 2 ;;
         --export-cmd) EXPORT_CMD="$2"; shift 2 ;;
         --profile-since-days) PROFILE_SINCE_DAYS="$2"; shift 2 ;;
+        --auto-inputs-dir) AUTO_INPUTS_DIR="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option: $1" >&2; usage 1 ;;
     esac
@@ -131,11 +146,14 @@ notify() {
 }
 
 compute_hashes() {
-    # $1 = data/metrics ディレクトリ、$2 = posts ディレクトリ（省略可）。generated_at を
+    # $1 = data/metrics ディレクトリ、$2 = posts ディレクトリ（省略可）、
+    # $3 = inputs ディレクトリ（省略可、月次確定の自動化・DDR実装手順S1）。generated_at を
     # 除いた内容のsha256をJSONで返す（generated_atだけが変わった日を「変更なし」として
     # 扱うための比較用ハッシュ）。posts/*.json は設計判断2026-09-23/26「速報＋改訂」方式で
     # 追加。キーは posts/<拡張子抜きファイル名>（例: posts/2026-10）でソート順。
-    python3 - "$1" "${2:-}" <<'PY'
+    # inputs/official_buy.json・official_sell.json・tariff_months.json（存在するものだけ）も
+    # 同様に inputs/<拡張子抜きファイル名> のキーで含める。
+    python3 - "$1" "${2:-}" "${3:-}" <<'PY'
 import sys, json, hashlib
 from pathlib import Path
 
@@ -161,19 +179,29 @@ if posts_dir and posts_dir.is_dir():
     for post_path in sorted(posts_dir.glob("*.json")):
         result[f"posts/{post_path.stem}"] = digest(json.loads(post_path.read_text(encoding="utf-8")))
 
+inputs_dir = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+if inputs_dir and inputs_dir.is_dir():
+    for name in ("official_buy", "official_sell", "tariff_months"):
+        p = inputs_dir / f"{name}.json"
+        if p.exists():
+            result[f"inputs/{name}"] = digest(json.loads(p.read_text(encoding="utf-8")))
+
 print(json.dumps(result, sort_keys=True))
 PY
 }
 
 write_pipeline_json() {
     # $1=aggregate.sh出力ディレクトリ $2=db_query_seconds
+    # tariff_sha256 は bundle の base tariff.json(${INPUTS_DIR})、official_buy_sha256/
+    # official_sell_sha256/tariff_months_sha256 は clone/inputs（月次確定の自動化、
+    # DDR実装手順S1「inputsのshaはclone/inputsから計算」）と照合する。
     python3 - "$1" "${CLONE_DIR}" "$(cat "${BLOG_METRICS_DIR}/BUNDLE_REV" 2>/dev/null || echo unknown)" \
-        "${PROFILE_SINCE_DAYS}" "$2" "${INPUTS_DIR}" <<'PY'
+        "${PROFILE_SINCE_DAYS}" "$2" "${INPUTS_DIR}" "${CLONE_DIR}/inputs" <<'PY'
 import sys, json, hashlib
 from datetime import datetime
 from pathlib import Path
 
-out_dir, clone_dir, bundle_rev, profile_window_days, db_query_seconds, inputs_dir = sys.argv[1:7]
+out_dir, clone_dir, bundle_rev, profile_window_days, db_query_seconds, bundle_inputs_dir, clone_inputs_dir = sys.argv[1:8]
 
 def sha256_or_none(p: Path):
     return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None
@@ -188,14 +216,101 @@ pipeline = {
     "bundle_rev": bundle_rev.strip(),
     "profile_window_days": int(profile_window_days),
     "inputs": {
-        "tariff_sha256": sha256_or_none(Path(inputs_dir) / "tariff.json"),
-        "official_buy_sha256": sha256_or_none(Path(inputs_dir) / "official_buy.json"),
-        "official_sell_sha256": sha256_or_none(Path(inputs_dir) / "official_sell.json"),
+        "tariff_sha256": sha256_or_none(Path(bundle_inputs_dir) / "tariff.json"),
+        "official_buy_sha256": sha256_or_none(Path(clone_inputs_dir) / "official_buy.json"),
+        "official_sell_sha256": sha256_or_none(Path(clone_inputs_dir) / "official_sell.json"),
+        "tariff_months_sha256": sha256_or_none(Path(clone_inputs_dir) / "tariff_months.json"),
     },
     "row_counts": {"daily": len(daily), "monthly": len(monthly)},
     "db_query_seconds": float(db_query_seconds),
 }
 Path(clone_dir, "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+stage_inputs() {
+    # $1 = --auto-inputs-dir。sync_clone後・aggregate前に呼ぶ。handoff（official_buy.json/
+    # official_sell.json/tariff_months.json、存在するものだけ）があれば
+    # validate_metrics.py --check-inputs-dir で検査し、合格分だけ clone/inputs へ反映する
+    # （tmp+rename）。不合格なら clone/inputs の既存値を維持し、グローバル変数
+    # STAGE_INPUTS_FAILED=true を設定する（run_onceの最後で1を返す判断に使う。データの
+    # commit・push自体は既存値のまま続行する）。handoffが無ければ移行措置として、
+    # clone/inputsにofficial_buy.json/official_sell.jsonが無い場合だけ bundle の
+    # 値を初期値としてコピーする（従来の手動運用からの移行期間。tariff_months.jsonに
+    # 対応する手動運用は無いためコピーしない）。
+    local auto_dir="$1"
+    STAGE_INPUTS_FAILED=false
+    mkdir -p "${CLONE_DIR}/inputs" 2>>"${LOG_FILE}" || true
+
+    local names=(official_buy official_sell tariff_months)
+    local any_present=false
+    if [[ -d "${auto_dir}" ]]; then
+        local name
+        for name in "${names[@]}"; do
+            [[ -f "${auto_dir}/${name}.json" ]] && any_present=true
+        done
+    fi
+
+    if [[ "${any_present}" == true ]]; then
+        local check_dir
+        check_dir=$(mktemp -d)
+        local name
+        for name in "${names[@]}"; do
+            [[ -f "${auto_dir}/${name}.json" ]] && cp "${auto_dir}/${name}.json" "${check_dir}/${name}.json"
+        done
+        if python3 "${VALIDATE_PY}" --check-inputs-dir "${check_dir}" --tariff-path "${INPUTS_DIR}/tariff.json" >>"${LOG_FILE}" 2>&1; then
+            for name in "${names[@]}"; do
+                if [[ -f "${check_dir}/${name}.json" ]]; then
+                    cp "${check_dir}/${name}.json" "${CLONE_DIR}/inputs/${name}.json.tmp" \
+                        && mv "${CLONE_DIR}/inputs/${name}.json.tmp" "${CLONE_DIR}/inputs/${name}.json"
+                fi
+            done
+            log "stage_inputs: handoff(${auto_dir})の検査に合格したため clone/inputs へ反映しました"
+        else
+            log "stage_inputs: handoff(${auto_dir})の検査に失敗したため clone/inputs を維持します"
+            STAGE_INPUTS_FAILED=true
+        fi
+        rm -rf "${check_dir}"
+    else
+        local name
+        for name in official_buy official_sell; do
+            if [[ ! -f "${CLONE_DIR}/inputs/${name}.json" && -f "${INPUTS_DIR}/${name}.json" ]]; then
+                cp "${INPUTS_DIR}/${name}.json" "${CLONE_DIR}/inputs/${name}.json"
+                log "stage_inputs: 移行措置として bundle の ${name}.json を clone/inputs へ初期コピーしました"
+            fi
+        done
+    fi
+}
+
+build_effective_tariff() {
+    # $1 = 出力先パス。base=${INPUTS_DIR}/tariff.json（bundle同梱、料金体系の骨格）に
+    # overlay=${CLONE_DIR}/inputs/tariff_months.json（無ければNone）を
+    # bill_model.merge_tariff() で重ね合わせる。overlayがbaseと矛盾(tariff_conflict)する
+    # 場合はbaseのみを書き出し非0を返す（呼び出し元はbaseのまま処理を続行しつつ
+    # run_onceの最後で1を返す判断に使う）。
+    local out_path="$1"
+    python3 - "${BLOG_METRICS_DIR}" "${INPUTS_DIR}/tariff.json" "${CLONE_DIR}/inputs/tariff_months.json" "${out_path}" <<'PY'
+import sys, json
+from pathlib import Path
+
+blog_metrics_dir, base_path, overlay_path, out_path = sys.argv[1:5]
+sys.path.insert(0, blog_metrics_dir)
+import bill_model  # noqa: E402  merge_tariffを二重実装しない
+
+base = json.loads(Path(base_path).read_text(encoding="utf-8"))
+overlay_file = Path(overlay_path)
+overlay = json.loads(overlay_file.read_text(encoding="utf-8")) if overlay_file.exists() else None
+
+conflict = False
+try:
+    effective = bill_model.merge_tariff(base, overlay)
+except ValueError as exc:
+    print(f"build_effective_tariff: {exc}", file=sys.stderr)
+    effective = base
+    conflict = True
+
+Path(out_path).write_text(json.dumps(effective, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+sys.exit(1 if conflict else 0)
 PY
 }
 
@@ -206,7 +321,7 @@ push_with_retry() {
     for attempt in 1 2 3; do
         if git -C "${CLONE_DIR}" push origin main -q 2>>"${LOG_FILE}"; then
             local new_hashes
-            if new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" 2>>"${LOG_FILE}") && [[ -n "${new_hashes}" ]]; then
+            if new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" "${CLONE_DIR}/inputs" 2>>"${LOG_FILE}") && [[ -n "${new_hashes}" ]]; then
                 mkdir -p "${STATE_DIR}" 2>>"${LOG_FILE}" || true
                 printf '%s\n' "${new_hashes}" > "${LAST_HASHES_FILE}"
             else
@@ -256,7 +371,7 @@ commit_and_maybe_push() {
     # sync_clone 同様、`if ! commit_and_maybe_push` 経由の呼び出しで errexit が効かない
     # ため、各コマンドの戻り値を明示的に確認する（QA指摘F3対応）。cp/compute_hashes が
     # クラッシュした場合にハッシュが空文字同士で一致し「変更なしでexit 0」に化ける事故を防ぐ。
-    local out_dir="$1" db_query_seconds="$2"
+    local out_dir="$1" db_query_seconds="$2" effective_tariff_path="$3"
     local monthly_report_failed=false
 
     # data/metrics/ が無い clone は初回セットアップ未完了（README.md欠落チェックと同じ思想）
@@ -282,7 +397,7 @@ commit_and_maybe_push() {
     if ! python3 "${MONTHLY_REPORT_PY}" \
             --data-dir "${CLONE_DIR}/data/metrics" \
             --posts-dir "${CLONE_DIR}/posts" \
-            --tariff "${INPUTS_DIR}/tariff.json" \
+            --tariff "${effective_tariff_path}" \
             --today "$(today_str)" \
             >>"${LOG_FILE}" 2>&1; then
         log "monthly_report.py が失敗しました（postsだけを元に戻します）"
@@ -292,7 +407,7 @@ commit_and_maybe_push() {
     fi
 
     local new_hashes old_hashes
-    if ! new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" 2>>"${LOG_FILE}") || [[ -z "${new_hashes}" ]]; then
+    if ! new_hashes=$(compute_hashes "${CLONE_DIR}/data/metrics" "${CLONE_DIR}/posts" "${CLONE_DIR}/inputs" 2>>"${LOG_FILE}") || [[ -z "${new_hashes}" ]]; then
         # compute_hashes(python3)の例外はLOG_FILEにリダイレクト済みでstdout(journal)には出さない。
         log "compute_hashes に失敗しました（コピー後のファイルが壊れている可能性があります）"
         return 1
@@ -303,12 +418,14 @@ commit_and_maybe_push() {
     if [[ "${new_hashes}" == "${old_hashes}" ]]; then
         log "データに実質的な変更が無いためcommitしません"
         # git checkout/cleanは複数pathspecのうち1つでも「知られていないパス」だと全体が
-        # 失敗する(gitの既知の挙動)。postsはコミット履歴に一度も現れないことがあるため
-        # data/metrics とは別コマンドにする（QA再発防止: 2026-09-26発見の回帰）。
+        # 失敗する(gitの既知の挙動)。posts/inputsはコミット履歴に一度も現れないことが
+        # あるため data/metrics とは別コマンドにする（QA再発防止: 2026-09-26発見の回帰）。
         git -C "${CLONE_DIR}" checkout -q -- data/metrics 2>>"${LOG_FILE}" || true
         git -C "${CLONE_DIR}" clean -fdq data/metrics 2>>"${LOG_FILE}" || true
         git -C "${CLONE_DIR}" checkout -q -- posts 2>>"${LOG_FILE}" || true
         git -C "${CLONE_DIR}" clean -fdq posts 2>>"${LOG_FILE}" || true
+        git -C "${CLONE_DIR}" checkout -q -- inputs 2>>"${LOG_FILE}" || true
+        git -C "${CLONE_DIR}" clean -fdq inputs 2>>"${LOG_FILE}" || true
         [[ "${monthly_report_failed}" == true ]] && return 1
         return 0
     fi
@@ -340,12 +457,17 @@ commit_and_maybe_push() {
         log "allow-history-once フラグを検出したため今回のみ --allow-history-change を適用します"
     fi
 
+    # --tariff-path は bundle の base tariff.json のまま（G13の警告のみ照合用、G18/G19は
+    # 別途resolve_input_pathsが読む）。--official-buy-path/--official-sell-path は
+    # clone/inputs（月次確定の自動化、DDR実装手順S1）を指す。incomingにinputs/*.jsonが
+    # あればgate13_pipelineはそちらと直接fatal照合するため、通常はこの2引数は移行期間の
+    # フォールバック（incomingにまだinputs/が無い場合の警告用）としてのみ働く。
     if ! python3 "${VALIDATE_PY}" \
             --incoming "${CLONE_DIR}" \
             --repo "${BLOG_METRICS_DIR}" \
             --tariff-path "${INPUTS_DIR}/tariff.json" \
-            --official-buy-path "${INPUTS_DIR}/official_buy.json" \
-            --official-sell-path "${INPUTS_DIR}/official_sell.json" \
+            --official-buy-path "${CLONE_DIR}/inputs/official_buy.json" \
+            --official-sell-path "${CLONE_DIR}/inputs/official_sell.json" \
             "${validate_extra_args[@]}" \
             >>"${LOG_FILE}" 2>&1; then
         log "validate_metrics.py が失敗したためcommitを取り消します"
@@ -419,6 +541,19 @@ run_once() {
         return 1
     fi
 
+    # 月次確定の自動化（DDR実装手順S1）: handoff(--auto-inputs-dir)を検査してclone/inputsへ
+    # 反映し、実効tariff(base + tariff_months.json)を作る。aggregate/monthly_report より
+    # 前に済ませる必要がある。
+    stage_inputs "${AUTO_INPUTS_DIR}"
+    local stage_inputs_failed="${STAGE_INPUTS_FAILED}"
+
+    local effective_tariff_path
+    effective_tariff_path=$(mktemp)
+    local effective_tariff_failed=false
+    if ! build_effective_tariff "${effective_tariff_path}"; then
+        effective_tariff_failed=true
+    fi
+
     local out_dir
     out_dir=$(mktemp -d)
 
@@ -427,12 +562,13 @@ run_once() {
     if ! bash "${AGGREGATE_SH}" \
             --export-cmd "${EXPORT_CMD}" \
             --ssh-host "${SSH_HOST}" \
-            --official-dir "${INPUTS_DIR}" \
-            --tariff "${INPUTS_DIR}/tariff.json" \
+            --official-dir "${CLONE_DIR}/inputs" \
+            --tariff "${effective_tariff_path}" \
             --profile-since "$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=${PROFILE_SINCE_DAYS})).isoformat())")" \
             --out "${out_dir}" >>"${LOG_FILE}" 2>&1; then
         log "aggregate.sh が失敗しました"
         rm -rf "${out_dir}"
+        rm -f "${effective_tariff_path}"
         return 1
     fi
     elapsed=$((SECONDS - start_ts))
@@ -446,15 +582,25 @@ run_once() {
         if [[ ! -s "${out_dir}/${name}.json" ]]; then
             log "aggregate.sh の出力に ${name}.json がありません（不完全な結果のためcommitしません）"
             rm -rf "${out_dir}"
+            rm -f "${effective_tariff_path}"
             return 1
         fi
     done
 
-    if ! commit_and_maybe_push "${out_dir}" "${elapsed}"; then
+    if ! commit_and_maybe_push "${out_dir}" "${elapsed}" "${effective_tariff_path}"; then
         rm -rf "${out_dir}"
+        rm -f "${effective_tariff_path}"
         return 1
     fi
     rm -rf "${out_dir}"
+    rm -f "${effective_tariff_path}"
+
+    # stage_inputs/build_effective_tariffが不合格だった回は、データのcommit・push自体は
+    # （既存のclone/inputs値のまま）成功させつつ、run全体としては失敗扱いにする
+    # （既存の「3暦日連続失敗でLINE1通」の仕組みに乗せる。monthly_report_failedと同じ流儀）。
+    if [[ "${stage_inputs_failed}" == true || "${effective_tariff_failed}" == true ]]; then
+        return 1
+    fi
     return 0
 }
 

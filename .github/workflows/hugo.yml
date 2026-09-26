@@ -53,7 +53,9 @@ jobs:
         with:
           repository: hlabsworks/solar-metrics-data
           path: _incoming
-          fetch-depth: 2
+          # validate_metrics.py の前コミット比較(G8/G9/G11)は、壊れた push を revert した直後でも
+          # 読める祖先まで遡れるよう PREVIOUS_COMMIT_MAX_DEPTH(10) と揃える
+          fetch-depth: 10
           persist-credentials: false
           ssh-key: ${{ secrets.METRICS_DATA_READ_KEY }}
       - name: Setup Pages

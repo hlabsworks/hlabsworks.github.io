@@ -518,6 +518,28 @@ class Gate8Test(unittest.TestCase):
                 validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
             self.assertEqual(ctx.exception.gate, "G8")
 
+    def test_broken_previous_commit_falls_back_to_older_parseable_commit(self):
+        # N2 負テスト(2026-09-26)で発見: 壊れた JSON を push→revert した直後、HEAD~1 が
+        # JSON として読めず validate_metrics.py が Traceback で落ちた。revert 後の正常データは
+        # 読める最古の祖先(HEAD~2)と比較して通過しなければならない。
+        daily = make_daily_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_broken_middle_commit(Path(tmp), old_daily=daily, new_daily=daily)
+            validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+
+    def test_broken_previous_commit_does_not_bypass_history_immutability(self):
+        # 壊れたコミットを挟んでも、確定済み日の改変は HEAD~2 との比較で G9 拒否されること。
+        old_daily = make_daily_fixture()
+        for i, row in enumerate(old_daily):  # G9 の対象になる確定済み日(today-20日以前)にずらす
+            row["date"] = f"2026-07-{i + 1:02d}"
+        new_daily = copy.deepcopy(old_daily)
+        new_daily[0]["solar_kwh"] = (new_daily[0]["solar_kwh"] or 0) + 1.0
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_broken_middle_commit(Path(tmp), old_daily=old_daily, new_daily=new_daily)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G9")
+
     def test_row_count_decrease_against_previous_commit_is_rejected(self):
         # 最終日は維持したまま先頭の行だけ減らす（publish_since導入初回の移行と同型: 末尾は
         # 後退しないが行数は減る）。
@@ -678,6 +700,25 @@ def _old_daily_fixture() -> list[dict]:
         row["date"] = (base + timedelta(days=i)).strftime("%Y-%m-%d")
         rows.append(row)
     return rows
+
+
+def _git_repo_with_broken_middle_commit(base: Path, *, old_daily: list[dict], new_daily: list[dict]) -> Path:
+    """コミット1=old_daily、コミット2=壊れたJSON（検証で拒否された push を模す）、
+    コミット3=new_daily（revert 後）。HEAD~1 が読めない場合に HEAD~2 と比較することを
+    確認する G8/G9/G11 のテストで使う（N2 負テストで発見した回帰）。"""
+    write_incoming(base, daily=old_daily, monthly=make_monthly_fixture(old_daily))
+    subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit1"], cwd=base, check=True)
+    (base / "data" / "metrics" / "daily.json").write_text("[{ this is not json\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "broken"], cwd=base, check=True)
+    write_incoming(base, daily=new_daily, monthly=make_monthly_fixture(new_daily))
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit3"], cwd=base, check=True)
+    return base
 
 
 def _git_repo_with_two_commits(base: Path, *, old_daily: list[dict], new_daily: list[dict]) -> Path:

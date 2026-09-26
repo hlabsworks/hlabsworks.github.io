@@ -73,6 +73,9 @@ Host エイリアス推奨）、`<controller>` は制御機(solarchgctl)の SSH 
     scripts/blog-metrics/deploy-homelab.sh --service-user <homelabの実行ユーザー名> --install-units
     ssh <homelab> 'sudo systemctl enable --now blog-metrics.timer'
     ```
+    実施記録: 2026-09-26 に有効化。初回実行で timer の `OnCalendar` 構文誤り（bad unit file
+    setting）と G11 の部分月誤検知（publish_since 直後の 8 月が 3 日分）を発見し修正済み。
+    修正後の初回実行は成功し、データ repo への push → `workflow_dispatch` → Pages 更新まで確認。
 14. **初回実行を手動で確認する**:
     ```sh
     ssh <homelab> 'sudo systemctl start blog-metrics.service && sleep 5 && sudo systemctl status blog-metrics.service --no-pager'

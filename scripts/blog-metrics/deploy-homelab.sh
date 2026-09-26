@@ -146,7 +146,10 @@ if [[ -z "${HOST}" ]]; then
     rsync "${RSYNC_OPTS[@]}" "${BUNDLE}/" "${DEST}/"
 else
     echo "rsync -> ${HOST}:${DEST}/"
-    rsync "${RSYNC_OPTS[@]}" "${BUNDLE}/" "${HOST}:${DEST}/"
+    # ssh 経由の rsync が本スクリプトの標準入力を読み尽くすと、後続の --install-units 確認
+    # プロンプト(read)が EOF になり「中断しました」で終わる（2026-09-26 初回配備で発生）。
+    # rsync には標準入力を渡さない。
+    rsync "${RSYNC_OPTS[@]}" "${BUNDLE}/" "${HOST}:${DEST}/" < /dev/null
 fi
 
 if [[ "${DRY_RUN}" == true ]]; then
@@ -167,7 +170,7 @@ if [[ -n "${OLD_TARIFF_SHA}" && "${OLD_TARIFF_SHA}" != "${NEW_TARIFF_SHA}" ]]; t
         mkdir -p "${STATE_DIR}" 2>/dev/null && touch "${STATE_DIR}/allow-history-once" 2>/dev/null \
             || echo "deploy-homelab.sh: ${STATE_DIR} に書き込めないためallow-history-onceフラグ設定をスキップしました（ローカル動作確認用のため許容）" >&2
     else
-        ssh "${HOST}" "sudo install -d -o '${SERVICE_USER}' '${STATE_DIR}' && sudo -u '${SERVICE_USER}' touch '${STATE_DIR}/allow-history-once'"
+        ssh -n "${HOST}" "sudo install -d -o '${SERVICE_USER}' '${STATE_DIR}' && sudo -u '${SERVICE_USER}' touch '${STATE_DIR}/allow-history-once'"
     fi
 fi
 

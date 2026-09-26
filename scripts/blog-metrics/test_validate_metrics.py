@@ -27,11 +27,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import monthly_report  # noqa: E402
 import validate_metrics  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -132,8 +133,13 @@ def make_pipeline_fixture(generated_at: str | None = None) -> dict:
     }
 
 
-def write_incoming(base: Path, *, daily=None, monthly=None, meta=None, bills=None, layers=None, pipeline=None, readme=None) -> Path:
-    """有効な incoming ディレクトリを作る（値渡しがあれば差し替え）。"""
+def write_incoming(
+    base: Path, *, daily=None, monthly=None, meta=None, bills=None, layers=None, pipeline=None, readme=None,
+    posts: dict[str, dict] | None = None,
+) -> Path:
+    """有効な incoming ディレクトリを作る（値渡しがあれば差し替え）。
+    posts: {"2026-10.json": {...}} のように相対ファイル名をキーにした辞書（QA指摘に
+    倣い任意）。"""
     (base / "data" / "metrics").mkdir(parents=True, exist_ok=True)
     daily = make_daily_fixture() if daily is None else daily
     monthly = make_monthly_fixture(daily) if monthly is None else monthly
@@ -150,7 +156,58 @@ def write_incoming(base: Path, *, daily=None, monthly=None, meta=None, bills=Non
     (base / "data" / "metrics" / "layers.json").write_text(json.dumps(layers, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (base / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (base / "README.md").write_text(readme, encoding="utf-8")
+    if posts:
+        (base / "posts").mkdir(parents=True, exist_ok=True)
+        for name, content in posts.items():
+            (base / "posts" / name).write_text(json.dumps(content, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return base
+
+
+# --- posts/YYYY-MM.json 用フィクスチャ(G14〜G16テスト用) ---------------------------------------
+POST_BILLING_MONTH = "2026-10"  # monthly_report.FIRST_REPORT_BILLING_MONTH と同じ（実データ）
+POST_USAGE_PERIOD = {"start": "2026-09-02", "end": "2026-10-01", "days": 30}
+
+
+def _post_layer(buy_kwh: float, sell_kwh: float, net_fit: int, net_post_fit: int, extra: dict | None = None) -> dict:
+    d = {"available": True, "buy_kwh": buy_kwh, "sell_kwh": sell_kwh, "net_cost_fit_yen": net_fit, "net_cost_post_fit_yen": net_post_fit}
+    if extra:
+        d.update(extra)
+    return d
+
+
+def make_post_month_record(*, l3_buy_source="billed", l3_sell_source="official_meter") -> dict:
+    """monthly_report.build_snapshot_body に渡す layers.months[]/preliminary_months[] の
+    1エントリ相当（DDR §A・§B）。値は本テストのために考案した合成値。"""
+    common_extra = {"estimation": "full", "days_usable": 30, "days_total": 30}
+    return {
+        "billing_month": POST_BILLING_MONTH,
+        "usage_period": dict(POST_USAGE_PERIOD),
+        "layers": {
+            "L0": _post_layer(500.0, 0.0, 10000, 9500, common_extra),
+            "L1": _post_layer(300.0, 100.0, 6000, 5800, common_extra),
+            "L2": _post_layer(150.0, 200.0, 3500, 4000, common_extra),
+            "L3": _post_layer(160.0, 190.0, 3200, 3600, {"buy_source": l3_buy_source, "sell_source": l3_sell_source}),
+        },
+        "uncertainty": {"L2": {"net_cost_fit_yen_min": 3000, "net_cost_fit_yen_max": 4000}},
+    }
+
+
+def make_valid_post_fixture(
+    *, stage: str = "final", first_published: str = "2026-10-24", revision: int = 1, revised: str | None = None,
+    daily_by_date: dict | None = None,
+) -> tuple[dict, dict]:
+    """gate15_post_recompute と完全一致するpostを、monthly_report.build_snapshot_body()を
+    直接使って組み立てる（手計算による数値の食い違いを避けるため）。
+    戻り値: (post, layers_json)。"""
+    month_rec = make_post_month_record(l3_buy_source="billed" if stage == "final" else "sensor")
+    if stage == "final":
+        layers_json = {"months": [month_rec], "preliminary_months": []}
+    else:
+        layers_json = {"months": [], "preliminary_months": [month_rec]}
+    daily_by_date = daily_by_date if daily_by_date is not None else {r["date"]: r for r in make_daily_fixture()}
+    body = monthly_report.build_snapshot_body(POST_BILLING_MONTH, layers_json, daily_by_date, stage)
+    post = {**body, "first_published": first_published, "revision": revision, "revised": revised}
+    return post, layers_json
 
 
 class BaselineTest(unittest.TestCase):
@@ -761,6 +818,211 @@ def _git_repo_with_two_commits(base: Path, *, old_daily: list[dict], new_daily: 
     subprocess.run(["git", "add", "-A"], cwd=base, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "commit2"], cwd=base, check=True)
     return base
+
+
+def _git_repo_with_two_post_versions(base: Path, *, old_post: dict, new_post: dict, name: str = "2026-10.json") -> Path:
+    """incoming を git リポジトリにし、old_post でコミット1、new_post でコミット2を作る
+    （G16のHEAD~1比較テスト用。_git_repo_with_two_commitsのposts版）。old_post/new_postが
+    同一(凍結の境界テスト)でも空コミットとして成立するよう --allow-empty を使う。"""
+    write_incoming(base, posts={name: old_post})
+    subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit1"], cwd=base, check=True)
+
+    write_incoming(base, posts={name: new_post})
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "commit2"], cwd=base, check=True)
+    return base
+
+
+def _git_repo_with_post_deleted(base: Path, *, post: dict, name: str = "2026-10.json") -> Path:
+    """incoming を git リポジトリにし、コミット1でpostsを含め、コミット2でposts/name を
+    削除する（G16の削除検知テスト用）。"""
+    write_incoming(base, posts={name: post})
+    subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit1"], cwd=base, check=True)
+
+    subprocess.run(["git", "rm", "-q", f"posts/{name}"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit2"], cwd=base, check=True)
+    return base
+
+
+class Gate1PostsTest(unittest.TestCase):
+    def test_stray_files_under_posts_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp))
+            (incoming / "posts").mkdir()
+            (incoming / "posts" / "evil.md").write_text("# not json\n", encoding="utf-8")
+            (incoming / "posts" / "2026-8.json").write_text("{}\n", encoding="utf-8")
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G1")
+
+    def test_too_many_post_files_are_rejected(self):
+        post, _ = make_valid_post_fixture()
+        posts = {f"2020-{m:02d}.json": post for m in range(1, validate_metrics.MAX_POST_FILES + 2)}
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), posts=posts)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G1")
+
+
+class Gate4PostsTest(unittest.TestCase):
+    def test_unknown_post_key_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["unexpected_field"] = "x"
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), posts={"2026-10.json": post})
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G4")
+
+
+class Gate6PostsTest(unittest.TestCase):
+    def test_utility_company_name_in_post_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["estimation"] = "東京電力"  # G4のキー自体は許可されているが値に事業者名を混ぜる
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), posts={"2026-10.json": post})
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G6")
+
+
+class Gate14PostSchemaTest(unittest.TestCase):
+    """G14はwall-clockに依存する(first_published<=today_jst等)ため、today_jstを明示的に
+    与えられるgate14_post_schema()を直接呼ぶ（validate()経由だと実行日に依存してしまう）。"""
+
+    def _today(self) -> date:
+        return date.fromisoformat(POST_USAGE_PERIOD["end"]) + timedelta(days=23)  # first_published(10/24)以降
+
+    def test_valid_post_passes(self):
+        post, _ = make_valid_post_fixture()
+        validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())  # 例外なし
+
+    def test_free_text_string_value_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["estimation"] = "<b>x</b>"
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_bool_typed_yen_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["layers"]["L3"]["net_cost_fit_yen"] = True
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_nan_kwh_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["layers"]["L3"]["buy_kwh"] = float("nan")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_out_of_range_yen_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["layers"]["L3"]["net_cost_fit_yen"] = 999_999
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_stage_tariff_basis_mismatch_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["tariff_basis"] = "provisional"  # stage=="final"のまま
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+        self.assertEqual(ctx.exception.gate, "G14")
+
+
+class Gate15PostRecomputeTest(unittest.TestCase):
+    def test_valid_final_post_passes(self):
+        post, layers_json = make_valid_post_fixture()
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+
+    def test_tampered_confirmed_month_value_is_rejected(self):
+        post, layers_json = make_valid_post_fixture()
+        post["layers"]["L3"]["net_cost_fit_yen"] += 1  # 確定月のL3を+1円改ざん
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+        self.assertEqual(ctx.exception.gate, "G15")
+
+    def test_final_stage_for_non_closable_month_is_rejected(self):
+        # buy_source=="sensor"(請求書未着)のままstage=="final"を名乗る新規post。
+        post, layers_json = make_valid_post_fixture(stage="preliminary")
+        post["stage"] = "final"
+        post["tariff_basis"] = "confirmed"
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+        self.assertEqual(ctx.exception.gate, "G15")
+
+
+class Gate16PostHistoryTest(unittest.TestCase):
+    def test_revision_not_bumped_when_body_changed_is_rejected(self):
+        old_post, _ = make_valid_post_fixture()
+        new_post = copy.deepcopy(old_post)
+        new_post["layers"]["L3"]["net_cost_fit_yen"] += 100  # 本体を変えたのにrevisionはそのまま
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({"posts/2026-10.json": new_post}, incoming, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+    def test_first_published_change_is_rejected(self):
+        old_post, _ = make_valid_post_fixture()
+        new_post = copy.deepcopy(old_post)
+        new_post["first_published"] = "2026-10-25"
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({"posts/2026-10.json": new_post}, incoming, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+    def test_deleted_post_is_rejected(self):
+        old_post, _ = make_valid_post_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_post_deleted(Path(tmp), post=old_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({}, incoming, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+    def test_allow_history_change_bypasses_all_checks(self):
+        old_post, _ = make_valid_post_fixture()
+        new_post = copy.deepcopy(old_post)
+        new_post["layers"]["L3"]["net_cost_fit_yen"] += 100
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            validate_metrics.gate16_post_history({"posts/2026-10.json": new_post}, incoming, allow_history_change=True)
+
+    def test_stage_regression_from_final_to_preliminary_is_rejected(self):
+        old_post, _ = make_valid_post_fixture(stage="final")
+        new_post, _ = make_valid_post_fixture(stage="preliminary")
+        new_post["first_published"] = old_post["first_published"]
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({"posts/2026-10.json": new_post}, incoming, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+    def test_frozen_old_month_identical_to_head_minus_1_passes(self):
+        # G15/G16の境界: 確定しない古い月でも、HEAD~1と本体が同一なら通る（凍結）。
+        post, _ = make_valid_post_fixture(stage="preliminary")
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=post, new_post=post)
+            validate_metrics.gate16_post_history({"posts/2026-10.json": post}, incoming, allow_history_change=False)
+            daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+            layers_json = {"months": [], "preliminary_months": []}  # もはやpreliminary_monthsにも無い(窓の外)
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming)
 
 
 if __name__ == "__main__":

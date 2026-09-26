@@ -14,7 +14,7 @@ pagination.pagerSize = 10
     # HUGO_ENVIRONMENT=production）でのみ Hugo 内蔵の google_analytics.html テンプレートが
     # gtag タグを出力する。空文字のままなら何も出力されない。
     # 出典: https://gohugo.io/templates/embedded/#google-analytics（取得日 2026-09-26）
-    ID = ""
+    ID = "G-RE986ETTDP"
 
 [privacy]
   [privacy.googleAnalytics]

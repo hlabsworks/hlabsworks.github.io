@@ -1006,19 +1006,36 @@ class BuildLayersPreliminaryMonthsTest(unittest.TestCase):
         profile_by_date.update(_full_profile_month("2026-09"))
         return tariff, daily, profile_by_date
 
-    def test_ended_unconfirmed_month_appears_in_preliminary_months_only(self):
+    def test_ended_unconfirmed_month_appears_in_preliminary_months(self):
         tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
         # 2026-09の請求期間終了(2026-09-01)より確実に後の日付。
         result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 10))
         month_keys = {m["billing_month"] for m in result["months"]}
         prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
         self.assertIn("2026-08", month_keys)
-        self.assertNotIn("2026-08", prelim_keys)
         self.assertNotIn("2026-09", month_keys)
         self.assertIn("2026-09", prelim_keys)
         prelim_record = next(m for m in result["preliminary_months"] if m["billing_month"] == "2026-09")
         self.assertTrue(prelim_record["tariff_provisional"])
         self.assertEqual(prelim_record["tariff_source_month"], "2026-08")
+
+    def test_month_already_in_months_but_not_closable_also_appears_in_preliminary(self):
+        # QA指摘2026-09-26: 単価は確定済みだがL3がまだセンサー値、のような「months[]には
+        # availableな状態で入っているがis_closable(monthly_report.py側)を満たさない」月も
+        # preliminary_months候補にする（確定条件はlayer_model.pyの責務ではないため）。
+        # ここではtariffを両月とも確定させ、official_buy/sell無し(=buy/sell_source=="sensor")
+        # のまま2026-08を「単価確定済みだがL3センサー値」の状態で速報候補にできることを見る。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+        )
+        daily = _full_month_daily("2026-08")
+        profile_by_date = _full_profile_month("2026-08")
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 10))
+        month_keys = {m["billing_month"] for m in result["months"]}
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-08", month_keys)
+        self.assertIn("2026-08", prelim_keys)  # 両方に入って良い(is_closable判定は上位層の責務)
 
     def test_month_still_in_progress_is_not_added_to_preliminary_months(self):
         tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
@@ -1039,6 +1056,17 @@ class BuildLayersPreliminaryMonthsTest(unittest.TestCase):
         self.assertNotIn("2026-09", prelim_keys)
         excluded_keys = {m["billing_month"] for m in result["excluded_months"]}
         self.assertIn("2026-09", excluded_keys)
+
+    def test_l3_only_available_month_is_not_added_to_preliminary_months(self):
+        # QA指摘2026-09-26「L3だけの月は入れない」: profileが無く(L0〜L2 unavailable)、
+        # L3だけがavailableな月(daily.jsonのみ揃っている)は速報の元にしない。
+        tariff = make_tariff()  # 2026-09は確定済みなのでL3はavailableになる
+        daily = _full_month_daily("2026-09")
+        result = lm.build_layers(tariff, daily, {}, {}, {}, today=date(2026, 9, 10))
+        month_keys = {m["billing_month"] for m in result["months"]}
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-09", month_keys)  # L3のみavailableでもmonths[]には入る(既存仕様)
+        self.assertNotIn("2026-09", prelim_keys)
 
 
 class BuildLayersTest(unittest.TestCase):

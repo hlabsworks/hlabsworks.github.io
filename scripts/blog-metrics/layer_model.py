@@ -97,6 +97,12 @@ DAY_BUCKETS = 24 * 60 // BUCKET_MINUTES  # 288
 MONTH_USABLE_FRACTION_THRESHOLD = 0.90
 MAX_EXPORT_WARN_W = 9400  # DDR §2.6: PCS合計9.9kW、9400W超で無音丸めせずstderr警告
 
+# 設計判断(2026-09-23/26「速報＋改訂」方式、QA指摘2026-09-26で正本を1箇所に統一):
+# 請求期間の終了からこの日数以上経てば、preliminary_months[]の候補にする
+# （monthly_report.pyの速報公開判定もこの値を使う。layer_model.pyがpreliminary_months
+# を計算する唯一の場所であり、monthly_report.pyはlayer_modelをimportしてこの値を使う）。
+PRELIMINARY_DELAY_DAYS = 2
+
 # 蓄電池パラメータ（出典 https://www.nichicon.co.jp/products/ess/essh2l1.html 取得 2026-09-05、
 # 実測較正2026-09-01で上書き。DDR §2.4）。
 BATTERY_CHARGE_KWH_PER_100SOC = 10.4  # 実測: SOC 23→100%充電積分 7.99kWh
@@ -1761,10 +1767,9 @@ def build_layers(
     excluded = []
     preliminary_months = []
     for billing_month in sorted(candidate_months):
-        if effective_publish_since is not None:
-            period_start, _period_end = bill_model.billing_period(billing_month, meter_read_day)
-            if period_start.isoformat() < effective_publish_since:
-                continue
+        period_start, period_end = bill_model.billing_period(billing_month, meter_read_day)
+        if effective_publish_since is not None and period_start.isoformat() < effective_publish_since:
+            continue
         record = build_month_layers(
             tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
             ecoflow_soc_by_date=ecoflow_soc_by_date,
@@ -1779,20 +1784,21 @@ def build_layers(
                 "billing_month": billing_month,
                 "layer_reasons": {key: layer.get("unavailable_reason") for key, layer in layers.items()},
             })
-            # 追補(2026-09-26「速報＋改訂」方式) A': 請求期間が終了済み(今日の前日以前に終わって
-            # いる)のに months[] に確定レコードとして入らない月は、暫定単価を許容して速報用の
-            # レコードを試算する（確定条件そのもの(is_closable、buy_source=="billed"等)は
-            # monthly_report.py側の責務であり、ここでは「そもそも計算できるか」だけを見る）。
-            _period_start, period_end = bill_model.billing_period(billing_month, meter_read_day)
-            if period_end < today_resolved - timedelta(days=1):
-                preliminary_record = build_month_layers(
-                    tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month,
-                    profile_by_date, ecoflow_soc_by_date=ecoflow_soc_by_date, allow_provisional_tariff=True,
-                )
-                if any(layer.get("available") for layer in preliminary_record["layers"].values()):
-                    preliminary_months.append(preliminary_record)
-                # else: usable日が閾値未満等でなお計算不能。理由は上のexcluded_monthsに既に
-                # 同じ形式で残っているため、ここでの追加ログは不要（追補A'）。
+
+        # 追補(2026-09-26「速報＋改訂」方式、QA指摘2026-09-26で修正): L0〜L2がavailable
+        # (usable日数が閾値以上)で請求期間が終了済みの月はpreliminary_months候補にする。
+        # months[]にavailableな状態で既に入っていても構わない（「単価は確定済みだが
+        # L3がまだセンサー値(buy_source=="sensor"等)」のような、確定条件(is_closable、
+        # monthly_report.py側の責務)を満たさない月もここでは候補にするため）。L3だけが
+        # availableな月(L0〜L2がunavailable)はpreliminaryにしない。
+        if period_end < today_resolved - timedelta(days=PRELIMINARY_DELAY_DAYS):
+            preliminary_record = build_month_layers(
+                tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month,
+                profile_by_date, ecoflow_soc_by_date=ecoflow_soc_by_date, allow_provisional_tariff=True,
+            )
+            prelim_layers = preliminary_record["layers"]
+            if all(prelim_layers[key].get("available") for key in ("L0", "L1", "L2")):
+                preliminary_months.append(preliminary_record)
 
     cumulative = _build_cumulative(months)
 

@@ -58,3 +58,12 @@
   まだ無いため `buy_source: "sensor"`（請求書未着）のまま。買電が未確定・売電だけ確定という
   現実の状態をそのまま表しており、確定条件(is_closable、buy_source=="billed"必須)を満たさず
   速報のままになる。
+- 月次確定の自動化（DDR実装手順S1）用の `inputs/official_buy.json`/`official_sell.json`/
+  `tariff_months.json` フィクスチャは、静的ファイルとして本ディレクトリには置かず
+  `test_validate_metrics.py`（`make_official_buy_fixture()`等）・
+  `test_import_official_inputs.py`・`tests/run-daily-test.sh`（`setup_handoff_dir()`）の
+  各テストファイル内で合成する。値はすべて `bill_model.compute_bill()`/`merge_tariff()` を
+  実際に呼んで手計算せずに算出し、実際の請求額・供給地点番号・顧客番号等の私有データは
+  一切含まない（既存の合成golden dayフィクスチャと同じ方針）。`run-daily-test.sh` の
+  handoff系シナリオ（21〜23）は `stage_inputs`（--auto-inputs-dir）の正常・不正・未設置の
+  3経路を検証する。

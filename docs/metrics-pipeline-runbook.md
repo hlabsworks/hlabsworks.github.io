@@ -82,6 +82,14 @@ Host エイリアス推奨）、`<controller>` は制御機(solarchgctl)の SSH 
     ```
     `/var/log/blog-metrics/run.log` に詳細ログが残る。
 
+**月次確定の自動化（任意、DDR実装手順S1）**: 上記の初回配備手順だけでは §6 の月次作業
+（Mac上での手動 import・`deploy-homelab.sh` 再配備）が引き続き必要。別プロセス（本リポジトリの
+対象外・private）が `/var/lib/energy-fetch/handoff/` に
+`official_buy.json`/`official_sell.json`/`tariff_months.json` を置くようになると、
+`run-daily.sh` の `stage_inputs` がそれを検査して自動的に `~/solar-metrics-data/inputs/` へ
+反映するようになる。このディレクトリ・別プロセス自体が未設置でも `run-daily.sh` の挙動は
+変わらない（`--auto-inputs-dir` の既定パスが存在しなければ何もしない）。詳細は §6 末尾参照。
+
 ## 2. 鍵の作成と authorized_keys
 
 ### 2-1. homelab -> solarchgctl（metrics-export.sh 実行用）
@@ -230,6 +238,11 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
   `posts/YYYY-MM.json` の変更を `git revert` して push する（`validate_metrics.py` の
   G16 に引っかかる場合は `--allow-history-change`／`workflow_dispatch` の
   `allow_history_change` を有効にして手動実行する）。
+- **月次確定の自動化（DDR実装手順S1）で反映された `inputs/*.json` を戻す**: data repo側で
+  `inputs/official_buy.json`/`inputs/official_sell.json`/`inputs/tariff_months.json` の
+  変更を `git revert` して push する（G19の突合が壊れる場合は `--allow-history-change` が
+  必要になることがある）。handoff側（`/var/lib/energy-fetch/handoff/`、private）の生成物が
+  誤っている場合は、そちらの停止・修正が根本対応になる（本リポジトリの対象外）。
 
 ## 6. 月次作業
 
@@ -270,3 +283,34 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
 フラグ（上記と同じ仕組み。`sudo -u <homelabの実行ユーザー名> touch /var/lib/blog-metrics/allow-history-once`）
 を該当デプロイの直前に1回だけ手動で置き、`--allow-history-change` を1回だけ適用すること
 （以後は `publish_since` が動かないため再発しない一度限りの移行措置）。
+
+### 月次確定の自動化（DDR実装手順S1、任意）
+
+料金体系の骨格（段階単価・賦課金の年度レンジ・売電単価・`meter_read_day`）は引き続き
+`scripts/blog-metrics/tariff.json`（本リポジトリ側、手動更新）が正になる。毎月観測する値
+（燃料費等調整単価・容量拠出金・賦課金の観測値）と `official_buy.json`/`official_sell.json`
+は `~/solar-metrics-data` の `inputs/` に置かれ、`run-daily.sh` の `stage_inputs` が
+反映する。反映経路は2つある:
+
+1. **自動（別プロセス、private、本リポジトリの対象外）**: `--auto-inputs-dir`
+   （既定 `/var/lib/energy-fetch/handoff`）に `official_buy.json`/`official_sell.json`/
+   `tariff_months.json` が置かれていれば、`run-daily.sh` が毎回 `validate_metrics.py
+   --check-inputs-dir`（G2/G3/G6/G7/G18/G19）で検査し、合格したファイルだけ
+   `~/solar-metrics-data/inputs/` へ反映する。不合格なら既存の `inputs/` を維持したまま
+   データのcommit・pushは続行し、run全体は失敗扱い（`run.log` に理由が残り、3暦日連続で
+   LINE通知の対象になる）。
+2. **手動（従来どおり、移行措置）**: 上記1のファイルが1つも無い状態が続く限り、Mac上で
+   `import_official_buy.py`/`import_official_sell.py` を実行して
+   `data/metrics/official_buy.json`/`official_sell.json` を更新し、
+   `scripts/blog-metrics/deploy-homelab.sh --service-user <homelabの実行ユーザー名>` で
+   `/opt/blog-metrics/inputs/` に反映する。`run-daily.sh` は `~/solar-metrics-data/inputs/`
+   に `official_buy.json`/`official_sell.json` がまだ無ければ、この bundle 同梱版を初期値
+   として1回だけコピーする（`tariff_months.json` に対応する手動運用は無いため、これは
+   `tariff.json` 自体の手動更新で代替する）。
+
+`tariff.json`（骨格）に新しい請求月の単価を直接追記する運用（`deploy-homelab.sh` による
+`allow-history-once` フラグ、上記参照）は変わらない。`bill_model.merge_tariff()` は
+`tariff.json` と `inputs/tariff_months.json` の両方に同じ請求月の値があり、かつ値が
+食い違う場合は `tariff_conflict` として扱う（`run-daily.sh` はその回だけ骨格の値のみで
+続行し、run全体を失敗扱いにする）。両方に登録する運用は避け、どちらか一方（通常は
+自動取り込み側）に一本化すること。

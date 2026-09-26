@@ -46,3 +46,15 @@
   再生成: `cd scripts/blog-metrics && python3 testdata/generate_layer_bill_fixtures.py`
   （決定的に同じ内容が出力される。差分が出た場合は layer_model.py/bill_model.py の出力
   スキーマが変わった証拠なので、`validate_metrics.py` の allowlist も追随させること）。
+- 設計判断（2026-09-23/26、「速報＋改訂」方式）: `generate_layer_bill_fixtures.py` は
+  2026-08-02〜2026-09-01（請求月2026-09、tariff.json では単価未確定）にも合成golden dayを
+  敷き詰め、`layers_fixture.json` の `preliminary_months[]` に1件（`tariff_provisional: true`、
+  `tariff_source_month: "2026-08"`）を作る。`test_monthly_report.py`/
+  `test_render_monthly_posts.py`/ダッシュボードの「速報」バッジ描画確認・
+  `validate_metrics.py` の G4(POST_KEYS収穫元とは別枠、LAYERS_KEYSにpreliminary_monthsを
+  含めるための実データ確認)に使う。この期間は本リポジトリ実物の
+  `data/metrics/official_sell.json`（2026-09分の検針値。既に届いている）を使うため
+  `sell_source: "official_meter"` になるが、`data/metrics/official_buy.json` に2026-09分は
+  まだ無いため `buy_source: "sensor"`（請求書未着）のまま。買電が未確定・売電だけ確定という
+  現実の状態をそのまま表しており、確定条件(is_closable、buy_source=="billed"必須)を満たさず
+  速報のままになる。

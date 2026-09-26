@@ -11,6 +11,10 @@ test_layer_model.py の GoldenDaySyntheticTest と同じ12アンカー点の線�
 全日usable(coverage=100%、"full")にして、L0〜L3すべてavailableな確定月を1つ作る
 （cumulative や uncertainty 等、正常系でしか出ないキーも含めるため）。
 
+加えて 2026-09（使用期間 2026-08-02〜2026-09-01、tariff.json では単価が未確定）も全日usableに
+し、layers.preliminary_months[] に1件入れる（設計判断2026-09-23/26「速報＋改訂」方式）。
+G4のキーallowlist収穫元と、ダッシュボードの「速報」バッジ描画確認の両方に使う。
+
 使い方:
   cd scripts/blog-metrics && python3 testdata/generate_layer_bill_fixtures.py
 
@@ -39,7 +43,11 @@ L1S_ANCHOR_SOC_PCT = 50.0  # 較正前の初期SOC（テスト用固定値、実
 BILLING_MONTH = "2026-08"
 START = date(2026, 7, 2)
 END = date(2026, 8, 1)
-TODAY_FOR_GENERATION = "2026-09-15"  # in_progress判定に使う基準日（テスト用に固定）
+# 2026-09（tariff.json未確定）: preliminary_months[]を1件作るための第2期間。
+PRELIMINARY_BILLING_MONTH = "2026-09"
+PRELIMINARY_START = date(2026, 8, 2)
+PRELIMINARY_END = date(2026, 9, 1)
+TODAY_FOR_GENERATION = "2026-09-15"  # in_progress判定・速報の確定判定に使う基準日（テスト用に固定）
 
 _PROFILE_FIELDS = (
     "bucket_at", "solar_w", "buy_w", "sell_w", "nichicon_pv_w",
@@ -52,11 +60,20 @@ def build_profile_and_ecoflow_daily() -> tuple[str, list[dict]]:
     layer_model.DEFAULT_DELTA_FLEET_PARAMS でreplayモードのDELTA群シミュレーションを通して
     eco_ac_in_w/buy_w/sell_wを上書きしたCSVを作る（DDR §5.8）。合成golden dayのままだと
     L1S replayゲートが不合格になりL1Sがunavailableのままとなって、G4のallowlistがL1S
-    availableなキーを一度も収穫できない（QA指摘#1と同型の見落とし経路）。戻り値は
-    (profile CSV文字列, ecoflow_daily.json相当の[{date, soc_start_pct}, ...])。"""
+    availableなキーを一度も収穫できない（QA指摘#1と同型の見落とし経路）。
+
+    PRELIMINARY_START〜PRELIMINARY_ENDは素の合成golden day(build_synthetic_golden_day_buckets)
+    をそのまま使う（L1S replay一致は要求しない。preliminary_months[]の例はL0〜L3が
+    availableであれば十分で、L1Sは他の確定月同様unavailableのままでよい）。
+
+    戻り値は (profile CSV文字列, ecoflow_daily.json相当の[{date, soc_start_pct}, ...])。"""
     buckets, soc_by_date = tlm.build_self_consistent_golden_period(
         START.isoformat(), END.isoformat(), lm.DEFAULT_DELTA_FLEET_PARAMS, L1S_ANCHOR_SOC_PCT
     )
+    d = PRELIMINARY_START
+    while d <= PRELIMINARY_END:
+        buckets = buckets + tlm.build_synthetic_golden_day_buckets(day=d.isoformat())
+        d += timedelta(days=1)
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=_PROFILE_FIELDS)
     writer.writeheader()
@@ -67,21 +84,23 @@ def build_profile_and_ecoflow_daily() -> tuple[str, list[dict]]:
 
 
 def build_daily_json(tmp_dir: Path) -> Path:
-    """L3(実測)源となる daily.json。値は集計値のみのプレースホルダ（実測値ではない）。"""
+    """L3(実測)源となる daily.json。値は集計値のみのプレースホルダ（実測値ではない）。
+    START〜ENDとPRELIMINARY_START〜PRELIMINARY_ENDの両期間を含める。"""
     rows = []
-    d = START
-    while d <= END:
-        rows.append({
-            "date": d.isoformat(),
-            "solar_kwh": 20.0,
-            "buy_kwh": 1.0,
-            "sell_kwh": 5.0,
-            "nichicon_charge_kwh": 3.0,
-            "ecoflow_charge_kwh": 1.0,
-            "self_consumption_shift_kwh": 4.0,
-            "saving_yen": 300,
-        })
-        d += timedelta(days=1)
+    for period_start, period_end in ((START, END), (PRELIMINARY_START, PRELIMINARY_END)):
+        d = period_start
+        while d <= period_end:
+            rows.append({
+                "date": d.isoformat(),
+                "solar_kwh": 20.0,
+                "buy_kwh": 1.0,
+                "sell_kwh": 5.0,
+                "nichicon_charge_kwh": 3.0,
+                "ecoflow_charge_kwh": 1.0,
+                "self_consumption_shift_kwh": 4.0,
+                "saving_yen": 300,
+            })
+            d += timedelta(days=1)
     path = tmp_dir / "daily.json"
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
@@ -144,7 +163,10 @@ def main() -> None:
     (TESTDATA_DIR / "meta_fixture.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     full_months = [m for m in layers["months"] if all(m["layers"][l]["available"] for l in ("L0", "L1", "L2", "L3"))]
-    print(f"wrote testdata/layers_fixture.json ({len(layers['months'])} months, {len(full_months)} available)")
+    print(
+        f"wrote testdata/layers_fixture.json ({len(layers['months'])} months, {len(full_months)} available, "
+        f"{len(layers.get('preliminary_months', []))} preliminary)"
+    )
     print(f"wrote testdata/bills_fixture.json ({len(bills['months'])} months)")
     print("wrote testdata/meta_fixture.json")
 

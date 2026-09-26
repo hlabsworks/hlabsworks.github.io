@@ -185,7 +185,7 @@ def _scc_sentence(
         if not weather_known:
             return f"今月は{_BATTERY_ONLY_ESTIMATE}より{loss}高くなりました。", True  # S6（above band）
         if sunny_majority:
-            return f"晴れの日が多かったにもかかわらず{loss}高くなりました。この集計だけでは原因を特定できません。", True  # S5
+            return f"晴れの日が多かったにもかかわらず、{_BATTERY_ONLY_ESTIMATE}より{loss}高くなりました。この集計だけでは原因を特定できません。", True  # S5
         return (
             f"今月は{_BATTERY_ONLY_ESTIMATE}より{loss}高くなりました。曇りや雨の日が多く余剰が少なかったため、"
             "ポータブル電源の充放電・変換ロスと待機電力が、振り分けで得られる効果を上回ったと考えられます。"
@@ -197,7 +197,27 @@ def _scc_sentence(
     )  # S3（天候不明でも同じ文、S6のband内側）
 
 
-_STANDBY_NOTE = "電気代の上ではマイナスですが、ポータブル電源に電気を蓄えておくことは停電時の備えにもなります（この価値は上の金額に含まれていません）。"
+_STANDBY_NOTE = "電気代の面では不利でしたが、ポータブル電源に電気を蓄えておくことは停電時の備えにもなります（この価値は上の金額に含まれていません）。"
+
+
+def _preliminary_intro_sentence(tariff_basis: str, l3_source: dict) -> str:
+    """QA再指摘2026-09-26 R4: 速報の導入文をtariff_basis/l3_sourceから組み立てる。単価が
+    既に確定していれば「前月の単価で仮計算」とは書かない。買電・売電のうち既に確定している
+    方は「届くのを待っている」対象に含めない（stage固定の決め打ちをやめる）。"""
+    sentence = "この記事は速報です。"
+    if tariff_basis == "provisional":
+        sentence += "電気料金は前月の単価で仮計算し、"
+    missing = []
+    if l3_source["buy"] != "billed":
+        missing.append(("買電", "請求書"))
+    if l3_source["sell"] != "official_meter":
+        missing.append(("売電", "検針値"))
+    if missing:
+        amounts = "・".join(label for label, _ in missing)
+        sentence += f"実際の{amounts}量はセンサーの計測値から求めています。"
+        sources = "と".join(src for _, src in missing)
+        sentence += f"{sources}が届いたら確定版に更新します。"
+    return sentence
 
 
 # --- 前面（front matter）---------------------------------------------------------------------
@@ -241,21 +261,19 @@ def render_markdown(snapshot: dict) -> str:
 
     weather_tag, sunny_share = _weather_class(weather)
     headline = _headline_sentence(l0["net_cost_fit_yen"], l3["net_cost_fit_yen"])
-    summary = headline + ("（速報）" if stage == "preliminary" else "")
+    # QA再指摘2026-09-26 スタイル: 「…の差です。（速報）」ではなく「…の差です（速報）。」の順にする。
+    summary = headline.rstrip("。") + "（速報）。" if stage == "preliminary" else headline
 
     parts = [_front_matter(snapshot, summary)]
 
     # 1. 導入
     intro = (
         f"{start_y}年{start_m}月{start_d}日〜{end_m}月{end_d}日"
-        f"（{usage_period['days']}日間、請求期間ベース）の実測データから自動生成したレポートです。"
+        f"（{usage_period['days']}日間、電気の請求期間に合わせています）の実測データから自動生成したレポートです。"
         f"数値は[実績ダッシュボード]({METHODOLOGY_URL})と同じデータに基づきます。"
     )
     if stage == "preliminary":
-        intro += (
-            "この記事は速報です。電気料金は前月の単価で仮計算し、実際の電気代はセンサーの計測値から求めています。"
-            "請求書と検針値が届いたら確定版に更新します。"
-        )
+        intro += _preliminary_intro_sentence(snapshot["tariff_basis"], l3_source)
     elif stage == "final" and revision > 1 and snapshot.get("transitioned_from_preliminary"):
         # QA指摘2026-09-26 item10: 速報からの確定遷移だけこの文言にする。
         intro += f"{_jp_date(snapshot['revised'])}に請求書と検針値の数値で確定版に更新しました（第{revision}版）。"
@@ -299,10 +317,11 @@ def render_markdown(snapshot: dict) -> str:
         parts.append("自家消費率は発電量のうち自宅で使った割合です。")
         parts.append("")
 
-    # 3. 電気代の4層比較（QA指摘2026-09-26 item11: 列見出しをダッシュボードの表記に揃える）
-    parts.append("## 電気代の4層比較")
+    # 3. 構成別の電気代（QA指摘2026-09-26 item11: 列見出しをダッシュボードの表記に揃える。
+    # QA再指摘2026-09-26 スタイル: 見出しを「電気代の4層比較」から改名）
+    parts.append("## 構成別の電気代")
     parts.append("")
-    parts.append("| 構成 | 実質電気代（売電16円） | 実質電気代（卒FIT 8円で計算） | 買電 kWh | 売電 kWh |")
+    parts.append("| 構成 | 実質電気代（売電16円で計算） | 実質電気代（売電8円で計算） | 買電 kWh | 売電 kWh |")
     parts.append("|---|---|---|---|---|")
     for key in ("L0", "L1", "L2"):
         row = layers[key]
@@ -358,11 +377,11 @@ def render_markdown(snapshot: dict) -> str:
         co2_kg = round(grid_reduction_kwh * factor["t_per_kwh"] * 1000, 1)
         parts.append(
             f"太陽光・蓄電池なしの場合と比べて、買電量が{_kwh(grid_reduction_kwh)}減り、"
-            f"CO2排出量を約{co2_kg:.1f}kg削減できたと推定されます"
+            f"CO2排出量を約{co2_kg:.1f}kg削減できたと試算されます"
             f"（[{factor['label']}]({factor['url']})で換算）。"
         )
         parts.append(
-            "※この推定には売電分は含みません。FIT電源の環境価値は証書として別に取引されるため、"
+            "※この試算には売電分は含みません。FIT電源の環境価値は証書として別に取引されるため、"
             "二重に数えないようにしています。"
         )
         # QA指摘2026-09-26 item11: SCC分が負のときは「わずかに増えています」ではなくkWh数値を示す。
@@ -372,7 +391,7 @@ def render_markdown(snapshot: dict) -> str:
             scc_co2_kg = round(scc_buy_kwh * factor["t_per_kwh"] * 1000, 1)
             parts.append(f"そのうちSolarChargeControllerの効果分は約{scc_co2_kg:.1f}kgです。")
         elif scc_buy_kwh < 0:
-            parts.append(f"ポータブル電源の分だけ買電が{_kwh(abs(scc_buy_kwh))}増えています。")
+            parts.append(f"家庭用蓄電池だけの試算と比べると、ポータブル電源を使った分だけ買電が{_kwh(abs(scc_buy_kwh))}多くなりました。")
     parts.append("")
 
     # 7. この数字について（QA指摘2026-09-26 item5: コード名(L0〜L3)を出さない）

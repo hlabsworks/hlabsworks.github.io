@@ -155,6 +155,73 @@ class RenderMarkdownTest(unittest.TestCase):
         md2 = rmp.render_markdown(copy.deepcopy(snap))
         self.assertEqual(md1, md2)
 
+    def test_preliminary_intro_omits_provisional_tariff_clause_when_confirmed(self):
+        # QA再指摘2026-09-26 R4: tariff_basis==confirmedなら「前月の単価で仮計算」と書かない。
+        snap = base_snapshot(stage="preliminary", tariff_basis="confirmed")
+        snap["l3_source"] = {"buy": "sensor", "sell": "official_meter"}
+        md = rmp.render_markdown(snap)
+        self.assertIn("この記事は速報です", md)
+        self.assertNotIn("前月の単価で仮計算", md)
+        self.assertIn("実際の買電量はセンサーの計測値から求めています", md)
+        self.assertIn("請求書が届いたら確定版に更新します", md)
+        self.assertNotIn("検針値が届いたら", md)
+
+    def test_preliminary_intro_mentions_only_missing_side_when_sell_already_confirmed(self):
+        # QA再指摘2026-09-26 R4: 売電が検針値で既に確定していれば「検針値が届いたら」と書かない。
+        snap = base_snapshot(stage="preliminary", tariff_basis="provisional")
+        snap["l3_source"] = {"buy": "sensor", "sell": "official_meter"}
+        md = rmp.render_markdown(snap)
+        self.assertIn("前月の単価で仮計算", md)
+        self.assertIn("実際の買電量はセンサーの計測値から求めています", md)
+        self.assertNotIn("実際の買電・売電量", md)
+        self.assertIn("請求書が届いたら確定版に更新します", md)
+        self.assertNotIn("と検針値が届いたら", md)
+
+    def test_summary_field_places_preliminary_marker_before_final_period(self):
+        # QA再指摘2026-09-26 スタイル: 「…の差です。（速報）」ではなく「…の差です（速報）。」。
+        snap = base_snapshot(stage="preliminary", tariff_basis="provisional")
+        snap["l3_source"] = {"buy": "sensor", "sell": "official_meter"}
+        md = rmp.render_markdown(snap)
+        self.assertIn('summary: "', md)
+        summary_line = next(line for line in md.split("\n") if line.startswith('summary: "'))
+        self.assertTrue(summary_line.endswith('（速報）。"'))
+        self.assertNotIn("差です。（速報）", md)
+
+    def test_s5_sentence_names_battery_only_estimate(self):
+        # QA再指摘2026-09-26 スタイル: S5にも「家庭用蓄電池だけの試算より」を補う。
+        snap = base_snapshot()
+        snap["layers"]["L3"]["net_cost_fit_yen"] = 5200  # > band_max(4000)
+        snap["weather"] = {"sunny_days": 20, "cloudy_days": 3, "overcast_days": 3, "unknown_days": 2}
+        md = rmp.render_markdown(snap)
+        self.assertIn("晴れの日が多かったにもかかわらず、家庭用蓄電池だけの試算より", md)
+
+    def test_standby_note_uses_disadvantage_wording(self):
+        # QA再指摘2026-09-26 スタイル: 「電気代の上ではマイナスですが」→「電気代の面では不利でしたが」。
+        snap = base_snapshot()
+        snap["layers"]["L3"]["net_cost_fit_yen"] = 5200  # > band_max(4000)
+        snap["weather"] = {"sunny_days": 5, "cloudy_days": 15, "overcast_days": 8, "unknown_days": 2}
+        md = rmp.render_markdown(snap)
+        self.assertIn("電気代の面では不利でしたが", md)
+        self.assertNotIn("電気代の上ではマイナスですが", md)
+
+    def test_intro_mentions_billing_period_alignment_wording(self):
+        # QA再指摘2026-09-26 スタイル: 「請求期間ベース」→「電気の請求期間に合わせています」。
+        md = rmp.render_markdown(base_snapshot())
+        self.assertIn("電気の請求期間に合わせています", md)
+        self.assertNotIn("請求期間ベース", md)
+
+    def test_co2_section_uses_estimate_wording_instead_of_presumption(self):
+        # QA再指摘2026-09-26 スタイル: 「推定されます」「この推定には」→「試算」に統一。
+        snap = base_snapshot()
+        snap["layers"]["L2"]["buy_kwh"] = 200.0
+        snap["layers"]["L3"]["buy_kwh"] = 160.0
+        md = rmp.render_markdown(snap)
+        co2_section = md.split("## CO2排出削減量")[1].split("## この数字について")[0]
+        self.assertIn("削減できたと試算されます", co2_section)
+        self.assertIn("※この試算には売電分は含みません", co2_section)
+        self.assertNotIn("推定されます", co2_section)
+        self.assertNotIn("この推定には", co2_section)
+
     def test_preliminary_stage_title_and_l3_label(self):
         snap = base_snapshot(stage="preliminary", tariff_basis="provisional")
         snap["l3_source"] = {"buy": "sensor", "sell": "official_meter"}
@@ -197,7 +264,7 @@ class RenderMarkdownTest(unittest.TestCase):
     def test_weather_sentence_only_appears_in_weather_section(self):
         # QA指摘2026-09-26 item11: 天候の文はまとめ節から削除し、天候と発電節のみにする。
         md = rmp.render_markdown(base_snapshot())
-        summary_section = md.split("## まとめ")[1].split("## 電気代の4層比較")[0]
+        summary_section = md.split("## まとめ")[1].split("## 構成別の電気代")[0]
         weather_section = md.split("## 天候と発電")[1].split("## CO2排出削減量")[0]
         self.assertNotIn("曇りや雨の日が多い月でした", summary_section)
         self.assertIn("曇りや雨の日が多い月でした", weather_section)
@@ -216,7 +283,7 @@ class RenderMarkdownTest(unittest.TestCase):
         snap["layers"]["L2"]["buy_kwh"] = 150.0
         snap["layers"]["L3"]["buy_kwh"] = 160.0
         md = rmp.render_markdown(snap)
-        self.assertIn("ポータブル電源の分だけ買電が10.0kWh増えています", md)
+        self.assertIn("家庭用蓄電池だけの試算と比べると、ポータブル電源を使った分だけ買電が10.0kWh多くなりました", md)
         self.assertNotIn("わずかに増えています", md)
 
     def test_co2_section_zero_scc_shows_no_sentence(self):
@@ -246,8 +313,8 @@ class RenderMarkdownTest(unittest.TestCase):
     def test_dashboard_terminology_is_used(self):
         # QA指摘2026-09-26 item11: ダッシュボードの表記(試算・売電16円・卒FIT8円で計算)に揃える。
         md = rmp.render_markdown(base_snapshot())
-        self.assertIn("実質電気代（売電16円）", md)
-        self.assertIn("実質電気代（卒FIT 8円で計算）", md)
+        self.assertIn("実質電気代（売電16円で計算）", md)
+        self.assertIn("実質電気代（売電8円で計算）", md)
         self.assertIn("太陽光・蓄電池なし（試算）", md)
 
 

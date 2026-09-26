@@ -38,6 +38,14 @@ hlabsworks.com に GA4・Cloudflare Web Analytics・Google AdSense を「ID を�
 
 ## 2. Cloudflare Web Analytics
 
+**現状（2026-09-26 確認）**: hlabsworks.com は Cloudflare のプロキシ経由で配信されており、
+Cloudflare ダッシュボードの Web Analytics で既に「Enable, excluding visitor data in the EU」
+（ビーコンをエッジで自動挿入、EU からの訪問者は除外）が有効になっている。**このため
+`params.cloudflareAnalytics.token` は空のままにする**（token を設定すると自動挿入分と
+二重にビーコンが入り、計測が重複する）。以下の手順は、将来プロキシを外す・自動挿入を
+「Enable with JS Snippet installation」に切り替える場合にだけ使う。
+
+
 1. Cloudflare ダッシュボード → 左メニュー「Analytics & Logs」→「Web Analytics」
 2. 「サイトを追加」で `hlabsworks.com` を追加する
 3. セットアップ方式の選択肢が出るが、コードで管理する方針のため **JS スニペット方式** を選ぶ

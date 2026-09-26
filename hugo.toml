@@ -43,6 +43,8 @@ pagination.pagerSize = 10
   [params.cloudflareAnalytics]
     # Cloudflare Web Analytics のビーコン token を設定すると、本番ビルドでのみ
     # extend_head.html から Cloudflare のビーコンスクリプトが出力される。空文字なら何も出力されない。
+    # 現在は Cloudflare 側の自動挿入（RUM: Enable, excluding EU）で計測しているため空のままにする
+    # （設定すると二重計測になる。docs/ads-analytics-runbook.md §2）。
     token = ""
 
 [menu]

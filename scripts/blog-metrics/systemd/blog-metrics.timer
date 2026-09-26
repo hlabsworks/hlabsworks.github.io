@@ -3,8 +3,10 @@ Description=blog-metrics: run-daily.sh を1日3回起動するタイマー
 
 [Timer]
 # JST 07:30 / 12:30 / 19:30（Pi のシステムタイムゾーンがJSTである前提。異なる場合は
-# タイムゾーン付きで指定するか、OnCalendar=*-*-* 22:30,03:30,10:30 UTC のようにUTC換算する）。
-OnCalendar=*-*-* 07:30,12:30,19:30
+# タイムゾーン付きで指定するか、OnCalendar=*-*-* 22,03,10:30:00 UTC のようにUTC換算する）。
+# systemd の calendar 仕様は「時:分:秒」の各欄にカンマ区切りの列挙を書く形式で、
+# 「07:30,12:30」のような時刻の列挙は Invalid argument になる（systemd-analyze calendar で検証済み）。
+OnCalendar=*-*-* 07,12,19:30:00
 # 1日3回のうち取りこぼしがあっても、次回起動時に積み残しとして実行する
 # （run-daily.sh 自身は当日分を再計算するだけで、取りこぼし回数分を多重実行はしない）。
 Persistent=true

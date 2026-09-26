@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections import Counter
 import re
 import statistics
 import subprocess
@@ -205,6 +206,8 @@ def _list_tracked_files(incoming: Path) -> list[str]:
             files.append(str(path.relative_to(incoming)))
     return sorted(files)
 
+
+G11_MIN_DAYS_FOR_MONTHLY_RATIO = 20  # 前月比±10倍チェックを適用する最小日数（両月とも）
 
 PREVIOUS_COMMIT_MAX_DEPTH = 10  # hugo.yml の _incoming checkout fetch-depth と揃える
 
@@ -461,10 +464,16 @@ def gate11_anomaly(daily: list[dict], monthly: list[dict], incoming: Path) -> No
             if median > 0 and solar is not None and solar > median * 3:
                 raise ValidationFailure("G11", f"data/metrics/daily.json: {new_row['date']} の solar_kwh が直近30日中央値の3倍を超えています ({solar} > {median}*3)")
 
+    # 前月比は両月に十分な日数（daily.json の行数 ≥ G11_MIN_DAYS_FOR_MONTHLY_RATIO）がある
+    # 場合だけ見る。publish_since 直後の月（例: 2026-08 は 8/29〜の3日分）は数値が小さく、
+    # 翌月との比率が容易に10倍を超えて誤検知するため（初回 homelab 実行 2026-09-26 で発生）。
+    days_per_month = Counter(row["date"][:7] for row in daily)
     if len(monthly) >= 2:
         last, prev = monthly[-1], monthly[-2]
         last_saving, prev_saving = last.get("saving_yen"), prev.get("saving_yen")
-        if last_saving is not None and prev_saving not in (None, 0):
+        enough_days = (days_per_month.get(last["month"], 0) >= G11_MIN_DAYS_FOR_MONTHLY_RATIO
+                       and days_per_month.get(prev["month"], 0) >= G11_MIN_DAYS_FOR_MONTHLY_RATIO)
+        if enough_days and last_saving is not None and prev_saving not in (None, 0):
             ratio = last_saving / prev_saving
             if ratio > 10 or ratio < (1 / 10):
                 raise ValidationFailure("G11", f"data/metrics/monthly.json: {last['month']} の saving_yen が前月比10倍を超えて変化しています ({prev_saving} -> {last_saving})")

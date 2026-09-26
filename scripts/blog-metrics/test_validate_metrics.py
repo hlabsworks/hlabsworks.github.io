@@ -592,17 +592,43 @@ class Gate10Test(unittest.TestCase):
             self.assertEqual(ctx.exception.gate, "G10")
 
 
+def _daily_rows_for_months(days_by_month: dict[str, int]) -> list[dict]:
+    """月ごとに指定日数の daily 行（1日から連続）を作る。G11 の前月比チェックの日数条件用。"""
+    base = make_daily_fixture()[0]
+    rows = []
+    for month, n in sorted(days_by_month.items()):
+        for i in range(n):
+            rows.append(dict(base, date=f"{month}-{i + 1:02d}"))
+    return rows
+
+
 class Gate11Test(unittest.TestCase):
+    _MONTHLY_SWING = [
+        {"month": "2026-08", "solar_kwh": 1.0, "buy_kwh": 0.0, "sell_kwh": 0.0, "nichicon_charge_kwh": None, "ecoflow_charge_kwh": None, "self_consumption_shift_kwh": None, "saving_yen": 100},
+        {"month": "2026-09", "solar_kwh": 1.0, "buy_kwh": 0.0, "sell_kwh": 0.0, "nichicon_charge_kwh": None, "ecoflow_charge_kwh": None, "self_consumption_shift_kwh": None, "saving_yen": 5000},
+    ]
+
     def test_monthly_saving_yen_swing_is_rejected(self):
-        monthly = [
-            {"month": "2026-08", "solar_kwh": 1.0, "buy_kwh": 0.0, "sell_kwh": 0.0, "nichicon_charge_kwh": None, "ecoflow_charge_kwh": None, "self_consumption_shift_kwh": None, "saving_yen": 100},
-            {"month": "2026-09", "solar_kwh": 1.0, "buy_kwh": 0.0, "sell_kwh": 0.0, "nichicon_charge_kwh": None, "ecoflow_charge_kwh": None, "self_consumption_shift_kwh": None, "saving_yen": 5000},
-        ]
+        daily = _daily_rows_for_months({"2026-08": 25, "2026-09": 25})
         with tempfile.TemporaryDirectory() as tmp:
-            incoming = write_incoming(Path(tmp), monthly=monthly)
+            incoming = write_incoming(Path(tmp), daily=daily, monthly=self._MONTHLY_SWING)
             with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
+                validate_metrics.gate11_anomaly(daily, self._MONTHLY_SWING, incoming)
             self.assertEqual(ctx.exception.gate, "G11")
+
+    def test_monthly_swing_is_ignored_when_previous_month_is_partial(self):
+        # 初回 homelab 実行(2026-09-26)の誤検知: publish_since=2026-08-29 で 8 月が 3 日分しか
+        # 無く、9 月との比率が 10 倍を超えた。日数が足りない月は前月比の対象にしない。
+        daily = _daily_rows_for_months({"2026-08": 3, "2026-09": 25})
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), daily=daily, monthly=self._MONTHLY_SWING)
+            validate_metrics.gate11_anomaly(daily, self._MONTHLY_SWING, incoming)
+
+    def test_monthly_swing_is_ignored_when_latest_month_is_short(self):
+        daily = _daily_rows_for_months({"2026-08": 25, "2026-09": 5})
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), daily=daily, monthly=self._MONTHLY_SWING)
+            validate_metrics.gate11_anomaly(daily, self._MONTHLY_SWING, incoming)
 
     def test_new_day_solar_spike_against_30day_median_is_rejected(self):
         old_daily = [

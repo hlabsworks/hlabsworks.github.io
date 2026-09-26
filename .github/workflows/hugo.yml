@@ -85,7 +85,7 @@ jobs:
       # main側のこのファイルにのみあり、G17(check_rendered)に失敗すれば非ゼロ終了して
       # ここでビルド・デプロイを止める。
       - name: Render monthly report posts
-        run: python3 scripts/blog-metrics/render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/auto
+        run: python3 scripts/blog-metrics/render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/monthly-report
       - name: Build with Hugo
         env:
           HUGO_ENVIRONMENT: production

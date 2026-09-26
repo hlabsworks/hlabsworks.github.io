@@ -8,7 +8,7 @@ Markdown を生成する。CIのビルド時（main側の信頼済みコード�
 （posts/*.json の値は validate_metrics.py のG14で日付・月・列挙値以外の文字列を全て拒否する）。
 
 使い方（.github/workflows/hugo.yml から呼ばれる）:
-  python3 render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/auto
+  python3 render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/monthly-report
 """
 from __future__ import annotations
 
@@ -19,9 +19,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import monthly_report  # noqa: E402  FIRST_REPORT_BILLING_MONTHの防波堤を強制するため(QA指摘2026-09-26 item3)
 import validate_metrics  # noqa: E402  G6 deny パターン・時間帯粒度チェックを再利用する（二重実装しない）
 
-POST_FILE_RE = re.compile(r"^(\d{4}-\d{2})\.json$")
+POST_FILE_RE = re.compile(r"^(\d{4}-\d{2})\.json\Z", re.ASCII)
 
 # main をコミットするだけで特定の請求月の記事を非公開にできる（DDR §C 停止スイッチ）。
 SUPPRESSED_BILLING_MONTHS: frozenset[str] = frozenset()
@@ -49,19 +50,23 @@ ALLOWED_LINK_TARGETS = {METHODOLOGY_URL, SOLAR_CHARGE_CONTROLLER_URL, CO2_FACTOR
     f["url"] for f in CO2_FACTORS
 }
 
+# QA指摘2026-09-26 item11: ダッシュボード(metrics-dashboard.js の LAYER_NAMES)の表記に揃える
+# （「推定」ではなく「試算」）。
 _FOUR_LAYER_LABELS_L0_L2 = {
-    "L0": "太陽光・蓄電池なし（推定）",
-    "L1": "太陽光のみ（推定）",
-    "L2": "太陽光＋家庭用蓄電池（推定）",
-}
-_L3_LABEL_BY_STAGE = {
-    "final": "＋SolarChargeController（実測・請求書と検針値）",
-    "preliminary": "＋SolarChargeController（実測・センサー値）",
+    "L0": "太陽光・蓄電池なし（試算）",
+    "L1": "太陽光のみ（試算）",
+    "L2": "太陽光＋家庭用蓄電池（試算）",
 }
 
 _LINK_RE = re.compile(r"\]\(([^)]*)\)")
 _FRONT_MATTER_KEY_RE = re.compile(r"^(\w+):")
 _EXPECTED_FRONT_MATTER_KEYS = {"title", "date", "lastmod", "draft", "tags", "summary"}
+
+
+class DuplicateReportMonthError(SystemExit):
+    """2つの異なるbilling_monthが同じreport_month(=出力ファイル名)を主張した場合に送出する
+    （QA指摘2026-09-26 item3。billing_month<->report_monthはbill_model.billing_period経由で
+    本来1対1のはずだが、validate_metrics.pyのG14を経由しない呼び出しに備えた多重防御）。"""
 
 
 def _co2_factor_for(billing_month: str) -> dict | None:
@@ -81,6 +86,12 @@ def _kwh(value: float) -> str:
     return f"{value:.1f}kWh"
 
 
+def _jp_date(iso_str: str) -> str:
+    """'2026-10-20' -> '2026年10月20日'（QA指摘2026-09-26 item10の日付書式）。"""
+    y, m, d = (int(x) for x in iso_str.split("-"))
+    return f"{y}年{m}月{d}日"
+
+
 def _pct_change(new: float | None, old: float | None) -> float | None:
     if new is None or old is None or old == 0:
         return None
@@ -94,6 +105,24 @@ def _comparison_sentence(label: str, pct: float | None) -> str | None:
         return f"{label}とほぼ同じ発電量でした。"
     direction = "多い" if pct > 0 else "少ない"
     return f"{label}より{round(abs(pct))}%{direction}発電量でした。"
+
+
+def _l3_source_label(l3_source: dict) -> str:
+    """QA指摘2026-09-26 item2: 表記はl3_source(buy/sell)から決める。売電だけ検針値が先に
+    届く月があるため、stageだけでは「請求書と検針値」と決め打てない。"""
+    buy_desc = "請求書" if l3_source["buy"] == "billed" else "センサー計測値"
+    sell_desc = "検針値" if l3_source["sell"] == "official_meter" else "センサー計測値"
+    if buy_desc == sell_desc:
+        return f"実測・{buy_desc}"
+    return f"実測・{buy_desc}と{sell_desc}"
+
+
+def _buy_row_label(l3_source: dict) -> str:
+    return "買電量（請求書）" if l3_source["buy"] == "billed" else "買電量（計測値）"
+
+
+def _sell_row_label(l3_source: dict) -> str:
+    return "売電量（検針値）" if l3_source["sell"] == "official_meter" else "売電量（計測値）"
 
 
 # --- W（天候）パターン ----------------------------------------------------------------------
@@ -121,13 +150,16 @@ _WEATHER_SENTENCES = {
 # --- H（まとめ）パターン ---------------------------------------------------------------------
 def _headline_sentence(l0_fit: int, l3_fit: int) -> str:
     saving = l0_fit - l3_fit
-    if l3_fit <= 0:
-        return f"売電収入が電気代を上回りました。太陽光・蓄電池なしの推定（{_yen(l0_fit)}）と比べて{_yen(saving)}の差です。"
-    return f"実質の電気代は{_yen(l3_fit)}でした。太陽光・蓄電池なしの推定（{_yen(l0_fit)}）と比べて{_yen(saving)}の差です。"
+    if l3_fit == 0:
+        # QA指摘2026-09-26 item11: ちょうど同額のときは「上回りました」は不自然。
+        return f"電気代と売電収入が同額でした。太陽光・蓄電池なしの試算（{_yen(l0_fit)}）と比べて{_yen(saving)}の差です。"
+    if l3_fit < 0:
+        return f"売電収入が電気代を上回りました。太陽光・蓄電池なしの試算（{_yen(l0_fit)}）と比べて{_yen(saving)}の差です。"
+    return f"実質の電気代は{_yen(l3_fit)}でした。太陽光・蓄電池なしの試算（{_yen(l0_fit)}）と比べて{_yen(saving)}の差です。"
 
 
 # --- S（SolarChargeControllerの効果）パターン -------------------------------------------------
-_BATTERY_ONLY_ESTIMATE = "家庭用蓄電池だけの推定"
+_BATTERY_ONLY_ESTIMATE = "家庭用蓄電池だけの試算"
 
 
 def _scc_sentence(
@@ -137,12 +169,12 @@ def _scc_sentence(
     符号の約束: scc = L2 − L3。正ならSCCが得をした月。晴れ多め/少なめの閾値は0.5
     （W1〜W3判定(0.6/0.3)とは別の、S判定専用の閾値。sunny_shareがNone(天候不明、W0)ならS6）。"""
     scc = l2_fit - l3_fit
-    band = f"（{band_min}〜{band_max}円）"
+    band = f"（{_yen(band_min)}〜{_yen(band_max)}）"
     weather_known = sunny_share is not None
     sunny_majority = weather_known and sunny_share >= 0.5
 
     if l3_fit < band_min:
-        text = f"{_BATTERY_ONLY_ESTIMATE}より{_yen(scc)}安くなりました。推定の誤差幅{band}を超える差です。"
+        text = f"{_BATTERY_ONLY_ESTIMATE}より{_yen(scc)}安くなりました。試算の誤差幅{band}を超える差です。"
         if not weather_known:
             return text, False  # S6（below band）
         if sunny_majority:
@@ -200,6 +232,7 @@ def render_markdown(snapshot: dict) -> str:
     _end_y, end_m, end_d = (int(x) for x in usage_period["end"].split("-"))
     layers = snapshot["layers"]
     l0, l1, l2, l3 = layers["L0"], layers["L1"], layers["L2"], layers["L3"]
+    l3_source = snapshot["l3_source"]
     band = snapshot["l2_band"]
     energy = snapshot["energy"]
     weather = snapshot["weather"]
@@ -220,22 +253,23 @@ def render_markdown(snapshot: dict) -> str:
     )
     if stage == "preliminary":
         intro += (
-            " この記事は速報です。電気料金は前月の単価で仮計算し、実際の電気代はセンサーの計測値から求めています。"
+            "この記事は速報です。電気料金は前月の単価で仮計算し、実際の電気代はセンサーの計測値から求めています。"
             "請求書と検針値が届いたら確定版に更新します。"
         )
+    elif stage == "final" and revision > 1 and snapshot.get("transitioned_from_preliminary"):
+        # QA指摘2026-09-26 item10: 速報からの確定遷移だけこの文言にする。
+        intro += f"{_jp_date(snapshot['revised'])}に請求書と検針値の数値で確定版に更新しました（第{revision}版）。"
     elif stage == "final" and revision > 1:
-        intro += f" {snapshot['revised']}に請求書と検針値の数値で確定版に更新しました（第{revision}版）。"
+        intro += f"{_jp_date(snapshot['revised'])}に数値を更新しました（第{revision}版）。"
     parts.append(intro)
     parts.append("")
 
-    # 2. まとめ
+    # 2. まとめ（QA指摘2026-09-26 item11: 天候の文は「天候と発電」節のみにする）
     parts.append("## まとめ")
     parts.append(headline)
-    if weather_tag != "W0":
-        parts.append(_WEATHER_SENTENCES[weather_tag])
     table_rows = [("発電量", energy["solar_kwh"], _kwh)]
-    table_rows.append(("買電量（請求書）", l3["buy_kwh"], _kwh))
-    table_rows.append(("売電量（検針値）", l3["sell_kwh"], _kwh))
+    table_rows.append((_buy_row_label(l3_source), l3["buy_kwh"], _kwh))
+    table_rows.append((_sell_row_label(l3_source), l3["sell_kwh"], _kwh))
     solar_kwh, sell_sensor = energy["solar_kwh"], energy["sell_kwh_sensor"]
     self_consumption_pct = None
     if solar_kwh is not None and sell_sensor is not None and solar_kwh > 0:
@@ -246,12 +280,12 @@ def render_markdown(snapshot: dict) -> str:
         table_rows.append(("自家消費率", self_consumption_pct, lambda v: f"{v:.1f}%"))
     table_rows.append(("家庭用蓄電池への充電量", energy["nichicon_charge_kwh"], _kwh))
     table_rows.append(("ポータブル電源への充電量", energy["ecoflow_charge_kwh"], _kwh))
-    table_rows.append(("買電の削減量（推定）", round(l0["buy_kwh"] - l3["buy_kwh"], 1), _kwh))
+    table_rows.append(("買電の削減量（試算）", round(l0["buy_kwh"] - l3["buy_kwh"], 1), _kwh))
     factor = _co2_factor_for(snapshot["billing_month"])
     grid_reduction_kwh = l0["buy_kwh"] - l3["buy_kwh"]
     if factor is not None and grid_reduction_kwh > 0:
         co2_kg = round(grid_reduction_kwh * factor["t_per_kwh"] * 1000, 1)
-        table_rows.append(("CO2排出削減量（推定）", co2_kg, lambda v: f"{v:.1f}kg"))
+        table_rows.append(("CO2排出削減量（試算）", co2_kg, lambda v: f"{v:.1f}kg"))
     parts.append("")
     parts.append("| 項目 | 値 |")
     parts.append("|---|---|")
@@ -260,15 +294,15 @@ def render_markdown(snapshot: dict) -> str:
             continue
         parts.append(f"| {label} | {fmt(value)} |")
     parts.append("")
-    parts.append(
-        "自家消費率は発電量からセンサー計測の売電量を差し引いた割合です。分子・分母ともセンサー値で揃えています。"
-    )
-    parts.append("")
+    if self_consumption_pct is not None:
+        # QA指摘2026-09-26 item11: 注記は行を出したときだけ。方法論的な記述（分子・分母等）は削る。
+        parts.append("自家消費率は発電量のうち自宅で使った割合です。")
+        parts.append("")
 
-    # 3. 電気代の4層比較
+    # 3. 電気代の4層比較（QA指摘2026-09-26 item11: 列見出しをダッシュボードの表記に揃える）
     parts.append("## 電気代の4層比較")
     parts.append("")
-    parts.append("| 構成 | 実質電気代（FIT 16円） | 実質電気代（卒FIT 8円想定） | 買電 kWh | 売電 kWh |")
+    parts.append("| 構成 | 実質電気代（売電16円） | 実質電気代（卒FIT 8円で計算） | 買電 kWh | 売電 kWh |")
     parts.append("|---|---|---|---|---|")
     for key in ("L0", "L1", "L2"):
         row = layers[key]
@@ -277,14 +311,14 @@ def render_markdown(snapshot: dict) -> str:
             f"{_yen(row['net_cost_post_fit_yen'])} | {_kwh(row['buy_kwh'])} | {_kwh(row['sell_kwh'])} |"
         )
     parts.append(
-        f"| {_L3_LABEL_BY_STAGE[stage]} | {_yen(l3['net_cost_fit_yen'])} | "
+        f"| ＋SolarChargeController（{_l3_source_label(l3_source)}） | {_yen(l3['net_cost_fit_yen'])} | "
         f"{_yen(l3['net_cost_post_fit_yen'])} | {_kwh(l3['buy_kwh'])} | {_kwh(l3['sell_kwh'])} |"
     )
     parts.append("")
     parts.append("実質電気代 = 電気料金 − 売電収入。マイナスは受け取りが上回ったことを示します。")
     if snapshot["estimation"] == "scaled":
         parts.append(
-            f"※推定3層は{snapshot['days_usable']}/{snapshot['days_total']}日分の実測から日数比で換算しています。"
+            f"※試算3層は{snapshot['days_usable']}/{snapshot['days_total']}日分の実測から日数比で換算しています。"
         )
     parts.append("")
 
@@ -331,20 +365,23 @@ def render_markdown(snapshot: dict) -> str:
             "※この推定には売電分は含みません。FIT電源の環境価値は証書として別に取引されるため、"
             "二重に数えないようにしています。"
         )
+        # QA指摘2026-09-26 item11: SCC分が負のときは「わずかに増えています」ではなくkWh数値を示す。
+        # ちょうど0のときは触れる材料が無いため文を出さない。
         scc_buy_kwh = round(l2["buy_kwh"] - l3["buy_kwh"], 1)
         if scc_buy_kwh > 0:
             scc_co2_kg = round(scc_buy_kwh * factor["t_per_kwh"] * 1000, 1)
             parts.append(f"そのうちSolarChargeControllerの効果分は約{scc_co2_kg:.1f}kgです。")
-        else:
-            parts.append("今月は買電がわずかに増えています。")
+        elif scc_buy_kwh < 0:
+            parts.append(f"ポータブル電源の分だけ買電が{_kwh(abs(scc_buy_kwh))}増えています。")
     parts.append("")
 
-    # 7. この数字について
+    # 7. この数字について（QA指摘2026-09-26 item5: コード名(L0〜L3)を出さない）
     parts.append("## この数字について")
-    parts.append("- 太陽光のみ／＋家庭用蓄電池（L0〜L2）は、5分ごとの実測データから組み立てたシミュレーションの推定値です。")
-    l3_source_desc = "請求書と検針値の実測値" if stage == "final" else "センサーによる計測値（請求書・検針値の反映前）"
-    parts.append(f"- ＋SolarChargeController（L3）は{l3_source_desc}です。")
-    parts.append("- 売電単価はFIT 16円、卒FIT後は8円と仮定しています。")
+    parts.append(
+        "- 太陽光・蓄電池なし／太陽光のみ／太陽光＋家庭用蓄電池の3つは、実測データから組み立てたシミュレーションの試算値です。"
+    )
+    parts.append("- ＋SolarChargeControllerは実測値です（速報はセンサー計測値、確定版は請求書と検針値）。")
+    parts.append("- 売電単価はFIT期間中16円、卒FIT後は8円と仮定しています。")
     parts.append("- 本記事は自動生成です。")
     parts.append("")
 
@@ -399,11 +436,14 @@ def check_rendered(markdown: str) -> list[str]:
 
 def run(posts_dir: Path, out_dir: Path) -> int:
     """posts_dir/*.json をレンダリングして out_dir に書き出す。戻り値: 書き出した件数。
-    check_rendered が1件でも違反を返したら例外を送出しビルドを止める（G17）。"""
+    check_rendered が1件でも違反を返したら例外を送出しビルドを止める（G17）。異なる
+    billing_monthが同じreport_month(出力ファイル名)を主張したらDuplicateReportMonthError
+    （QA指摘2026-09-26 item3）。"""
     if not posts_dir.exists():
         return 0
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
+    seen_report_months: dict[str, str] = {}
     for path in sorted(posts_dir.glob("*.json")):
         m = POST_FILE_RE.match(path.name)
         if not m:
@@ -411,14 +451,24 @@ def run(posts_dir: Path, out_dir: Path) -> int:
         billing_month = m.group(1)
         if billing_month in SUPPRESSED_BILLING_MONTHS:
             continue
+        if billing_month < monthly_report.FIRST_REPORT_BILLING_MONTH:
+            continue
         snapshot = json.loads(path.read_text(encoding="utf-8"))
+        report_month = snapshot["report_month"]
+        if report_month in seen_report_months:
+            raise DuplicateReportMonthError(
+                f"render_monthly_posts.py: report_month({report_month})がbilling_month "
+                f"{seen_report_months[report_month]!r} と {billing_month!r} の両方から主張されています"
+            )
+        seen_report_months[report_month] = billing_month
+
         markdown = render_markdown(snapshot)
         problems = check_rendered(markdown)
         if problems:
             raise SystemExit(
                 f"render_monthly_posts.py: {path.name}: 自己検査(G17)に失敗しました: {problems}"
             )
-        out_path = out_dir / f"monthly-report-{snapshot['report_month']}.md"
+        out_path = out_dir / f"{report_month}.md"
         out_path.write_text(markdown, encoding="utf-8")
         written += 1
     return written

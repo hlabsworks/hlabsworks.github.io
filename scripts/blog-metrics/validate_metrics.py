@@ -480,6 +480,7 @@ def gate8_date_health(daily: list[dict], incoming: Path, allow_history_change: b
 def gate9_history_immutability(
     daily: list[dict], incoming: Path, allow_history_change: bool,
     *, meter_read_day: int | None = None, newly_confirmed_months: set[str] | None = None,
+    confirmed_months: set[str] | None = None,
 ) -> None:
     """G9: today-20日以前の daily 行は前コミットと値まで一致すること。
     --allow-history-change でスキップ可能。
@@ -509,7 +510,12 @@ def gate9_history_immutability(
             continue
         if row == prev_row:
             continue
-        if meter_read_day is not None and bill_model.billing_month_for_date(d, meter_read_day) in newly_confirmed_months:
+        # 暫定単価は直近の確定月の単価なので、新しい月が確定した回にはその後ろの
+        # 暫定月（confirmed_months 外）の saving_yen も一斉に動く。許容は
+        # newly_confirmed_months が空でない回かつ saving_yen のみの変化に限る。
+        bm = bill_model.billing_month_for_date(d, meter_read_day) if meter_read_day is not None else None
+        provisional_shift = bool(newly_confirmed_months) and confirmed_months is not None and bm is not None and bm not in confirmed_months
+        if bm is not None and (bm in newly_confirmed_months or provisional_shift):
             changed_keys = {k for k in set(row) | set(prev_row) if row.get(k) != prev_row.get(k)}
             if changed_keys <= {"saving_yen"}:
                 continue
@@ -1388,6 +1394,7 @@ def validate(
     tariff_base: dict | None = None
     meter_read_day: int | None = None
     newly_confirmed_months: set[str] = set()
+    cur_confirmed_months: set[str] | None = None
     if post_files or input_files:
         tariff_path = resolved_input_paths["tariff_sha256"]
         tariff_base = json.loads(tariff_path.read_text(encoding="utf-8"))
@@ -1413,11 +1420,13 @@ def validate(
             # 扱いになり G9 の例外が過去全体に広がる（再 QA 指摘 R1）。
             prev_confirmed = bill_model.confirmed_tariff_months(tariff_base)
         newly_confirmed_months = cur_confirmed - prev_confirmed
+        cur_confirmed_months = cur_confirmed
 
     gate8_date_health(daily, incoming, allow_history_change)
     gate9_history_immutability(
         daily, incoming, allow_history_change,
         meter_read_day=meter_read_day, newly_confirmed_months=newly_confirmed_months,
+        confirmed_months=cur_confirmed_months,
     )
     gate10_physical_range(daily, monthly)
     gate11_anomaly(daily, monthly, incoming)

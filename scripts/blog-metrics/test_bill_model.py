@@ -273,6 +273,107 @@ class ReconciledMonthsTest(unittest.TestCase):
                     f"{billing_month}: computed={bill.total_yen} billed={billed_yen}",
                 )
 
+    def test_reconcile_bill_is_zero_for_all_13_months(self):
+        """reconcile_bill() が compute_bill().total_yen - billed_yen と同じ差額を返すこと
+        （本物の tariff.json・13か月分で diff=0 を確認する。突合ロジックの二重実装を避ける
+        ため compute_bill を呼ぶだけの薄い関数だが、実データでの契約を固定する）。"""
+        tariff = self._load_real_tariff()
+        for billing_month, usage_kwh, billed_yen in self.RECONCILED_MONTHS:
+            with self.subTest(billing_month=billing_month):
+                diff = bill_model.reconcile_bill(tariff, billing_month, usage_kwh, billed_yen)
+                self.assertEqual(diff, 0)
+
+    def test_reconcile_bill_returns_nonzero_diff_on_mismatch(self):
+        tariff = self._load_real_tariff()
+        diff = bill_model.reconcile_bill(tariff, "2026-08", 83.0, 3661 + 500)
+        self.assertEqual(diff, -500)
+
+
+class MergeTariffTest(unittest.TestCase):
+    def test_overlay_none_returns_copy_of_base(self):
+        base = make_tariff()
+        merged = bill_model.merge_tariff(base, None)
+        self.assertEqual(merged, base)
+        self.assertIsNot(merged, base)
+
+    def test_overlay_adds_month_missing_from_base(self):
+        base = make_tariff()
+        overlay = {
+            "fuel_cost_adjustment_yen_per_kwh": {"2026-09": 9.12},
+            "capacity_contribution_yen_per_month": {"2026-09": 213},
+        }
+        merged = bill_model.merge_tariff(base, overlay)
+        self.assertEqual(merged["fuel_cost_adjustment_yen_per_kwh"]["2026-09"], 9.12)
+        self.assertEqual(merged["capacity_contribution_yen_per_month"]["2026-09"], 213)
+        # base 側の既存月は変わらない
+        self.assertEqual(merged["fuel_cost_adjustment_yen_per_kwh"]["2026-08"], -3.50)
+        # base 自体は変更されない
+        self.assertNotIn("2026-09", base["fuel_cost_adjustment_yen_per_kwh"])
+
+    def test_overlay_matching_existing_month_is_accepted(self):
+        base = make_tariff()
+        overlay = {"fuel_cost_adjustment_yen_per_kwh": {"2026-08": -3.50}}
+        merged = bill_model.merge_tariff(base, overlay)
+        self.assertEqual(merged["fuel_cost_adjustment_yen_per_kwh"]["2026-08"], -3.50)
+
+    def test_overlay_conflicting_month_raises_value_error(self):
+        base = make_tariff()
+        overlay = {"fuel_cost_adjustment_yen_per_kwh": {"2026-08": 999.0}}
+        with self.assertRaises(ValueError) as ctx:
+            bill_model.merge_tariff(base, overlay)
+        self.assertIn("tariff_conflict", str(ctx.exception))
+
+    def test_overlay_capacity_conflict_raises_value_error(self):
+        base = make_tariff()
+        overlay = {"capacity_contribution_yen_per_month": {"2026-08": 1}}
+        with self.assertRaises(ValueError):
+            bill_model.merge_tariff(base, overlay)
+
+    def test_overlay_levy_adds_uncovered_month(self):
+        base = make_tariff()
+        overlay = {"renewable_levy_yen_per_kwh_observed": {"2027-05..2027-05": 4.5}}
+        merged = bill_model.merge_tariff(base, overlay)
+        self.assertEqual(merged["renewable_levy_yen_per_kwh"]["2027-05..2027-05"], 4.5)
+        # base の既存レンジはそのまま残る
+        self.assertEqual(merged["renewable_levy_yen_per_kwh"]["2026-05..2027-04"], 4.18)
+
+    def test_overlay_levy_matching_covered_month_is_accepted(self):
+        base = make_tariff()
+        overlay = {"renewable_levy_yen_per_kwh_observed": {"2026-08..2026-08": 4.18}}
+        merged = bill_model.merge_tariff(base, overlay)
+        # 既存の年度レンジのみが残り、単月レンジは追加されない
+        self.assertNotIn("2026-08..2026-08", merged["renewable_levy_yen_per_kwh"])
+
+    def test_overlay_levy_conflicting_covered_month_raises_value_error(self):
+        base = make_tariff()
+        overlay = {"renewable_levy_yen_per_kwh_observed": {"2026-08..2026-08": 1.0}}
+        with self.assertRaises(ValueError) as ctx:
+            bill_model.merge_tariff(base, overlay)
+        self.assertIn("tariff_conflict", str(ctx.exception))
+
+
+class ConfirmedTariffMonthsTest(unittest.TestCase):
+    def test_returns_months_with_both_fuel_and_capacity(self):
+        tariff = make_tariff()
+        # make_tariff(): fuel has 2026-07, 2026-08; capacity has only 2026-08
+        self.assertEqual(bill_model.confirmed_tariff_months(tariff), {"2026-08"})
+
+    def test_empty_when_no_overlap(self):
+        tariff = make_tariff(
+            fuel_cost_adjustment_yen_per_kwh={"2026-07": 8.69},
+            capacity_contribution_yen_per_month={"2026-08": 213},
+        )
+        self.assertEqual(bill_model.confirmed_tariff_months(tariff), set())
+
+    def test_merge_then_confirmed_reflects_newly_added_month(self):
+        base = make_tariff()
+        overlay = {
+            "fuel_cost_adjustment_yen_per_kwh": {"2026-09": 9.12},
+            "capacity_contribution_yen_per_month": {"2026-09": 213},
+        }
+        merged = bill_model.merge_tariff(base, overlay)
+        self.assertEqual(bill_model.confirmed_tariff_months(merged), {"2026-08", "2026-09"})
+
 
 class BuildMonthRecordTest(unittest.TestCase):
     def _daily_row(self, d: str, buy=1.0, solar=10.0, sell=5.0, consumption=6.0) -> dict:

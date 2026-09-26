@@ -222,6 +222,14 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
 - **鍵を失効させる**: 漏洩・誤用が疑われる場合、solarchgctl の
   `~/.ssh/authorized_keys` から該当行（§2-1）を1行削除する。GitHub側は
   Settings → Deploy keys から該当鍵を削除する（§2-2）。
+- **月次レポート記事を止める**（設計判断2026-09-23/26「速報＋改訂」方式）:
+  `scripts/blog-metrics/render_monthly_posts.py` の `SUPPRESSED_BILLING_MONTHS` に
+  対象の請求月("YYYY-MM")を追加して main にコミットするだけでよい（homelab側の再配備は
+  不要。次回のCIビルドから該当月の記事が生成されなくなる）。
+- **月次レポートの改版を取り消す**: data repo（`solar-metrics-data`）側で該当の
+  `posts/YYYY-MM.json` の変更を `git revert` して push する（`validate_metrics.py` の
+  G16 に引っかかる場合は `--allow-history-change`／`workflow_dispatch` の
+  `allow_history_change` を有効にして手動実行する）。
 
 ## 6. 月次作業
 
@@ -231,6 +239,21 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
 `scripts/blog-metrics/deploy-homelab.sh --service-user <homelabの実行ユーザー名>` を
 再実行して homelab の `/opt/blog-metrics/inputs/` に反映する（aggregate.sh はこれらを
 再生成せず、bundle に同梱されたものをそのまま使うため、再配備しない限り古いまま）。
+
+**この月次作業が月締めレポート記事公開のトリガになる**（設計判断2026-09-23/26「速報＋改訂」
+方式）: 請求書・検針値を取り込んで単価を確定すると、`monthly_report.py` の確定条件
+(`is_closable`: L0〜L3が available、L3の買電が請求書実額(`buy_source=="billed"`)、
+売電が検針値(`sell_source=="official_meter"`)、L2の不確かさ帯がある、請求月が
+`FIRST_REPORT_BILLING_MONTH`以降)を満たした月から、次回の `run-daily.sh` 実行で
+`posts/YYYY-MM.json` が確定版(`stage: final`)として作成・改版される。確定前に請求期間が
+終了済みの月は、暫定単価による速報(`stage: preliminary`)が先に一度だけ公開される場合がある
+（速報は初回公開後、確定するまで数値を更新しない）。記事の文章はすべて main 側の
+`render_monthly_posts.py` が生成するため、homelab を再配備しても記事の文言は変わらない。
+
+`monthly_report.py` を変更したら、main へのマージ直後に
+`scripts/blog-metrics/deploy-homelab.sh` を実行して homelab の bundle に反映すること
+（`run-daily.sh` は bundle 内の `monthly_report.py` を呼ぶため、bundle と main がずれると
+`validate_metrics.py` の G15 が失敗し、サイト全体のデプロイが止まる）。
 
 `tariff.json` に新しい請求月の単価を追加してから配備する場合も同じコマンドでよい。
 `deploy-homelab.sh` が配備前後で `tariff.json` のハッシュを比較し、変更を検出したときだけ

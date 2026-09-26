@@ -438,7 +438,9 @@ class Gate6Test(unittest.TestCase):
         # オーナー決定2026-09-23: 居住地域の推定材料になる小売電気事業者名・送配電会社名・
         # プラン名は公開データに一切含めない。混入を検知するdenyパターンの回帰テスト。
         for phrase in ("東京電力パワーグリッドの実績", "TEPCOの公式メーター", "tepcoのAPI",
-                       "Japan電力の請求明細", "japaden.jpを参照", "くらしプランSの単価"):
+                       "Japan電力の請求明細", "japaden.jpを参照", "くらしプランSの単価",
+                       "関西電力送配電のメーター", "九州電力の従量電灯B", "楽天でんきの請求",
+                       "オクトパスエナジーのプラン", "はぴeタイムRの単価"):
             meta = _load_real("data/metrics/meta.json")
             meta["buy_sell_price_source"] = phrase
             with tempfile.TemporaryDirectory() as tmp:

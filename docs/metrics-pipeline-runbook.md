@@ -53,18 +53,27 @@ Host エイリアス推奨）、`<controller>` は制御機(solarchgctl)の SSH 
 9. **負のテスト N1（deploy key のスコープ確認）を実施する**（§4。main マージ前に行う
    理由: N1 は solar-metrics-data 側の鍵設定だけで完結し、このリポジトリの状態に
    依存しないため、早い段階で鍵の設定ミスに気づける）。
-10. **このリポジトリの feat ブランチを main にマージする**
+10. **solar-metrics-data に初回データを投入する**（Mac から 1 回だけ。`hugo.yml` は
+    `_incoming/data/metrics/*.json` と `pipeline.json` が無いと G1 で失敗し Pages が
+    更新されないため、homelab の timer を有効化する前に手動で最初のデータを置く）:
+    このリポジトリで確認済みの `data/metrics/{daily,monthly,meta,bills,layers}.json` を
+    データ用リポジトリの `data/metrics/` にコピーし、`pipeline.json`（`source: "mac-seed"`、
+    `bundle_rev` はこのリポジトリの HEAD、`inputs.*_sha256` は `scripts/blog-metrics/tariff.json`
+    と `data/metrics/official_*.json` の sha256）を書いて commit・push する。
+    `official_buy.json` / `official_sell.json` は main 側の入力なので置かない（G1 で拒否される）。
+    push 前に `validate_metrics.py --incoming <データ用clone> --repo .` で全ゲート通過を確認する。
+11. **このリポジトリの feat ブランチを main にマージする**
     （`.github/workflows/hugo.yml` の `_incoming` checkout・`validate_metrics.py` 検証
     ステップは main にマージされて初めて有効になる）。
-11. **負のテスト N2（壊れたJSONでPagesが更新されないこと）を実施する**（§4。main
+12. **負のテスト N2（壊れたJSONでPagesが更新されないこと）を実施する**（§4。main
     マージ後でないと `hugo.yml` 側の検証ステップ自体が存在せず確認できないため、
     ここで行う。timer 有効化前に確認しておく）。
-12. **systemd unit をインストールし、timer を有効化する（オーナーが実行）**:
+13. **systemd unit をインストールし、timer を有効化する（オーナーが実行）**:
     ```sh
     scripts/blog-metrics/deploy-homelab.sh --service-user <homelabの実行ユーザー名> --install-units
     ssh <homelab> 'sudo systemctl enable --now blog-metrics.timer'
     ```
-13. **初回実行を手動で確認する**:
+14. **初回実行を手動で確認する**:
     ```sh
     ssh <homelab> 'sudo systemctl start blog-metrics.service && sleep 5 && sudo systemctl status blog-metrics.service --no-pager'
     ```

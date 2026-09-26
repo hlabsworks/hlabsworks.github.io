@@ -885,7 +885,7 @@ assert_eq "21 staged tariff_months content" "$STAGED_FUEL" "5.0"
 assert_contains "21 log mentions success" "$(cat "$LOG_FILE" 2>/dev/null)" "検査に合格したため clone/inputs へ反映しました"
 teardown
 
-echo "# 22. handoff不正: clone/inputsは変更されず、run全体は失敗(exit1)扱いになる"
+echo "# 22. handoff不正: clone/inputsは変更されず、データのcommitは続行(+1)、run全体は失敗(exit1)扱いになる"
 setup
 HANDOFF="$T/handoff"
 setup_handoff_dir "$HANDOFF"
@@ -900,6 +900,9 @@ json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2, sort_keys=True)
 # 1回目: 正常なhandoffなしでcommitを作り、clone/inputsに何も無い状態を確定させる
 run_daily_success_args >/dev/null 2>&1
 BEFORE=$(origin_log_count)
+# QA指摘L5: データに変更が無いと「変更なし」でcommit自体がskipされ、+1を検証できない。
+# scenario 8と同じ要領で新しい日を1件追加し「データに変更あり」を作る(G9は新規日には適用されない)。
+export STUB_DAILY_JSON='[{"date":"2026-09-01","solar_kwh":20.0,"buy_kwh":0.0,"sell_kwh":5.0,"nichicon_charge_kwh":1.5,"ecoflow_charge_kwh":null,"status":"COMPLETE"},{"date":"2026-09-02","solar_kwh":18.0,"buy_kwh":0.5,"sell_kwh":4.0,"nichicon_charge_kwh":1.0,"ecoflow_charge_kwh":null,"status":"COMPLETE"}]'
 bash "$RUN_DAILY" \
   --blog-metrics-dir "$BUNDLE" --clone-dir "$CLONE" --lock-file "$LOCK_FILE" \
   --state-dir "$STATE_DIR" --log-file "$LOG_FILE" --ssh-host "fakehost" \
@@ -907,6 +910,8 @@ bash "$RUN_DAILY" \
   --auto-inputs-dir "$HANDOFF" >/dev/null 2>&1
 RC=$?
 assert_eq "22 exit" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "22 data commit still happened" "$AFTER" "$((BEFORE + 1))"
 [ -f "$CLONE/inputs/tariff_months.json" ] && fail "22 clone/inputs/tariff_months.json should not be created" || ok
 assert_contains "22 log mentions failure" "$(cat "$LOG_FILE" 2>/dev/null)" "検査に失敗したため clone/inputs を維持します"
 teardown
@@ -925,6 +930,50 @@ AFTER=$(origin_log_count)
 assert_eq "23 commit count +1" "$AFTER" "$((BEFORE + 1))"
 if [ -f "$CLONE/inputs/official_buy.json" ]; then ok; else fail "23 clone/inputs/official_buy.json not created via migration"; fi
 [ -f "$CLONE/inputs/tariff_months.json" ] && fail "23 tariff_months.json should not be created without handoff" || ok
+teardown
+
+echo "# 24. tariff_conflict: baseと衝突する月をtariff_months.jsonから自動除去し、除去後もcommit/pushされる"
+setup
+# 1回目: 通常どおり実行してclone/inputsを用意する(移行措置でofficial_*.jsonが入る)
+run_daily_success_args >/dev/null 2>&1
+# 衝突対象月は daily.json に登場する日(2026-09-01/02、billing_month="2026-09"/"2026-10")とも
+# 実tariff.json確定済み月(〜2026-08)とも重ならない将来月(2027-02)を使う。既存の確定済み日の
+# saving_yenやG19(請求突合)に副作用を与えないため。
+# clone/inputs/tariff_months.jsonを手動で用意する(2027-02。build_effective_tariffは
+# validate_metrics.pyのG18/G19を経由せず直接bill_model.merge_tariff/tariff_conflictsを
+# 呼ぶだけなので、ここでは未検証のまま置いてよい)。
+python3 -c "
+import json
+d = {
+    'schema_version': 1,
+    'generated_at': '2026-09-01 00:00:00',
+    'fuel_cost_adjustment_yen_per_kwh': {'2027-02': 5.0},
+    'capacity_contribution_yen_per_month': {'2027-02': 200},
+    'renewable_levy_yen_per_kwh_observed': {},
+    'excluded_months': {},
+}
+json.dump(d, open('$CLONE/inputs/tariff_months.json', 'w'), ensure_ascii=False, indent=2, sort_keys=True)
+"
+# BUNDLEのtariff.json(base)に、異なる値で2027-02を直接追加する（手動編集を模す→衝突を作る）
+python3 -c "
+import json
+p = '$BUNDLE/inputs/tariff.json'
+d = json.load(open(p))
+d['fuel_cost_adjustment_yen_per_kwh']['2027-02'] = 999.0
+d['capacity_contribution_yen_per_month']['2027-02'] = 1
+json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2)
+"
+BEFORE=$(origin_log_count)
+run_daily_success_args >/dev/null 2>&1
+RC=$?
+assert_eq "24 exit" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "24 commit count +1 despite conflict" "$AFTER" "$((BEFORE + 1))"
+STAGED_FUEL_AFTER=$(python3 -c "import json; print(json.load(open('$CLONE/inputs/tariff_months.json'))['fuel_cost_adjustment_yen_per_kwh'].get('2027-02'))")
+assert_eq "24 conflicting month removed from tariff_months.json" "$STAGED_FUEL_AFTER" "None"
+STAGED_EXCLUDED_REASON=$(python3 -c "import json; print(json.load(open('$CLONE/inputs/tariff_months.json'))['excluded_months'].get('2027-02'))")
+assert_eq "24 conflicting month recorded as tariff_conflict" "$STAGED_EXCLUDED_REASON" "tariff_conflict"
+assert_contains "24 log mentions tariff_conflict removal" "$(cat "$LOG_FILE" 2>/dev/null)" "tariff_conflict"
 teardown
 
 echo "passed=$PASSES failed=$FAILS"

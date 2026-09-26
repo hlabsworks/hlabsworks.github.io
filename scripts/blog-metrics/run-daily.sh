@@ -29,8 +29,13 @@
 #   --auto-inputs-dir DIR    月次確定の自動化（DDR実装手順S1）。energy-fetch（別プロセス、
 #                            本スクリプトの対象外）が置く official_buy.json/official_sell.json/
 #                            tariff_months.json のhandoffディレクトリ（既定:
-#                            /var/lib/energy-fetch/handoff）。存在しない・中身が無ければ
-#                            何もしない（handoffが無ければ挙動は従来と同一）。
+#                            /var/lib/energy-fetch/handoff）。存在しない・中身が無くても
+#                            stage_inputsのhandoff検査自体は何もしないが、QA指摘F4:
+#                            clone/inputsにofficial_buy.json/official_sell.jsonが
+#                            無ければbundle同梱値を初期コピーする移行措置は独立して動く
+#                            （初回実行時、データ用リポジトリに inputs/ が新規追加される。
+#                            事前にmainがこのバージョンのvalidate_metrics.pyをマージ済み
+#                            であること。詳細はdocs/metrics-pipeline-runbook.md §1/§6）。
 #   -h, --help                このヘルプを表示
 #
 # 環境変数:
@@ -285,9 +290,14 @@ stage_inputs() {
 build_effective_tariff() {
     # $1 = 出力先パス。base=${INPUTS_DIR}/tariff.json（bundle同梱、料金体系の骨格）に
     # overlay=${CLONE_DIR}/inputs/tariff_months.json（無ければNone）を
-    # bill_model.merge_tariff() で重ね合わせる。overlayがbaseと矛盾(tariff_conflict)する
-    # 場合はbaseのみを書き出し非0を返す（呼び出し元はbaseのまま処理を続行しつつ
-    # run_onceの最後で1を返す判断に使う）。
+    # bill_model.merge_tariff() で重ね合わせる。
+    #
+    # QA指摘F3(b): overlayがbaseと矛盾(tariff_conflict)する月がある場合、その月を
+    # bill_model.tariff_conflicts() で特定し、fuel/capacity/levyのいずれかが衝突した月は
+    # ${CLONE_DIR}/inputs/tariff_months.json 自体から丸ごと除去して書き戻す
+    # （excluded_months[month]="tariff_conflict"を記録）。その上で除去後のoverlayで
+    # 実効tariffを作る。衝突を検出した回は警告をログに出し非0を返す（呼び出し元は
+    # データのcommit・pushは止めず、run_onceの最後で1を返す判断に使う）。
     local out_path="$1"
     python3 - "${BLOG_METRICS_DIR}" "${INPUTS_DIR}/tariff.json" "${CLONE_DIR}/inputs/tariff_months.json" "${out_path}" <<'PY'
 import sys, json
@@ -295,17 +305,51 @@ from pathlib import Path
 
 blog_metrics_dir, base_path, overlay_path, out_path = sys.argv[1:5]
 sys.path.insert(0, blog_metrics_dir)
-import bill_model  # noqa: E402  merge_tariffを二重実装しない
+import bill_model  # noqa: E402  merge_tariff/tariff_conflictsを二重実装しない
 
 base = json.loads(Path(base_path).read_text(encoding="utf-8"))
 overlay_file = Path(overlay_path)
 overlay = json.loads(overlay_file.read_text(encoding="utf-8")) if overlay_file.exists() else None
 
-conflict = False
+conflicts = bill_model.tariff_conflicts(base, overlay)
+conflict = bool(conflicts)
+
+if conflict:
+    conflicting_months = set()
+    for field, key in conflicts:
+        month = key.split("..")[0] if field == "renewable_levy_yen_per_kwh_observed" else key
+        conflicting_months.add(month)
+
+    cleaned = dict(overlay)
+    cleaned["fuel_cost_adjustment_yen_per_kwh"] = {
+        m: v for m, v in overlay.get("fuel_cost_adjustment_yen_per_kwh", {}).items() if m not in conflicting_months
+    }
+    cleaned["capacity_contribution_yen_per_month"] = {
+        m: v for m, v in overlay.get("capacity_contribution_yen_per_month", {}).items() if m not in conflicting_months
+    }
+    cleaned["renewable_levy_yen_per_kwh_observed"] = {
+        rng: v for rng, v in overlay.get("renewable_levy_yen_per_kwh_observed", {}).items()
+        if rng.split("..")[0] not in conflicting_months
+    }
+    cleaned_excluded = dict(overlay.get("excluded_months", {}))
+    for m in conflicting_months:
+        cleaned_excluded[m] = "tariff_conflict"
+    cleaned["excluded_months"] = cleaned_excluded
+
+    Path(overlay_path).write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(
+        f"build_effective_tariff: tariff_conflict を検出したため、以下の月を "
+        f"{overlay_path} から除去しました: {sorted(conflicting_months)} (詳細: {conflicts})",
+        file=sys.stderr,
+    )
+    overlay = cleaned
+
 try:
     effective = bill_model.merge_tariff(base, overlay)
 except ValueError as exc:
-    print(f"build_effective_tariff: {exc}", file=sys.stderr)
+    # tariff_conflicts()で検出した衝突を除去した後もmerge_tariffが失敗するのは想定外だが、
+    # 安全側に倒してbaseのみで続行する。
+    print(f"build_effective_tariff: 除去後も競合が残っています（想定外）: {exc}", file=sys.stderr)
     effective = base
     conflict = True
 
@@ -550,8 +594,9 @@ run_once() {
     local effective_tariff_path
     effective_tariff_path=$(mktemp)
     local effective_tariff_failed=false
-    if ! build_effective_tariff "${effective_tariff_path}"; then
+    if ! build_effective_tariff "${effective_tariff_path}" >>"${LOG_FILE}" 2>&1; then
         effective_tariff_failed=true
+        log "build_effective_tariff: tariff_conflict を検出しました（詳細は上のPythonの出力を参照）"
     fi
 
     local out_dir

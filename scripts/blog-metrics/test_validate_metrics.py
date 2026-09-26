@@ -165,7 +165,8 @@ def write_incoming(
 
 # --- posts/YYYY-MM.json 用フィクスチャ(G14〜G16テスト用) ---------------------------------------
 POST_BILLING_MONTH = "2026-10"  # monthly_report.FIRST_REPORT_BILLING_MONTH と同じ（実データ）
-POST_USAGE_PERIOD = {"start": "2026-09-02", "end": "2026-10-01", "days": 30}
+POST_METER_READ_DAY = 2  # 実際のtariff.jsonと同じ値
+POST_USAGE_PERIOD = {"start": "2026-09-02", "end": "2026-10-01", "days": 30}  # billing_period("2026-10", 2)と一致させる
 
 
 def _post_layer(buy_kwh: float, sell_kwh: float, net_fit: int, net_post_fit: int, extra: dict | None = None) -> dict:
@@ -194,7 +195,7 @@ def make_post_month_record(*, l3_buy_source="billed", l3_sell_source="official_m
 
 def make_valid_post_fixture(
     *, stage: str = "final", first_published: str = "2026-10-24", revision: int = 1, revised: str | None = None,
-    daily_by_date: dict | None = None,
+    daily_by_date: dict | None = None, transitioned_from_preliminary: bool = False,
 ) -> tuple[dict, dict]:
     """gate15_post_recompute と完全一致するpostを、monthly_report.build_snapshot_body()を
     直接使って組み立てる（手計算による数値の食い違いを避けるため）。
@@ -205,8 +206,11 @@ def make_valid_post_fixture(
     else:
         layers_json = {"months": [], "preliminary_months": [month_rec]}
     daily_by_date = daily_by_date if daily_by_date is not None else {r["date"]: r for r in make_daily_fixture()}
-    body = monthly_report.build_snapshot_body(POST_BILLING_MONTH, layers_json, daily_by_date, stage)
-    post = {**body, "first_published": first_published, "revision": revision, "revised": revised}
+    body = monthly_report.build_snapshot_body(POST_BILLING_MONTH, layers_json, daily_by_date, stage, POST_METER_READ_DAY)
+    post = {
+        **body, "first_published": first_published, "revision": revision, "revised": revised,
+        "transitioned_from_preliminary": transitioned_from_preliminary,
+    }
     return post, layers_json
 
 
@@ -852,6 +856,31 @@ def _git_repo_with_post_deleted(base: Path, *, post: dict, name: str = "2026-10.
     return base
 
 
+def _git_repo_with_broken_middle_commit_and_posts(
+    base: Path, *, old_post: dict, new_post: dict, name: str = "2026-10.json",
+) -> Path:
+    """コミット1=old_post、コミット2=data/metrics/daily.jsonが壊れたコミット（拒否push を
+    模す。postsはold_postのまま）、コミット3=new_post（revert後）。G16が
+    _previous_commit_depth_for_posts経由でHEAD~1を飛ばしHEAD~2(commit1)と比較することを
+    確認する（QA指摘2026-09-26 item9。以前はposts一覧の比較がHEAD~1固定だったため、
+    拒否pushをrevertした直後にHEAD~1が壊れていると誤って「全post削除」と判定していた）。"""
+    write_incoming(base, posts={name: old_post})
+    subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit1"], cwd=base, check=True)
+
+    (base / "data" / "metrics" / "daily.json").write_text("[{ this is not json\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "broken"], cwd=base, check=True)
+
+    write_incoming(base, posts={name: new_post})
+    subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "commit3"], cwd=base, check=True)
+    return base
+
+
 class Gate1PostsTest(unittest.TestCase):
     def test_stray_files_under_posts_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -904,41 +933,102 @@ class Gate14PostSchemaTest(unittest.TestCase):
 
     def test_valid_post_passes(self):
         post, _ = make_valid_post_fixture()
-        validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())  # 例外なし
+        validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)  # 例外なし
 
     def test_free_text_string_value_is_rejected(self):
         post, _ = make_valid_post_fixture()
         post["estimation"] = "<b>x</b>"
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
     def test_bool_typed_yen_is_rejected(self):
         post, _ = make_valid_post_fixture()
         post["layers"]["L3"]["net_cost_fit_yen"] = True
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
     def test_nan_kwh_is_rejected(self):
         post, _ = make_valid_post_fixture()
         post["layers"]["L3"]["buy_kwh"] = float("nan")
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
     def test_out_of_range_yen_is_rejected(self):
         post, _ = make_valid_post_fixture()
         post["layers"]["L3"]["net_cost_fit_yen"] = 999_999
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
     def test_stage_tariff_basis_mismatch_is_rejected(self):
         post, _ = make_valid_post_fixture()
         post["tariff_basis"] = "provisional"  # stage=="final"のまま
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today())
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_non_dict_post_is_rejected_not_crashed(self):
+        # QA指摘2026-09-26 item8: postがdict以外ならValidationFailure(Tracebackにしない)。
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(["not", "a", "dict"], "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema("also not a dict", "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_l2_band_min_greater_than_max_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["l2_band"] = {"net_cost_fit_yen_min": 5000, "net_cost_fit_yen_max": 3000}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_usage_period_mismatched_with_billing_period_is_rejected(self):
+        # QA指摘2026-09-26 item3: usage_periodがbill_model.billing_period(billing_month,
+        # meter_read_day)と一致しないpostを拒否する。
+        post, _ = make_valid_post_fixture()
+        post["usage_period"] = {"start": "2026-09-01", "end": "2026-09-30", "days": 30}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_billing_month_before_first_report_month_is_rejected(self):
+        # QA指摘2026-09-26 item3: billing_month>=FIRST_REPORT_BILLING_MONTHをvalidator側でも
+        # 強制する（速報・確定のどちらでも）。
+        post, _ = make_valid_post_fixture()
+        post["billing_month"] = "2020-01"
+        post["report_month"] = "2019-12"
+        post["usage_period"] = {"start": "2019-12-02", "end": "2020-01-01", "days": 31}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2020-01.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_fullwidth_digit_date_bypass_attempt_is_rejected(self):
+        # QA指摘2026-09-26 item8: \dはUnicodeの全角数字にもマッチするため、re.ASCIIが無いと
+        # 全角数字による偽装日付が正規表現を通ってしまう可能性がある。
+        post, _ = make_valid_post_fixture()
+        post["first_published"] = "２０２６-10-24"  # 全角数字
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_preliminary_with_revision_not_one_is_rejected(self):
+        # QA指摘2026-09-26 item4: 速報はrevision==1かつrevised is Noneを強制する。
+        post, _ = make_valid_post_fixture(stage="preliminary")
+        post["revision"] = 2
+        post["revised"] = "2026-10-05"
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_transitioned_from_preliminary_must_be_bool(self):
+        post, _ = make_valid_post_fixture()
+        post["transitioned_from_preliminary"] = "true"
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
 
@@ -946,14 +1036,14 @@ class Gate15PostRecomputeTest(unittest.TestCase):
     def test_valid_final_post_passes(self):
         post, layers_json = make_valid_post_fixture()
         daily_by_date = {r["date"]: r for r in make_daily_fixture()}
-        validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+        validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
 
     def test_tampered_confirmed_month_value_is_rejected(self):
         post, layers_json = make_valid_post_fixture()
         post["layers"]["L3"]["net_cost_fit_yen"] += 1  # 確定月のL3を+1円改ざん
         daily_by_date = {r["date"]: r for r in make_daily_fixture()}
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G15")
 
     def test_final_stage_for_non_closable_month_is_rejected(self):
@@ -963,7 +1053,7 @@ class Gate15PostRecomputeTest(unittest.TestCase):
         post["tariff_basis"] = "confirmed"
         daily_by_date = {r["date"]: r for r in make_daily_fixture()}
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
-            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"))
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G15")
 
 
@@ -1022,7 +1112,82 @@ class Gate16PostHistoryTest(unittest.TestCase):
             validate_metrics.gate16_post_history({"posts/2026-10.json": post}, incoming, allow_history_change=False)
             daily_by_date = {r["date"]: r for r in make_daily_fixture()}
             layers_json = {"months": [], "preliminary_months": []}  # もはやpreliminary_monthsにも無い(窓の外)
-            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming)
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY)
+
+    # --- QA指摘2026-09-26 item9: 祖先の深さを_previous_commit_jsonと揃える ---------------------
+
+    def test_reverted_broken_push_falls_back_to_older_ancestor_for_unchanged_post(self):
+        # HEAD~1(拒否pushをrevertした直後)のdaily.jsonが壊れていても、HEAD~2まで遡って
+        # posts一覧・本体を正しく比較できる（本体・revisionともに変わっていないので通る）。
+        post, _ = make_valid_post_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_broken_middle_commit_and_posts(Path(tmp), old_post=post, new_post=post)
+            validate_metrics.gate16_post_history({"posts/2026-10.json": post}, incoming, allow_history_change=False)
+
+    def test_reverted_broken_push_still_detects_revision_violation_via_older_ancestor(self):
+        # 同じ状況で、本体を変えたのにrevisionを上げていない場合はHEAD~2との比較で
+        # 正しくrejectされる（HEAD~1が壊れているからといって履歴整合チェックが素通りしない）。
+        old_post, _ = make_valid_post_fixture()
+        new_post = copy.deepcopy(old_post)
+        new_post["layers"]["L3"]["net_cost_fit_yen"] += 100  # revisionはそのまま
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_broken_middle_commit_and_posts(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({"posts/2026-10.json": new_post}, incoming, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+    def test_reverted_broken_push_deletion_via_older_ancestor_is_rejected(self):
+        # HEAD~1が壊れている状態でpostsが削除されていた場合も、HEAD~2との比較で検出できる。
+        post, _ = make_valid_post_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write_incoming(base, posts={"2026-10.json": post})
+            subprocess.run(["git", "init", "-q"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=base, check=True)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=base, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit1"], cwd=base, check=True)
+            (base / "data" / "metrics" / "daily.json").write_text("[{ this is not json\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "broken"], cwd=base, check=True)
+            subprocess.run(["git", "rm", "-q", "posts/2026-10.json"], cwd=base, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "commit3"], cwd=base, check=True)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate16_post_history({}, base, allow_history_change=False)
+            self.assertEqual(ctx.exception.gate, "G16")
+
+
+class EndToEndWithPostsTest(unittest.TestCase):
+    """QAが指摘した不足テスト: posts/*.json込みでvalidate()を通しで実行する
+    （G1〜G16全ゲート）。validate()のtodayオーバーライドを使い、実行日に依存せず
+    billing_month=FIRST_REPORT_BILLING_MONTH("2026-10")の確定postを検証できるようにする。"""
+
+    def test_validate_passes_end_to_end_with_a_valid_final_post(self):
+        post, layers_json = make_valid_post_fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), layers=layers_json, posts={"2026-10.json": post})
+            warnings = validate_metrics.validate(
+                incoming, REPO_ROOT, allow_history_change=False, today=date(2026, 10, 24),
+            )
+            self.assertEqual(warnings, [])
+
+    def test_validate_rejects_tampered_post_end_to_end(self):
+        post, layers_json = make_valid_post_fixture()
+        post["layers"]["L3"]["net_cost_fit_yen"] += 1  # 確定月の改ざん
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), layers=layers_json, posts={"2026-10.json": post})
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False, today=date(2026, 10, 24))
+            self.assertEqual(ctx.exception.gate, "G15")
+
+    def test_validate_passes_end_to_end_with_a_valid_preliminary_post(self):
+        post, layers_json = make_valid_post_fixture(stage="preliminary", first_published="2026-10-03")
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp), layers=layers_json, posts={"2026-10.json": post})
+            warnings = validate_metrics.validate(
+                incoming, REPO_ROOT, allow_history_change=False, today=date(2026, 10, 3),
+            )
+            self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":

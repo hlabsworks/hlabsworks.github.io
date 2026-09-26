@@ -1857,6 +1857,83 @@ class Gate6FloatNoiseTest(unittest.TestCase):
             self.assertEqual(ctx.exception.gate, "G6")
 
 
+def _monthly_by_calendar_month(rows: list[dict]) -> list[dict]:
+    """複数の暦月にまたがる daily 行から、月ごとの monthly 行を作る（G12 の月次＝日次和を満たす）。"""
+    out = []
+    for month in sorted({r["date"][:7] for r in rows}):
+        sub = [r for r in rows if r["date"][:7] == month]
+        out.append({
+            "month": month,
+            "solar_kwh": round(sum(r["solar_kwh"] for r in sub), 3),
+            "buy_kwh": round(sum(r["buy_kwh"] for r in sub), 3),
+            "sell_kwh": round(sum(r["sell_kwh"] for r in sub), 3),
+            "nichicon_charge_kwh": None,
+            "ecoflow_charge_kwh": None,
+            "self_consumption_shift_kwh": None,
+            "saving_yen": sum(r["saving_yen"] for r in sub),
+        })
+    return out
+
+
+class Gate9ProvisionalShiftTest(unittest.TestCase):
+    """新しい月が確定した回は、確定していない（暫定単価の）月の日も saving_yen だけなら変化を許す。
+    確定が無い回、saving_yen 以外の変化は従来どおり拒否する（実例 2026-09-27: 2026-09 の確定で
+    9/2 以降の暫定値が一斉に動き G9 で公開が止まった）。"""
+
+    def _run(self, *, newly_confirmed: bool, changed_key: str) -> Path:
+        rows = _old_daily_fixture()
+        # billing_month_for_date("2026-09-05", meter_read_day=2) == "2026-10"（未確定＝暫定単価の月）
+        prov_day = dict(rows[0], date="2026-09-05", saving_yen=100)
+        old_rows = rows[1:] + [prov_day]  # 日付昇順（G8）を保つため暫定月の日は末尾
+        changed = {changed_key: (999 if changed_key == "saving_yen" else 12.34)}
+        new_rows = rows[1:] + [dict(prov_day, **changed)]
+        tmp = tempfile.mkdtemp(); base = Path(tmp); self.addCleanup(shutil.rmtree, tmp, True)
+        write_incoming(base, daily=old_rows, monthly=_monthly_by_calendar_month(old_rows))
+        for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "test@example.com"],
+                    ["git", "config", "user.name", "test"], ["git", "add", "-A"], ["git", "commit", "-q", "-m", "c1"]):
+            subprocess.run(cmd, cwd=base, check=True)
+        inputs = {}
+        if newly_confirmed:
+            target = "2026-09"
+            tariff_months = make_tariff_months_fixture(fuel={target: 9.16}, capacity={target: 477})
+            effective = validate_metrics.bill_model.merge_tariff(REAL_TARIFF, tariff_months)
+            usage = 50.0
+            billed = validate_metrics.bill_model.compute_bill(effective, usage, target).total_yen
+            st, en = validate_metrics.bill_model.billing_period(target, REAL_METER_READ_DAY)
+            inputs["official_buy.json"] = make_official_buy_fixture(months=[{
+                "settlement_month": target, "period_from": st.isoformat(), "period_to": en.isoformat(),
+                "official_buy_kwh": usage, "billed_yen": billed,
+            }])
+        else:
+            tariff_months = make_tariff_months_fixture()
+        inputs["tariff_months.json"] = tariff_months
+        write_incoming(base, daily=new_rows, monthly=_monthly_by_calendar_month(new_rows), inputs=inputs)
+        pipeline = make_pipeline_fixture()
+        pipeline["inputs"]["tariff_months_sha256"] = _sha256(base / "inputs" / "tariff_months.json")
+        if newly_confirmed:
+            pipeline["inputs"]["official_buy_sha256"] = _sha256(base / "inputs" / "official_buy.json")
+        (base / "pipeline.json").write_text(json.dumps(pipeline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=base, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "c2"], cwd=base, check=True)
+        return base
+
+    def test_provisional_month_saving_yen_change_is_allowed_when_a_month_newly_confirms(self):
+        base = self._run(newly_confirmed=True, changed_key="saving_yen")
+        self.assertEqual(validate_metrics.validate(base, REPO_ROOT, allow_history_change=False), [])
+
+    def test_provisional_month_change_is_rejected_when_nothing_newly_confirms(self):
+        base = self._run(newly_confirmed=False, changed_key="saving_yen")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+        self.assertEqual(ctx.exception.gate, "G9")
+
+    def test_provisional_month_non_saving_change_is_rejected_even_when_a_month_newly_confirms(self):
+        base = self._run(newly_confirmed=True, changed_key="solar_kwh")
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.validate(base, REPO_ROOT, allow_history_change=False)
+        self.assertEqual(ctx.exception.gate, "G9")
+
+
 class CheckInputsDirTest(unittest.TestCase):
     def test_valid_inputs_dir_passes(self):
         with tempfile.TemporaryDirectory() as tmp:

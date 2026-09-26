@@ -7,14 +7,19 @@ bill_breakdown.json（import_official_buy.py と同型の入力）・purchase_mo
 出力する。
 
 設計（DDR §「月次確定の自動化」・実装手順S1）:
-  - 料金体系の骨格（--base-tariff、main の tariff.json）は変更しない。月別に観測した
-    燃料費等調整単価(fuel_rate)・容量拠出金(capacity_yen)・賦課金(levy_rate)は
-    bill_breakdown.json の各月レコードから読み、tariff_months.json の候補として
-    bill_model.merge_tariff() に通す。base と矛盾する（値が違う）月・base に既に
-    確定している月と競合する月は候補から外す（捏造・上書きをしない）。
-  - capacity_yen が整数でない月は候補から除外する（parse_incomplete）。
-  - 候補で merge した実効tariffの compute_bill().total_yen が bill_breakdown.json の
-    billed_yen と一致した月だけ tariff_months.json・official_buy.json に採用する。
+  - 料金体系の骨格（--base-tariff、main の tariff.json）は変更しない。base で既に確定して
+    いる月（fuel_cost_adjustment_yen_per_kwh と capacity_contribution_yen_per_month の
+    両方が base にある月）は tariff_months.json に二重登録しない（QA指摘F3(a)、
+    DDR「両方には登録しない」）。base で未確定の月だけ、bill_breakdown.json の各月
+    レコードから読んだ燃料費等調整単価(fuel_rate)・容量拠出金(capacity_yen)・
+    賦課金(levy_rate)を tariff_months.json の候補として bill_model.merge_tariff() に通す。
+    base と矛盾する（値が違う）月は候補から外す（捏造・上書きをしない）。
+  - capacity_yen が整数値でない（小数部を持つ、bool、文字列等）月は候補から除外する
+    （parse_incomplete）。実データがfloat(例: 213.0)で来ても整数値と等しければintとして
+    受け付ける（QA指摘、S2との契約の食い違い対応）。
+  - base で既に確定している月は base 自身で、そうでない月は候補を merge した実効tariffで、
+    それぞれ compute_bill().total_yen が bill_breakdown.json の billed_yen と一致した月だけ
+    official_buy.json に採用する（tariff_months.json への採用は base 未確定の月のみ）。
     不一致は excluded_months に理由コードで記録し、official_buy.json からも除く
     （値を捏造しない、既存 import_official_buy.py と同じ方針）。
   - official_sell.json は import_official_sell.build_official_sell() をそのまま使う
@@ -48,6 +53,9 @@ EXCLUDED_REASON_MISMATCH = "reconcile_mismatch"
 EXCLUDED_REASON_LEVY_CONFLICT = "levy_conflict"
 EXCLUDED_REASON_PARSE_INCOMPLETE = "parse_incomplete"
 EXCLUDED_REASON_MISSING_OFFICIAL_BUY = "missing_official_buy"
+# QA指摘L4: fuel/capacityの競合(base既存値と観測値が食い違う)はlevy_conflictとは別の
+# 理由コードにする（levy_conflictは賦課金レンジの競合専用に絞る）。
+EXCLUDED_REASON_TARIFF_CONFLICT = "tariff_conflict"
 
 
 def _levy_key(billing_month: str) -> str:
@@ -59,18 +67,30 @@ def _build_candidate_overlay(month: dict) -> dict | None:
     (fuel_cost_adjustment_yen_per_kwh/capacity_contribution_yen_per_month/
     renewable_levy_yen_per_kwh_observed、いずれも当該月1件のみ)を作る。
     billing_ym・fuel_rate・capacity_yen・levy_rate のいずれかが欠けている、または
-    capacity_yen が整数でない場合は None を返す（値を捏造しない）。"""
+    capacity_yen が整数値でない場合は None を返す（値を捏造しない）。
+
+    QA指摘（S2のQAで判明、リポジトリ間の契約の食い違い）: 実データの bill_breakdown.json は
+    capacity_yen が整数値の float（例: 213.0、私有の抽出元がそのまま転記するため）で
+    渡ってくる。整数値と等しい float（bool・NaN・Inf・小数部を持つ値は除く）は int に
+    変換して受け付ける（tariff_months.json の capacity_contribution_yen_per_month は
+    G18(validate_metrics.py) が厳密 int を要求するスキーマのため、ここで正規化する）。"""
     billing_ym = month.get("billing_ym")
     fuel_rate = month.get("fuel_rate")
     capacity_yen = month.get("capacity_yen")
     levy_rate = month.get("levy_rate")
     if billing_ym is None or fuel_rate is None or capacity_yen is None or levy_rate is None:
         return None
-    if isinstance(capacity_yen, bool) or not isinstance(capacity_yen, int):
+    if isinstance(capacity_yen, bool):
+        return None
+    if isinstance(capacity_yen, int):
+        capacity_yen_int = capacity_yen
+    elif isinstance(capacity_yen, float) and capacity_yen.is_integer():
+        capacity_yen_int = int(capacity_yen)
+    else:
         return None
     return {
         "fuel_cost_adjustment_yen_per_kwh": {billing_ym: fuel_rate},
-        "capacity_contribution_yen_per_month": {billing_ym: capacity_yen},
+        "capacity_contribution_yen_per_month": {billing_ym: capacity_yen_int},
         "renewable_levy_yen_per_kwh_observed": {_levy_key(billing_ym): levy_rate},
     }
 
@@ -79,12 +99,17 @@ def build_inputs(base_tariff: dict, bill_breakdown: dict, purchase_monthly: dict
     """戻り値: {"official_buy": dict|None, "official_sell": dict|None,
     "tariff_months": dict, "excluded_months": {billing_month: reason}}。
     official_buy/official_sellはmonths内容(いずれも0件ならNone、generated_at/source_noteは
-    呼び出し側で付与する)、tariff_monthsはschema_version以外の各フィールド。"""
+    呼び出し側で付与する)、tariff_monthsはschema_version以外の各フィールド。
+
+    QA指摘F3(a)（DDR「両方には登録しない」）: base で既に確定している月（fuel と capacity が
+    両方 base にある月）は tariff_months.json に登録しない。official_buy.json は従来どおり
+    全月（reconcileできた月）が対象。"""
     fuel_table: dict[str, float] = {}
     capacity_table: dict[str, int] = {}
     levy_table: dict[str, float] = {}
     excluded: dict[str, str] = {}
     official_buy_months: list[dict] = []
+    base_confirmed = bill_model.confirmed_tariff_months(base_tariff)
 
     for month in bill_breakdown.get("months", []):
         try:
@@ -96,6 +121,16 @@ def build_inputs(base_tariff: dict, bill_breakdown: dict, purchase_monthly: dict
             continue
         billing_month = extracted["settlement_month"]
 
+        if billing_month in base_confirmed:
+            # base単独で既に確定している月は、tariff_monthsに二重登録せずbase自身で
+            # 直接突合する（official_buyは従来どおり対象）。
+            diff = bill_model.reconcile_bill(base_tariff, billing_month, extracted["official_buy_kwh"], extracted["billed_yen"])
+            if diff != 0:
+                excluded[billing_month] = EXCLUDED_REASON_MISMATCH
+                continue
+            official_buy_months.append(extracted)
+            continue
+
         overlay = _build_candidate_overlay(month)
         if overlay is None:
             excluded[billing_month] = EXCLUDED_REASON_PARSE_INCOMPLETE
@@ -103,8 +138,11 @@ def build_inputs(base_tariff: dict, bill_breakdown: dict, purchase_monthly: dict
 
         try:
             candidate = bill_model.merge_tariff(base_tariff, overlay)
-        except ValueError:
-            excluded[billing_month] = EXCLUDED_REASON_LEVY_CONFLICT
+        except ValueError as exc:
+            # QA指摘L4: fuel/capacityの競合とlevyの競合で理由コードを分ける。
+            excluded[billing_month] = (
+                EXCLUDED_REASON_LEVY_CONFLICT if "renewable_levy_yen_per_kwh" in str(exc) else EXCLUDED_REASON_TARIFF_CONFLICT
+            )
             continue
 
         diff = bill_model.reconcile_bill(candidate, billing_month, extracted["official_buy_kwh"], extracted["billed_yen"])

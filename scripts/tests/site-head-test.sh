@@ -1,6 +1,6 @@
 #!/bin/bash
 # GA4 / Google AdSense / Cloudflare Web Analytics のタグが、
-#   (a) ID未設定なら本番ビルドでも一切出力されない
+#   (a) ID未設定（空文字の上書き設定）なら本番ビルドでも一切出力されない
 #   (b) ID設定済みなら本番ビルドでのみ出力される
 #   (c) ID設定済みでも development ビルドでは出力されない
 # ことを確認する回帰テスト。ネットワークアクセスはしない（hugo build の出力を静的に検査するだけ）。
@@ -51,7 +51,18 @@ cd "$REPO_ROOT" || exit 1
 
 echo "# 1. 既定設定(ID未設定) + 本番ビルド: 3タグとも出力されない"
 DEST1="$T/default-production"
-hugo --quiet -e production --destination "$DEST1" >/dev/null 2>"$T/hugo1.log"
+BLANK="$T/blank.toml"
+cat > "$BLANK" <<'EOF'
+[services]
+  [services.googleAnalytics]
+  ID = ""
+[params]
+  [params.adsense]
+  client = ""
+  [params.cloudflareAnalytics]
+  token = ""
+EOF
+hugo --quiet -e production --config "hugo.toml,$BLANK" --destination "$DEST1" >/dev/null 2>"$T/hugo1.log"
 RC=$?
 if [ "$RC" = 0 ]; then ok; else fail "1 hugo build failed: $(cat "$T/hugo1.log")"; fi
 assert_none_present "$DEST1" "1"

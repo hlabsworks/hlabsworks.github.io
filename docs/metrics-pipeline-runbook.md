@@ -163,8 +163,9 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
 
 `hugo.yml` は `actions/checkout@v4` の `ssh-key: ${{ secrets.METRICS_DATA_READ_KEY }}`
 でこの鍵を使う。`persist-credentials: false`（後続ステップに認証情報を残さない）・
-`fetch-depth: 2`（`validate_metrics.py` の G8/G9 が `git show HEAD~1:...` で前回コミットと
-比較するために必要）は維持している。`ssh-key` はチェックアウト自体の認証方式であり、
+`fetch-depth: 10`（`validate_metrics.py` の G8/G9/G11 が `git show HEAD~N:...` で、JSON として
+読める最新の祖先コミットと比較するために必要。`PREVIOUS_COMMIT_MAX_DEPTH` と揃える。
+壊れた push を revert した直後に HEAD~1 が読めず CI が落ちた N2 の教訓）は維持している。`ssh-key` はチェックアウト自体の認証方式であり、
 `persist-credentials: false` はチェックアウト後の資格情報の残し方の設定なので両者は
 独立して両立する。`validate_metrics.py` はチェックアウト済みのローカル `.git` に対して
 `git show`/`git ls-files` を実行するだけ（ネットワークアクセスなし）のため、
@@ -196,13 +197,17 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
   試み、`Permission denied` になることを確認する:
   `GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519_solar-metrics-data" git push git@github.com:hlabsworks/hlabsworks.github.io.git HEAD:refs/heads/_deploy-key-scope-check`
   （成功してしまった場合は鍵の登録範囲が誤っている — 個人アカウント鍵として登録されていないか確認する）。
-- **N2: 壊れたJSONでPagesが更新されない**（§1 手順11、main マージ後のみ実施可能。
+- **N2: 壊れたJSONでPagesが更新されない**（§1 手順12、main マージ後のみ実施可能。
   `hugo.yml` の `Validate incoming metrics data` ステップが main に無いと確認できないため）—
   `solar-metrics-data` に手動で壊れたJSON
   （例: `data/metrics/daily.json` の末尾カンマを1つ増やす）を push し、このリポジトリの
   Actions（`Deploy Hugo site to Pages`）の `Validate incoming metrics data` ステップが
   失敗し、`Build with Hugo`・`deploy` ジョブが実行されないことを確認する。確認後は
-  `solar-metrics-data` 側で当該コミットを revert する。
+  `solar-metrics-data` 側で当該コミットを revert し、`workflow_dispatch` で再実行して
+  復旧（全ゲート通過・deploy 成功）まで確認する。
+  実施記録: 2026-09-26 に実施。壊れた push は G2 で拒否され deploy はスキップ、サイトは
+  旧ビルドのまま（期待どおり）。revert 直後の再実行が HEAD~1 の壊れた JSON を読んで
+  Traceback で落ちる回帰を発見し、読める祖先まで遡る修正（PR #2）を入れて復旧を確認した。
 
 ## 5. ロールバック
 

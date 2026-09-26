@@ -8,6 +8,18 @@ enableRobotsTXT = true
 
 pagination.pagerSize = 10
 
+[services]
+  [services.googleAnalytics]
+    # G-XXXXXXXXXX（GA4 測定ID）を設定すると、本番ビルド（-e production もしくは
+    # HUGO_ENVIRONMENT=production）でのみ Hugo 内蔵の google_analytics.html テンプレートが
+    # gtag タグを出力する。空文字のままなら何も出力されない。
+    # 出典: https://gohugo.io/templates/embedded/#google-analytics（取得日 2026-09-26）
+    ID = "G-RE986ETTDP"
+
+[privacy]
+  [privacy.googleAnalytics]
+    respectDoNotTrack = true
+
 [params]
   description = "太陽光×蓄電池×ポータブル電源で「買電量実質ゼロ」を目指す実測記録"
   defaultTheme = "auto"
@@ -22,6 +34,16 @@ pagination.pagerSize = 10
   [params.homeInfoParams]
     Title = "HLabsWorks"
     Content = "太陽光発電の余剰電力を蓄電池とポータブル電源に自動で振り分けて「買電量実質ゼロ」を目指す、実測データ主体の記録です。蓄電池もポタ電も実運用している家が、想像ではなく測定値で書きます。"
+
+  [params.adsense]
+    # ca-pub-XXXXXXXXXXXXXXXX（AdSense の発行者ID）を設定すると、本番ビルドでのみ
+    # extend_head.html から AdSense の自動広告タグが出力される。空文字なら何も出力されない。
+    client = ""
+
+  [params.cloudflareAnalytics]
+    # Cloudflare Web Analytics のビーコン token を設定すると、本番ビルドでのみ
+    # extend_head.html から Cloudflare のビーコンスクリプトが出力される。空文字なら何も出力されない。
+    token = ""
 
 [menu]
   [[menu.main]]

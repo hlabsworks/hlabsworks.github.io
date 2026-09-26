@@ -67,6 +67,8 @@ jobs:
       # 上書きするより前に実行する。
       - name: Run blog-metrics unit tests
         run: python3 -m unittest discover -s scripts/blog-metrics -p 'test_*.py'
+      - name: Run site head tests (GA4 / AdSense / Cloudflare Web Analytics)
+        run: bash scripts/tests/site-head-test.sh
       - name: Validate incoming metrics data
         env:
           ALLOW_HISTORY_CHANGE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_history_change }}

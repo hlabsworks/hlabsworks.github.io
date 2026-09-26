@@ -282,6 +282,7 @@ commit_and_maybe_push() {
     if ! python3 "${MONTHLY_REPORT_PY}" \
             --data-dir "${CLONE_DIR}/data/metrics" \
             --posts-dir "${CLONE_DIR}/posts" \
+            --tariff "${INPUTS_DIR}/tariff.json" \
             --today "$(today_str)" \
             >>"${LOG_FILE}" 2>&1; then
         log "monthly_report.py が失敗しました（postsだけを元に戻します）"

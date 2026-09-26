@@ -433,18 +433,52 @@
     renderL1sBranchTable(layers);
   }
 
-  // 「売電16円で計算／卒FIT（8円）で計算」トグル。今月ここまでカード・日次グラフ・
+  // 「FIT期間中16円／FIT終了後8円」の2択セグメント。今月ここまでカード・日次グラフ・
   // 月ごとの棒グラフを連動して切り替える（累計表は常にFIT実態のまま、元の挙動を踏襲）。
+  // 単価の数字は layers.params から読む（オーナー指摘2026-09-下旬「ボタンの意味が
+  // 分からない」への対応で、単発ボタンから見出し付き2択＋説明文＋卒FIT時ラベルに変更）。
   function renderLayerToggle(layers) {
-    var btn = document.getElementById("layer-chart-toggle");
-    if (!btn || !layers) return;
-    btn.addEventListener("click", function () {
-      layerChartMetric = layerChartMetric === "net_cost_fit_yen" ? "net_cost_post_fit_yen" : "net_cost_fit_yen";
-      btn.textContent = layerChartMetric === "net_cost_fit_yen" ? "卒FIT（8円）で計算" : "売電16円で計算";
+    var fitBtn = document.getElementById("layer-price-toggle-fit");
+    var postFitBtn = document.getElementById("layer-price-toggle-postfit");
+    var assumptionEl = document.getElementById("metrics-price-toggle-assumption");
+    if (!fitBtn || !postFitBtn || !layers) return;
+
+    var params = layers.params || {};
+    var fitPrice = typeof params.sell_price_yen_per_kwh_fit === "number" ? params.sell_price_yen_per_kwh_fit : 16;
+    var postFitPrice = typeof params.sell_price_yen_per_kwh_post_fit === "number" ? params.sell_price_yen_per_kwh_post_fit : 8;
+
+    fitBtn.innerHTML = "FIT期間中 " + fitPrice + "円<span class=\"metrics-price-toggle-sub\">（現在）</span>";
+    postFitBtn.innerHTML = "FIT終了後 " + postFitPrice + "円<span class=\"metrics-price-toggle-sub\">（想定）</span>";
+
+    // ボタンの見た目(aria-pressed)と卒FIT時ラベルだけを同期する（再描画はしない）。
+    function syncButtons() {
+      var isPostFit = layerChartMetric === "net_cost_post_fit_yen";
+      fitBtn.setAttribute("aria-pressed", String(!isPostFit));
+      postFitBtn.setAttribute("aria-pressed", String(isPostFit));
+      if (assumptionEl) {
+        if (isPostFit) {
+          assumptionEl.textContent = "FIT終了後（売電" + postFitPrice + "円）を想定した試算";
+          assumptionEl.hidden = false;
+        } else {
+          assumptionEl.textContent = "";
+          assumptionEl.hidden = true;
+        }
+      }
+    }
+
+    function select(metric) {
+      if (layerChartMetric === metric) return;
+      layerChartMetric = metric;
+      syncButtons();
       renderInProgressCard(layers);
       renderDailyLayersChart(layers);
       renderLayerBillsChart(layers);
-    });
+    }
+
+    fitBtn.addEventListener("click", function () { select("net_cost_fit_yen"); });
+    postFitBtn.addEventListener("click", function () { select("net_cost_post_fit_yen"); });
+
+    syncButtons();
   }
 
   function init() {

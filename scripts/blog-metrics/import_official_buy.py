@@ -42,6 +42,14 @@ DEFAULT_OUT_PATH = REPO_ROOT / "data" / "metrics" / "official_buy.json"
 
 REQUIRED_MONTH_FIELDS = ("billing_ym", "period", "usage_kwh", "billed_yen")
 
+# import_official_inputs.py（自動取り込み経路）とvalidate_metrics.pyのG18（inputs/official_buy.json
+# のsource_note完全一致検査）で共有するため、文字列リテラルをモジュール定数に切り出している
+# （挙動は従来のbuild_official_buy()と同一、二重実装しない）。
+SOURCE_NOTE = (
+    "契約中の新電力の請求明細PDF（pdftotext抽出）の実使用量(usage_kwh)・請求総額。"
+    "供給地点特定番号・検針前指示数等の契約識別情報は含まない。"
+)
+
 # '2025年7月2日 ～ 2025年8月1日' 形式を ISO 日付範囲に変換する。
 _PERIOD_RE = re.compile(
     r"(?P<fy>\d{4})年(?P<fm>\d{1,2})月(?P<fd>\d{1,2})日\s*[～~\-]\s*"
@@ -87,10 +95,7 @@ def build_official_buy(source: dict) -> dict:
     return {
         "months": extract_months(source),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source_note": (
-            "契約中の新電力の請求明細PDF（pdftotext抽出）の実使用量(usage_kwh)・請求総額。"
-            "供給地点特定番号・検針前指示数等の契約識別情報は含まない。"
-        ),
+        "source_note": SOURCE_NOTE,
     }
 
 

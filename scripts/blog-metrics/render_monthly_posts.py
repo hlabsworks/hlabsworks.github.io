@@ -107,16 +107,6 @@ def _comparison_sentence(label: str, pct: float | None) -> str | None:
     return f"{label}より{round(abs(pct))}%{direction}発電量でした。"
 
 
-def _l3_source_label(l3_source: dict) -> str:
-    """QA指摘2026-09-26 item2: 表記はl3_source(buy/sell)から決める。売電だけ検針値が先に
-    届く月があるため、stageだけでは「請求書と検針値」と決め打てない。"""
-    buy_desc = "請求書" if l3_source["buy"] == "billed" else "センサー計測値"
-    sell_desc = "検針値" if l3_source["sell"] == "official_meter" else "センサー計測値"
-    if buy_desc == sell_desc:
-        return f"実測・{buy_desc}"
-    return f"実測・{buy_desc}と{sell_desc}"
-
-
 def _buy_row_label(l3_source: dict) -> str:
     return "買電量（請求書）" if l3_source["buy"] == "billed" else "買電量（計測値）"
 
@@ -203,15 +193,21 @@ _STANDBY_NOTE = "電気代の面では不利でしたが、ポータブル電源
 def _preliminary_intro_sentence(tariff_basis: str, l3_source: dict) -> str:
     """QA再指摘2026-09-26 R4: 速報の導入文をtariff_basis/l3_sourceから組み立てる。単価が
     既に確定していれば「前月の単価で仮計算」とは書かない。買電・売電のうち既に確定している
-    方は「届くのを待っている」対象に含めない（stage固定の決め打ちをやめる）。"""
+    方は「届くのを待っている」対象に含めない（stage固定の決め打ちをやめる）。
+    QA再指摘2026-09-26 F1: tariff_basis==provisionalかつl3_sourceが両方確定(買電=billed・
+    売電=official_meter)のとき、missingが空になり「電気料金は前月の単価で仮計算し、」で
+    文が途切れていた（続く「実際の…」の文が無い）。missingが空のときは単価の確定待ちだけを
+    閉じた文にする。"""
     sentence = "この記事は速報です。"
-    if tariff_basis == "provisional":
-        sentence += "電気料金は前月の単価で仮計算し、"
     missing = []
     if l3_source["buy"] != "billed":
         missing.append(("買電", "請求書"))
     if l3_source["sell"] != "official_meter":
         missing.append(("売電", "検針値"))
+    if tariff_basis == "provisional" and not missing:
+        return sentence + "電気料金は前月の単価で仮計算しています。単価が確定したら確定版に更新します。"
+    if tariff_basis == "provisional":
+        sentence += "電気料金は前月の単価で仮計算し、"
     if missing:
         amounts = "・".join(label for label, _ in missing)
         sentence += f"実際の{amounts}量はセンサーの計測値から求めています。"
@@ -268,8 +264,8 @@ def render_markdown(snapshot: dict) -> str:
 
     # 1. 導入
     intro = (
-        f"{start_y}年{start_m}月{start_d}日〜{end_m}月{end_d}日"
-        f"（{usage_period['days']}日間、電気の請求期間に合わせています）の実測データから自動生成したレポートです。"
+        f"電気の請求期間に合わせた{start_y}年{start_m}月{start_d}日〜{end_m}月{end_d}日"
+        f"（{usage_period['days']}日間）の実測データから自動生成したレポートです。"
         f"数値は[実績ダッシュボード]({METHODOLOGY_URL})と同じデータに基づきます。"
     )
     if stage == "preliminary":
@@ -329,8 +325,10 @@ def render_markdown(snapshot: dict) -> str:
             f"| {_FOUR_LAYER_LABELS_L0_L2[key]} | {_yen(row['net_cost_fit_yen'])} | "
             f"{_yen(row['net_cost_post_fit_yen'])} | {_kwh(row['buy_kwh'])} | {_kwh(row['sell_kwh'])} |"
         )
+    # QA再指摘2026-09-26 item4: 出典(請求書/検針値/センサー計測値)はこの行のラベルではなく
+    # 「まとめ」節の買電量・売電量の行見出し(_buy_row_label/_sell_row_label)で伝える。
     parts.append(
-        f"| ＋SolarChargeController（{_l3_source_label(l3_source)}） | {_yen(l3['net_cost_fit_yen'])} | "
+        f"| ＋SolarChargeController（実測） | {_yen(l3['net_cost_fit_yen'])} | "
         f"{_yen(l3['net_cost_post_fit_yen'])} | {_kwh(l3['buy_kwh'])} | {_kwh(l3['sell_kwh'])} |"
     )
     parts.append("")
@@ -341,8 +339,8 @@ def render_markdown(snapshot: dict) -> str:
         )
     parts.append("")
 
-    # 4. SolarChargeControllerの効果
-    parts.append("## SolarChargeControllerの効果")
+    # 4. SolarChargeController の効果
+    parts.append("## SolarChargeController の効果")
     scc_text, add_standby_note = _scc_sentence(
         l3["net_cost_fit_yen"], l2["net_cost_fit_yen"], band["net_cost_fit_yen_min"], band["net_cost_fit_yen_max"],
         sunny_share,
@@ -399,8 +397,8 @@ def render_markdown(snapshot: dict) -> str:
     parts.append(
         "- 太陽光・蓄電池なし／太陽光のみ／太陽光＋家庭用蓄電池の3つは、実測データから組み立てたシミュレーションの試算値です。"
     )
-    parts.append("- ＋SolarChargeControllerは実測値です（速報はセンサー計測値、確定版は請求書と検針値）。")
-    parts.append("- 売電単価はFIT期間中16円、卒FIT後は8円と仮定しています。")
+    parts.append("- ＋SolarChargeControllerは実測値です。")
+    parts.append("- 売電単価はFIT期間中16円、FIT終了後は8円と仮定しています。")
     parts.append("- 本記事は自動生成です。")
     parts.append("")
 

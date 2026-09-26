@@ -177,6 +177,19 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertIn("請求書が届いたら確定版に更新します", md)
         self.assertNotIn("と検針値が届いたら", md)
 
+    def test_preliminary_intro_with_provisional_tariff_and_confirmed_l3_does_not_trail_off(self):
+        # QA再指摘2026-09-26 F1: tariff_basis==provisionalかつl3_sourceが両方確定
+        # (買電=billed・売電=official_meter)のとき、旧実装は「…仮計算し、」で文が
+        # 途切れていた（続く文が無いmissing=[]のケース）。閉じた文になることを確認する。
+        snap = base_snapshot(stage="preliminary", tariff_basis="provisional")
+        snap["l3_source"] = {"buy": "billed", "sell": "official_meter"}
+        md = rmp.render_markdown(snap)
+        self.assertIn(
+            "電気料金は前月の単価で仮計算しています。単価が確定したら確定版に更新します。", md,
+        )
+        self.assertNotIn("仮計算し、", md)
+        self.assertNotIn("届いたら確定版に更新します。", md)
+
     def test_summary_field_places_preliminary_marker_before_final_period(self):
         # QA再指摘2026-09-26 スタイル: 「…の差です。（速報）」ではなく「…の差です（速報）。」。
         snap = base_snapshot(stage="preliminary", tariff_basis="provisional")
@@ -205,9 +218,9 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertNotIn("電気代の上ではマイナスですが", md)
 
     def test_intro_mentions_billing_period_alignment_wording(self):
-        # QA再指摘2026-09-26 スタイル: 「請求期間ベース」→「電気の請求期間に合わせています」。
+        # QA再指摘2026-09-26 スタイル: 「請求期間ベース」→「電気の請求期間に合わせた…」の語順に。
         md = rmp.render_markdown(base_snapshot())
-        self.assertIn("電気の請求期間に合わせています", md)
+        self.assertIn("電気の請求期間に合わせた2026年9月2日〜10月1日（30日間）の実測データ", md)
         self.assertNotIn("請求期間ベース", md)
 
     def test_co2_section_uses_estimate_wording_instead_of_presumption(self):
@@ -227,7 +240,7 @@ class RenderMarkdownTest(unittest.TestCase):
         snap["l3_source"] = {"buy": "sensor", "sell": "official_meter"}
         md = rmp.render_markdown(snap)
         self.assertIn("（速報）", md)
-        self.assertIn("＋SolarChargeController（実測・センサー計測値と検針値）", md)
+        self.assertIn("＋SolarChargeController（実測）", md)
         self.assertIn("この記事は速報です", md)
 
     def test_l3_source_labels_come_from_l3_source_not_stage(self):
@@ -237,13 +250,13 @@ class RenderMarkdownTest(unittest.TestCase):
         md = rmp.render_markdown(snap)
         self.assertIn("| 買電量（計測値） | 160.0kWh |", md)
         self.assertIn("| 売電量（検針値） | 195.0kWh |", md)
-        self.assertIn("＋SolarChargeController（実測・センサー計測値と検針値）", md)
+        self.assertIn("＋SolarChargeController（実測）", md)
 
     def test_l3_source_both_sensor_uses_single_label(self):
         snap = base_snapshot()
         snap["l3_source"] = {"buy": "sensor", "sell": "sensor"}
         md = rmp.render_markdown(snap)
-        self.assertIn("＋SolarChargeController（実測・センサー計測値）", md)
+        self.assertIn("＋SolarChargeController（実測）", md)
         self.assertNotIn("センサー計測値とセンサー計測値", md)
 
     def test_headline_equal_amounts_uses_neutral_wording(self):

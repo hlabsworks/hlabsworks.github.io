@@ -414,11 +414,14 @@
     if (!el) return;
     var months = (layers && layers.preliminary_months) || [];
     // QA再指摘2026-09-26 N1(二重防御): L3がbuy_source=="billed"かつsell_source==
-    // "official_meter"（=完全に確定した月）はlayer_model.py側で既に除外されるはずだが、
-    // ダッシュボード側でも同じ条件で除外する。
+    // "official_meter"（=買電・売電とも確定した月）はlayer_model.py側で既に除外される
+    // はずだが、ダッシュボード側でも同じ条件で除外する。
+    // QA再指摘2026-09-26 item2: 買電・売電が確定していても単価(tariff_provisional)が
+    // まだ暫定のままの月は「完全には確定していない」ため速報表に残す。
     var isFullyConfirmed = function (m) {
       var l3 = m.layers && m.layers.L3;
-      return !!l3 && l3.buy_source === "billed" && l3.sell_source === "official_meter";
+      return !!l3 && l3.buy_source === "billed" && l3.sell_source === "official_meter" &&
+        m.tariff_provisional === false;
     };
     var rows = months
       .filter(function (m) { return m.layers && m.layers.L3 && m.layers.L3.available && !isFullyConfirmed(m); })

@@ -1125,6 +1125,24 @@ class Gate15PostRecomputeTest(unittest.TestCase):
                 validate_metrics.gate15_post_recompute(new_post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY)
             self.assertEqual(ctx.exception.gate, "G15")
 
+    def test_transition_from_preliminary_with_fabricated_energy_is_rejected(self):
+        # QA再指摘2026-09-26 L5: 速報から確定への遷移時にenergyを捏造すると拒否される
+        # ことを、実際に速報のpostがgit履歴上に存在する状態で確認する(N3の核心ケース)。
+        old_post, _ = make_valid_post_fixture(stage="preliminary")
+        new_post, layers_json = make_valid_post_fixture(
+            stage="final", transitioned_from_preliminary=True, revision=2, revised="2026-11-01",
+        )
+        new_post["first_published"] = old_post["first_published"]
+        new_post["energy"]["solar_kwh"] = 5999.0  # 捏造
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate15_post_recompute(
+                    new_post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY,
+                )
+            self.assertEqual(ctx.exception.gate, "G15")
+
     def test_revised_confirmed_post_inherits_previous_energy(self):
         # layer由来が変わった正当な改版では、energy/weather/comparisonは前回の値を
         # 引き継いだものだけが通る（新しく計算し直した値は通らない）。

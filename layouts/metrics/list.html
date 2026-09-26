@@ -21,7 +21,22 @@
       {{- end }}
     </h2>
     <div id="metrics-in-progress-card"></div>
-    <button id="layer-chart-toggle" type="button">卒FIT（8円）で計算</button>
+
+    <div class="metrics-price-toggle">
+      <p class="metrics-price-toggle-title">売電単価の前提</p>
+      <div class="metrics-price-toggle-group" role="group" aria-label="売電単価の前提">
+        <button id="layer-price-toggle-fit" type="button" class="metrics-price-toggle-btn" aria-pressed="true">
+          FIT期間中 16円<span class="metrics-price-toggle-sub">（現在）</span>
+        </button>
+        <button id="layer-price-toggle-postfit" type="button" class="metrics-price-toggle-btn" aria-pressed="false">
+          FIT終了後 8円<span class="metrics-price-toggle-sub">（想定）</span>
+        </button>
+      </div>
+      <p id="metrics-price-toggle-assumption" class="metrics-price-toggle-assumption" hidden></p>
+      <p class="metrics-notes">
+        太陽光の固定価格買取（FIT）が終わると売電単価が下がります。終了後の電気代がどうなるかも見られます。
+      </p>
+    </div>
 
     <h2>日ごとの電気代（5つの構成で比較）</h2>
     <p class="metrics-notes">試算の4本はシミュレーション、実際の1本は計測値です。</p>

@@ -622,7 +622,8 @@ def gate14_post_schema(post: object, relpath: str, today_jst: date, meter_read_d
     if missing:
         raise ValidationFailure("G14", f"{relpath}: 必須キーが不足しています: {sorted(missing)}")
 
-    if post.get("schema_version") != 1:
+    # QA再指摘2026-09-26 R1: type(x) is intでbool混入を排除する(True/Falseは共に1ではない)。
+    if type(post.get("schema_version")) is not int or post.get("schema_version") != 1:
         raise ValidationFailure("G14", f"{relpath}: schema_version が1ではありません: {post.get('schema_version')!r}")
 
     # 文字列値は日付/月の正規表現(ASCII数字限定)か列挙値のどれかに限る
@@ -656,6 +657,9 @@ def gate14_post_schema(post: object, relpath: str, today_jst: date, meter_read_d
     start_date = _parse_iso_date(usage_period["start"], relpath, "usage_period.start")
     end_date = _parse_iso_date(usage_period["end"], relpath, "usage_period.end")
     days = usage_period["days"]
+    # QA再指摘2026-09-26 R1: type(x) is intでbool混入を排除する。
+    if type(days) is not int:
+        raise ValidationFailure("G14", f"{relpath}: usage_period.days は int である必要があります: {days!r}")
     if not (28 <= days <= 31):
         raise ValidationFailure("G14", f"{relpath}: usage_period.days が範囲外です: {days} (許容 28〜31)")
     if days != (end_date - start_date).days + 1:
@@ -767,9 +771,11 @@ def gate14_post_schema(post: object, relpath: str, today_jst: date, meter_read_d
     tariff_basis = post["tariff_basis"]
     if tariff_basis not in ("provisional", "confirmed"):
         raise ValidationFailure("G14", f"{relpath}: tariff_basis が不正です: {tariff_basis!r}")
-    # 追補(2026-09-26) D': tariff_basis=="confirmed" <=> stage=="final"。
-    if (tariff_basis == "confirmed") != (stage == "final"):
-        raise ValidationFailure("G14", f"{relpath}: tariff_basis({tariff_basis})とstage({stage})が対応していません")
+    # QA再指摘2026-09-26 R4: 不変条件は「stage=="final" ⇒ tariff_basis=="confirmed"」の
+    # 片方向のみ（追補D'を緩和）。速報でも単価は既に確定済みという状態はありうる
+    # （buy_source/sell_sourceだけが未確定な月）。
+    if stage == "final" and tariff_basis != "confirmed":
+        raise ValidationFailure("G14", f"{relpath}: stage=final なのに tariff_basis が confirmed ではありません: {tariff_basis!r}")
 
     l3_source = _require_dict(post["l3_source"], relpath, "l3_source")
     for key in ("buy", "sell"):
@@ -790,30 +796,33 @@ def gate14_post_schema(post: object, relpath: str, today_jst: date, meter_read_d
 def gate15_post_recompute(
     post: dict, relpath: str, layers_json: dict, daily_json: list[dict], incoming: Path, meter_read_day: int,
 ) -> None:
-    """G15: 確定済みの月はlayers.months[]（is_closable）から、速報段階の月は
-    layers.preliminary_months[]から、monthly_report.build_snapshot_body()で再計算した本体と
-    一致すること（layer由来の項目(layers/l2_band/l3_source/stage/estimation/days_*)だけを
-    比較する。energy/weather/comparisonはmonthly_report.run()と同じ「改版時は既存値を
-    引き継ぐ」規則があるため一致要求から除く。QA指摘2026-09-26 item6）。
-    確定済み(stage=final)なのに確定条件(is_closable)を満たさない月（420日窓の外に出た等で
-    凍結された確定版。QA指摘2026-09-26 item1）は、前回コミットの本体と一致する場合だけ許可
-    する。速報・確定のどちらでもない月は、HEAD~1に同一内容で存在する場合だけ許可する。"""
+    """G15: 確定段階(stage=final)の本体は monthly_report.expected_final_body() で
+    「今のlayers/dailyデータと前回コミットの本体」から期待される本体を計算し、完全一致する
+    ことを要求する（run()と同じ関数を共有するため、新規公開・速報からの遷移・既存確定版の
+    改版のどのケースでも同じロジックで検証できる。QA再指摘2026-09-26 N3: 以前はlayer由来
+    項目だけしか比較しておらず、energy/weather/comparisonの捏造がすり抜けていた）。
+    確定条件(is_closable)を満たさない「凍結された確定版」（420日窓の外に出た等）は、
+    前回コミットの本体と完全一致する場合だけ許可する。
+    速報段階は、前回と本体が同一なら凍結として許可、そうでなければ
+    layers.preliminary_months[]からの再計算と完全一致することを要求する。"""
     billing_month = post["billing_month"]
     stage = post["stage"]
     daily_by_date = {row["date"]: row for row in daily_json}
     body = monthly_report.body_without_meta(post)
+    prev = _previous_commit_json(incoming, relpath)
+    prev_stage = prev.get("stage") if isinstance(prev, dict) else None
+    prev_body = monthly_report.body_without_meta(prev) if isinstance(prev, dict) else None
 
     if stage == "final":
         month_rec = next((m for m in layers_json.get("months", []) if m["billing_month"] == billing_month), None)
         if monthly_report.is_closable(month_rec):
-            recomputed = monthly_report.build_snapshot_body(billing_month, layers_json, daily_by_date, "final", meter_read_day)
-            if recomputed is None or monthly_report.layer_derived_subset(recomputed) != monthly_report.layer_derived_subset(body):
-                raise ValidationFailure("G15", f"{relpath}: layers.months[]からの再計算と本体が一致しません")
+            expected = monthly_report.expected_final_body(billing_month, layers_json, daily_by_date, meter_read_day, prev_stage, prev_body)
+            if expected is None or expected != body:
+                raise ValidationFailure("G15", f"{relpath}: layers.months[]からの再計算(expected_final_body)と本体が一致しません")
             return
         # 確定条件を満たさない「凍結された確定版」: 前回コミットの本体と一致する場合だけ許可する
         # （420日窓の外に出てmonths[]から消えた確定月が恒久的にreject対象になるのを防ぐ）。
-        prev = _previous_commit_json(incoming, relpath)
-        if isinstance(prev, dict) and prev.get("stage") == "final" and monthly_report.body_without_meta(prev) == body:
+        if prev_stage == "final" and prev_body == body:
             return
         raise ValidationFailure(
             "G15",
@@ -821,8 +830,7 @@ def gate15_post_recompute(
         )
 
     if stage == "preliminary":
-        prev = _previous_commit_json(incoming, relpath)
-        if isinstance(prev, dict) and monthly_report.body_without_meta(prev) == body:
+        if prev_body is not None and prev_body == body:
             return  # 既に公開済みの速報（凍結）
         recomputed = monthly_report.build_snapshot_body(billing_month, layers_json, daily_by_date, "preliminary", meter_read_day)
         if recomputed != body:
@@ -1024,10 +1032,13 @@ def validate(
 
     resolved_input_paths = input_paths if input_paths is not None else default_input_paths(repo)
 
-    today_jst = today if today is not None else datetime.now(JST).date()
-    tariff_path = resolved_input_paths["tariff_sha256"]
-    meter_read_day = json.loads(tariff_path.read_text(encoding="utf-8"))["meter_read_day"]
+    # QA再指摘2026-09-26 R2: tariff.jsonの読み込み(meter_read_day取得)はpostが1件以上
+    # あるときだけ行う（posts/が無い日にファイルアクセス・I/Oを増やさない）。
     posts_by_relpath = {relpath: parsed[relpath] for relpath in post_files}
+    if posts_by_relpath:
+        today_jst = today if today is not None else datetime.now(JST).date()
+        tariff_path = resolved_input_paths["tariff_sha256"]
+        meter_read_day = json.loads(tariff_path.read_text(encoding="utf-8"))["meter_read_day"]
     for relpath, post in posts_by_relpath.items():
         gate14_post_schema(post, relpath, today_jst, meter_read_day)
     for relpath, post in posts_by_relpath.items():

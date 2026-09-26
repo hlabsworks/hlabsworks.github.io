@@ -53,6 +53,8 @@ def make_month_record(
     l3_net_fit: int = 3000,
     l2_band: tuple[int, int] = (3500, 4500),
     with_uncertainty: bool = True,
+    tariff_provisional: bool | None = None,
+    tariff_source_month: str | None = None,
 ) -> dict:
     days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
     days_usable = days if days_usable is None else days_usable
@@ -74,6 +76,11 @@ def make_month_record(
         record["uncertainty"] = {"L2": {"net_cost_fit_yen_min": l2_band[0], "net_cost_fit_yen_max": l2_band[1]}}
     else:
         record["uncertainty"] = {}
+    if tariff_provisional is not None:
+        # layer_model.build_month_layers(allow_provisional_tariff=True)が付けるキー
+        # （QA再指摘2026-09-26 R4: tariff_basisはこのキーから決まる）。
+        record["tariff_provisional"] = tariff_provisional
+        record["tariff_source_month"] = tariff_source_month
     return record
 
 
@@ -183,7 +190,10 @@ class BuildSnapshotBodyTest(unittest.TestCase):
         self.assertIsNone(mr.build_snapshot_body("2026-10", layers, daily_by_date, "final", METER_READ_DAY))
 
     def test_preliminary_stage_accepts_sensor_sourced_month(self):
-        rec = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_buy_source="sensor")
+        rec = make_month_record(
+            "2026-10", "2026-09-02", "2026-10-01", l3_buy_source="sensor",
+            tariff_provisional=True, tariff_source_month="2026-09",
+        )
         layers = {"months": [], "preliminary_months": [rec]}
         daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
         daily_by_date = {r["date"]: r for r in daily_rows}
@@ -191,6 +201,16 @@ class BuildSnapshotBodyTest(unittest.TestCase):
         self.assertIsNotNone(body)
         self.assertEqual(body["stage"], "preliminary")
         self.assertEqual(body["tariff_basis"], "provisional")
+
+    def test_preliminary_stage_with_confirmed_tariff_reports_confirmed_basis(self):
+        # QA再指摘2026-09-26 R4: 単価が既に確定していれば、stage=="preliminary"でも
+        # tariff_basis=="confirmed"になる（buy_source/sell_sourceが未確定なだけの月）。
+        rec = make_month_record("2026-10", "2026-09-02", "2026-10-01", l3_buy_source="sensor")
+        layers = {"months": [], "preliminary_months": [rec]}
+        daily_rows = make_daily_rows(date(2026, 9, 2), date(2026, 10, 1))
+        daily_by_date = {r["date"]: r for r in daily_rows}
+        body = mr.build_snapshot_body("2026-10", layers, daily_by_date, "preliminary", METER_READ_DAY)
+        self.assertEqual(body["tariff_basis"], "confirmed")
 
     def test_scaled_month_reports_partial_days_usable(self):
         layers, daily_by_date = self._layers_and_daily(estimation="scaled", days_usable=25)

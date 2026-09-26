@@ -257,12 +257,48 @@ def build_snapshot_body(billing_month: str, layers: dict, daily_by_date: dict, s
         "energy": _sum_energy(daily_by_date, start, end),
         "weather": classify_weather(daily_by_date, start, end),
         "comparison": _comparison(daily_by_date, billing_month, meter_read_day),
-        # 追補(2026-09-26) B': tariff_basis は stage との1対1対応で固定する
-        # （tariff_basis=="confirmed" <=> stage=="final"、validate_metrics.py G14で検査）。
         "stage": stage,
-        "tariff_basis": "confirmed" if stage == "final" else "provisional",
+        # QA再指摘2026-09-26 R4: tariff_basisはstageで決め打ちせず、レコード自身の
+        # tariff_provisional（layer_model.build_month_layers(allow_provisional_tariff=True)
+        # が付ける）から決める。months[]のレコード(allow_provisional_tariff=False)は
+        # このキーを持たないため常にFalse=="confirmed"になる。不変条件は「stage=="final"
+        # ならtariff_basis=="confirmed"」の片方向のみ（速報でも単価は既に確定済みという
+        # 状態はありうるため。追補D'を緩和。validate_metrics.py G14参照）。
+        "tariff_basis": "provisional" if record.get("tariff_provisional") else "confirmed",
         "l3_source": {"buy": l3.get("buy_source"), "sell": l3.get("sell_source")},
     }
+
+
+def expected_final_body(
+    billing_month: str, layers: dict, daily_by_date: dict, meter_read_day: int,
+    prev_stage: str | None, prev_body: dict | None,
+) -> dict | None:
+    """確定版として書き込む／検証すべき本体を返す。billing_monthが確定条件(is_closable)を
+    満たす前提で呼ぶ（呼び出し側で確認済みであること）。run()とvalidate_metrics.pyのG15の
+    両方がこの関数を共有し、「本体はどうあるべきか」のロジックを1箇所にする
+    （QA指摘2026-09-26 N3: 以前はG15がenergy/weather/comparisonを再計算と比較しておらず、
+    新規確定・速報からの遷移でも捏造値が通っていた）。
+
+    prev_stage/prev_body: 前回のpost（無ければ両方None）。
+    - 前回が無い、または前回がfinalでない（速報からの遷移含む）: 全項目を新規に計算する。
+    - 前回がfinalで、layer由来の項目(layers/l2_band/l3_source/stage/estimation/days_*)が
+      変わっていなければ、前回の本体をそのまま返す（凍結。改版しない）。
+    - 前回がfinalで、layer由来の項目が変わっていれば、layer由来だけ再計算し、
+      energy/weather/comparisonは前回の値を引き継ぐ（420日窓が動くだけの無意味な改版を
+      避けるため）。
+    """
+    recomputed = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
+    if recomputed is None:
+        return None
+    if prev_stage != "final" or prev_body is None:
+        return recomputed
+    if layer_derived_subset(recomputed) == layer_derived_subset(prev_body):
+        return prev_body
+    result = dict(recomputed)
+    result["energy"] = prev_body["energy"]
+    result["weather"] = prev_body["weather"]
+    result["comparison"] = prev_body["comparison"]
+    return result
 
 
 def _write_snapshot(path: Path, snapshot: dict) -> None:
@@ -307,46 +343,43 @@ def run(
 
         if existing is not None and existing.get("stage") == "final":
             # 確定後は凍結が既定。420日窓の外に出てmonths[]から消えても一切触らない。
-            # 改版の要否はlayer由来の項目だけで判定し、energy/weather/comparisonは既存値を
-            # 引き継ぐ（QA指摘2026-09-26: daily.jsonの420日窓が動くだけで無意味な改版が
-            # 発生しないようにする）。
+            # 改版の要否・本体はexpected_final_body()に委ねる（run()とG15で同じロジックを
+            # 共有する。QA指摘2026-09-26 N3）。
             if not closable:
                 continue
-            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
-            if new_body is None:
-                continue
-            if layer_derived_subset(new_body) == layer_derived_subset(existing):
-                continue
+            expected = expected_final_body(
+                billing_month, layers, daily_by_date, meter_read_day, "final", body_without_meta(existing),
+            )
+            if expected is None or expected == body_without_meta(existing):
+                continue  # 計算不能、または本体に変化なし(凍結)
             if existing["revision"] >= MAX_REVISION:
                 raise RevisionLimitExceededError(
                     f"{billing_month}: revisionが上限({MAX_REVISION})に達したため書き込みません"
                 )
-            new_body["energy"] = existing["energy"]
-            new_body["weather"] = existing["weather"]
-            new_body["comparison"] = existing["comparison"]
             existing["revision"] = existing["revision"] + 1
             existing["revised"] = today.isoformat()
             # この改版は速報からの遷移ではなく確定後の訂正（QA指摘2026-09-26 item10:
             # render_monthly_posts.py が改版文の表現を選ぶための目印）。
             existing["transitioned_from_preliminary"] = False
-            existing.update(new_body)
+            existing.update(expected)
             _write_snapshot(path, existing)
             continue
 
         if existing is not None and existing.get("stage") == "preliminary":
             # 速報は初回公開後は凍結する（revision==1を維持）。確定したときだけ確定版へ遷移する
-            # （遷移時は新規公開に近いため、energy/weather/comparisonも新しく計算し直す）。
+            # （遷移時は新規公開に近いため、energy/weather/comparisonも新しく計算し直す。
+            # prev_stage="preliminary"を渡すのでexpected_final_bodyは必ず新規計算になる）。
             if not closable:
                 continue
-            new_body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
-            if new_body is None:
+            expected = expected_final_body(billing_month, layers, daily_by_date, meter_read_day, "preliminary", None)
+            if expected is None:
                 continue
             if existing["revision"] >= MAX_REVISION:
                 raise RevisionLimitExceededError(
                     f"{billing_month}: revisionが上限({MAX_REVISION})に達したため書き込みません"
                 )
             snapshot = {
-                **new_body,
+                **expected,
                 "first_published": existing["first_published"],
                 "revision": existing["revision"] + 1,
                 "revised": today.isoformat(),
@@ -358,11 +391,11 @@ def run(
 
         # 新規（この請求月のposts/*.jsonがまだ無い）
         if closable:
-            body = build_snapshot_body(billing_month, layers, daily_by_date, "final", meter_read_day)
-            if body is None:
+            expected = expected_final_body(billing_month, layers, daily_by_date, meter_read_day, None, None)
+            if expected is None:
                 continue
             snapshot = {
-                **body, "first_published": today.isoformat(), "revision": 1, "revised": None,
+                **expected, "first_published": today.isoformat(), "revision": 1, "revised": None,
                 "transitioned_from_preliminary": False,
             }
             _write_snapshot(path, snapshot)

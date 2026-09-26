@@ -224,6 +224,18 @@ class BaselineTest(unittest.TestCase):
             warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False)
             self.assertEqual(warnings, [])
 
+    def test_tariff_json_is_not_read_when_there_are_no_posts(self):
+        # QA再指摘2026-09-26 R2: postsが0件ならtariff.jsonを読まない。存在しないパスを
+        # tariff_sha256に渡すと、postsが1件でもあればjson.loads()がFileNotFoundErrorで
+        # 例外になるはずだが、0件ならそのコードパス自体を通らないため例外にならない
+        # （G13はreal_path.exists()==Falseなら静かにスキップする既存仕様）。
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = write_incoming(Path(tmp))
+            bogus_input_paths = validate_metrics.default_input_paths(REPO_ROOT)
+            bogus_input_paths["tariff_sha256"] = Path(tmp) / "does-not-exist.json"
+            warnings = validate_metrics.validate(incoming, REPO_ROOT, allow_history_change=False, input_paths=bogus_input_paths)
+            self.assertEqual(warnings, [])
+
     def test_old_shaped_daily_json_is_rejected_by_gate4(self):
         """旧スキーマ（consumption_kwh/surplus_kwh を含む）を混ぜると G4 で弾かれることを
         確認する（廃止キーの回帰防止）。QA指摘F1: 以前は data/metrics/daily.json の実ファイルを
@@ -1031,6 +1043,21 @@ class Gate14PostSchemaTest(unittest.TestCase):
             validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G14")
 
+    def test_bool_typed_schema_version_is_rejected(self):
+        # QA再指摘2026-09-26 R1: type(x) is intでbool混入を排除する(True==1だが型はboolであるべき)。
+        post, _ = make_valid_post_fixture()
+        post["schema_version"] = True
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
+    def test_bool_typed_usage_period_days_is_rejected(self):
+        post, _ = make_valid_post_fixture()
+        post["usage_period"]["days"] = True
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate14_post_schema(post, "posts/2026-10.json", self._today(), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G14")
+
 
 class Gate15PostRecomputeTest(unittest.TestCase):
     def test_valid_final_post_passes(self):
@@ -1055,6 +1082,64 @@ class Gate15PostRecomputeTest(unittest.TestCase):
         with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
             validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
         self.assertEqual(ctx.exception.gate, "G15")
+
+    # --- QA再指摘2026-09-26 N3: energy/weather/comparisonの捏造がすり抜けていた -----------------
+
+    def test_new_final_post_with_fabricated_energy_is_rejected(self):
+        # 前回のpostが無い(新規公開)場合、energyを実際の発電量とかけ離れた値に書き換えても
+        # 本体全体が再計算(expected_final_body)と一致しないためrejectされる。
+        post, layers_json = make_valid_post_fixture()
+        post["energy"]["solar_kwh"] = 5999.0  # 捏造
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G15")
+
+    def test_new_preliminary_post_with_fabricated_weather_is_rejected(self):
+        post, layers_json = make_valid_post_fixture(stage="preliminary")
+        post["weather"] = {"sunny_days": 30, "cloudy_days": 0, "overcast_days": 0, "unknown_days": 0}  # 捏造
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), Path("/nonexistent"), POST_METER_READ_DAY)
+        self.assertEqual(ctx.exception.gate, "G15")
+
+    def test_frozen_confirmed_post_with_unchanged_body_passes(self):
+        # 既存の確定版(layer由来が変わっていない)は、energy/weather/comparisonを含め
+        # 本体全体が前回と同一であれば通る（凍結）。
+        post, layers_json = make_valid_post_fixture()
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=post, new_post=post)
+            validate_metrics.gate15_post_recompute(post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY)
+
+    def test_frozen_confirmed_post_with_fabricated_energy_is_rejected(self):
+        # layer由来は前回と同じ(＝改版すべきでない)のに、energyだけ前回と異なる値に
+        # 書き換えると拒否される（QA再指摘2026-09-26 N3の核心: 以前はここが素通りしていた）。
+        old_post, layers_json = make_valid_post_fixture()
+        new_post = copy.deepcopy(old_post)
+        new_post["energy"]["solar_kwh"] = 5999.0  # 捏造（layers/l2_band/l3_source等は不変のまま）
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            with self.assertRaises(validate_metrics.ValidationFailure) as ctx:
+                validate_metrics.gate15_post_recompute(new_post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY)
+            self.assertEqual(ctx.exception.gate, "G15")
+
+    def test_revised_confirmed_post_inherits_previous_energy(self):
+        # layer由来が変わった正当な改版では、energy/weather/comparisonは前回の値を
+        # 引き継いだものだけが通る（新しく計算し直した値は通らない）。
+        old_post, layers_json = make_valid_post_fixture()
+        layers_json["months"][0]["layers"]["L3"]["net_cost_fit_yen"] += 100  # layer由来を変える
+        expected = monthly_report.expected_final_body(
+            POST_BILLING_MONTH, layers_json, {r["date"]: r for r in make_daily_fixture()},
+            POST_METER_READ_DAY, "final", monthly_report.body_without_meta(old_post),
+        )
+        new_post = {**expected, "first_published": old_post["first_published"], "revision": 2, "revised": "2026-11-01", "transitioned_from_preliminary": False}
+        daily_by_date = {r["date"]: r for r in make_daily_fixture()}
+        with tempfile.TemporaryDirectory() as tmp:
+            incoming = _git_repo_with_two_post_versions(Path(tmp), old_post=old_post, new_post=new_post)
+            validate_metrics.gate15_post_recompute(new_post, "posts/2026-10.json", layers_json, list(daily_by_date.values()), incoming, POST_METER_READ_DAY)
+            self.assertEqual(new_post["energy"], old_post["energy"])  # 引き継がれていること
 
 
 class Gate16PostHistoryTest(unittest.TestCase):

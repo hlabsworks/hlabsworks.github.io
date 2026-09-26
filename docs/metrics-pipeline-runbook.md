@@ -82,13 +82,22 @@ Host エイリアス推奨）、`<controller>` は制御機(solarchgctl)の SSH 
     ```
     `/var/log/blog-metrics/run.log` に詳細ログが残る。
 
-**月次確定の自動化（任意、DDR実装手順S1）**: 上記の初回配備手順だけでは §6 の月次作業
-（Mac上での手動 import・`deploy-homelab.sh` 再配備）が引き続き必要。別プロセス（本リポジトリの
-対象外・private）が `/var/lib/energy-fetch/handoff/` に
-`official_buy.json`/`official_sell.json`/`tariff_months.json` を置くようになると、
-`run-daily.sh` の `stage_inputs` がそれを検査して自動的に `~/solar-metrics-data/inputs/` へ
-反映するようになる。このディレクトリ・別プロセス自体が未設置でも `run-daily.sh` の挙動は
-変わらない（`--auto-inputs-dir` の既定パスが存在しなければ何もしない）。詳細は §6 末尾参照。
+**月次確定の自動化（任意、DDR実装手順S1）を導入する場合の配備順序（重要・QA指摘F4）**:
+S1 で `run-daily.sh`/`validate_metrics.py`（G1 の `inputs/*.json` 許可等）が同時に変わるため、
+**必ず「① このリポジトリの feat ブランチを main にマージする → ② `deploy-homelab.sh` で
+homelab に配備する」の順序を守ること**。逆順（先に homelab へ配備）で実行すると、S1 対応済みの
+新しい `run-daily.sh` が最初の実行だけで `~/solar-metrics-data/inputs/official_buy.json`・
+`official_sell.json` を（`--auto-inputs-dir` のhandoffが未設置でも）bundle の値から
+`clone/inputs/` へ**必ず初期コピーし、データ用リポジトリに新しく `inputs/` が追加された状態で
+push してしまう**。このとき GitHub Actions が checkout する main がまだ S1 未マージ（旧
+`validate_metrics.py`）だと、G1（旧: 許可ファイルの完全一致要求）が `inputs/*.json` を
+「許可されていないファイル」として拒否し、Pages のデプロイが止まる。
+「別プロセス（`/var/lib/energy-fetch/handoff/`、private、本リポジトリの対象外）が未設置でも
+`run-daily.sh` の挙動は変わらない」という表現は誤り（旧版の記載を訂正）: handoff
+（`--auto-inputs-dir` の既定パス）が無くても、上記の移行措置的な初期コピー自体は S1 導入後の
+最初の実行で必ず発生する。「変わらない」のは、S1 が main にマージ済みの状態で ① を終えてから
+② を行った場合に限る（その場合は新しい G1 がこの `inputs/` 追加を最初から許可しているため
+問題にならない）。詳細は §6 末尾参照。
 
 ## 2. 鍵の作成と authorized_keys
 
@@ -298,7 +307,10 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
    --check-inputs-dir`（G2/G3/G6/G7/G18/G19）で検査し、合格したファイルだけ
    `~/solar-metrics-data/inputs/` へ反映する。不合格なら既存の `inputs/` を維持したまま
    データのcommit・pushは続行し、run全体は失敗扱い（`run.log` に理由が残り、3暦日連続で
-   LINE通知の対象になる）。
+   LINE通知の対象になる）。G19（突合）は、`tariff_months.json` が `tariff.json` に対して
+   **新たに確定させた**請求月について、`official_buy.json` に対応する月があり
+   `reconcile_bill()==0` であることを必須にする（無ければ fatal）。`tariff.json` 側で
+   既に確定済みの月にはこの必須要件は適用されない。
 2. **手動（従来どおり、移行措置）**: 上記1のファイルが1つも無い状態が続く限り、Mac上で
    `import_official_buy.py`/`import_official_sell.py` を実行して
    `data/metrics/official_buy.json`/`official_sell.json` を更新し、
@@ -309,8 +321,22 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
    `tariff.json` 自体の手動更新で代替する）。
 
 `tariff.json`（骨格）に新しい請求月の単価を直接追記する運用（`deploy-homelab.sh` による
-`allow-history-once` フラグ、上記参照）は変わらない。`bill_model.merge_tariff()` は
-`tariff.json` と `inputs/tariff_months.json` の両方に同じ請求月の値があり、かつ値が
-食い違う場合は `tariff_conflict` として扱う（`run-daily.sh` はその回だけ骨格の値のみで
-続行し、run全体を失敗扱いにする）。両方に登録する運用は避け、どちらか一方（通常は
-自動取り込み側）に一本化すること。
+`allow-history-once` フラグ、上記参照）は変わらない。**「両方には登録しない」が原則**:
+`import_official_inputs.py`（自動取り込み側）は、`tariff.json` で既に確定している請求月
+（fuel と capacity の両方がある月）を `inputs/tariff_months.json` に二重登録しない
+（`official_buy.json` へは従来どおり登録する）。
+
+それでも `tariff.json` と `inputs/tariff_months.json` の両方に同じ請求月の値があり、かつ
+値が食い違う場合（例: `tariff.json` を手動更新した後、古い `inputs/tariff_months.json`
+がまだ残っている等）は、`run-daily.sh` の `build_effective_tariff` が
+`bill_model.tariff_conflicts()` で衝突箇所を特定し、**衝突した月だけを
+`~/solar-metrics-data/inputs/tariff_months.json` から自動的に取り除いて push する**
+（`excluded_months[月] = "tariff_conflict"` として記録。他の月・`official_buy.json`・
+`official_sell.json` は変更しない）。除去後の内容で実効tariffを作り直してデータの
+commit・pushは通常どおり続行しつつ、その回の `run-daily.sh` はrun全体としては失敗扱いに
+なる（`run.log` に除去した月が記録され、3暦日連続で LINE通知の対象になる。
+`allow-history-once` フラグの手動操作は不要）。
+
+**S1 導入時の配備順序は §1 末尾の注意を必ず参照すること**（main へのマージ → 
+`deploy-homelab.sh` の順を守らないと、初回実行の移行措置的な `inputs/` 追加が旧
+`validate_metrics.py` の G1 に拒否されて Pages のデプロイが止まる）。

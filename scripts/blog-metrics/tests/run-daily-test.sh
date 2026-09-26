@@ -117,6 +117,51 @@ esac
 STUB
   chmod +x "$T/bin/stub-export-full-profile.sh"
 
+  # --- 請求期間全体（複数日）のプロファイルを返すスタブ(QA指摘2026-09-26 item15)。
+  # aggregate.shはprofileクエリを1回だけ呼び、全期間分のCSVを一括で返す仕様
+  # （"全バケットを一度に返す（1日ずつ区切る仕様ではない）"）。stub-export-full-profile.shは
+  # 1日分(固定のSTUB_FULL_PROFILE_DATE)しか返さないため月次テストには使えない。ここでは
+  # 呼ばれた$DATE(=--profile-since)からSTUB_FULL_MONTH_END_DATEまで、日ごとに288バケット
+  # (全チャネル定数値)を1回の呼び出しでまとめて返す（確定条件を満たす月を作るための合成データ）。
+  cat > "$T/bin/stub-export-full-month.sh" <<'STUB'
+#!/bin/bash
+set -euo pipefail
+CMD=""
+DATE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --db) shift 2 ;;
+    daily) CMD="daily"; shift ;;
+    meta) CMD="meta"; shift ;;
+    profile) CMD="profile"; DATE="$2"; shift 2 ;;
+    ecoflow_daily) CMD="ecoflow_daily"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$CMD" in
+  daily) printf '%s\n' "${STUB_DAILY_JSON}" ;;
+  meta) printf '%s\n' "${STUB_META_JSON}" ;;
+  ecoflow_daily)
+    echo "stub-export: 未知のクエリID: ecoflow_daily" >&2
+    exit 64
+    ;;
+  profile)
+    echo "bucket_at,solar_w,buy_w,sell_w,nichicon_pv_w,nichicon_battery_w,nichicon_soc,eco_ac_in_w,eco_ac_out_w,power_n,nichicon_n,ecoflow_n"
+    end="${STUB_FULL_MONTH_END_DATE:?STUB_FULL_MONTH_END_DATE not set}"
+    d="${DATE}"
+    while [ "$(date -j -f '%Y-%m-%d' "$d" +%s 2>/dev/null || date -d "$d" +%s)" -le "$(date -j -f '%Y-%m-%d' "$end" +%s 2>/dev/null || date -d "$end" +%s)" ]; do
+      for h in $(seq -w 0 23); do
+        for m in 00 05 10 15 20 25 30 35 40 45 50 55; do
+          echo "${d} ${h}:${m},500.0,0.0,100.0,0.0,0.0,50.0,0.0,0.0,10,10,10"
+        done
+      done
+      d=$(date -j -v+1d -f '%Y-%m-%d' "$d" +%Y-%m-%d 2>/dev/null || date -d "$d + 1 day" +%Y-%m-%d)
+    done
+    ;;
+esac
+STUB
+  chmod +x "$T/bin/stub-export-full-month.sh"
+
   # --- notify.sh スタブ（呼び出しを記録するだけ） ---
   mkdir -p "$T/notify"
   cat > "$T/bin/fake-notify.sh" <<STUBEOF
@@ -137,6 +182,7 @@ STUBEOF
   cp "$BLOG_METRICS_SRC/aggregate.sh" "$BUNDLE/aggregate.sh"
   cp "$BLOG_METRICS_SRC/build_daily.py" "$BUNDLE/build_daily.py"
   cp "$BLOG_METRICS_SRC/validate_metrics.py" "$BUNDLE/validate_metrics.py"
+  cp "$BLOG_METRICS_SRC/monthly_report.py" "$BUNDLE/monthly_report.py"
   cp "$BLOG_METRICS_SRC/layer_model.py" "$BUNDLE/layer_model.py"
   cp "$BLOG_METRICS_SRC/bill_model.py" "$BUNDLE/bill_model.py"
   cp "$BLOG_METRICS_SRC/delta_model.py" "$BUNDLE/delta_model.py"
@@ -225,6 +271,103 @@ run_daily_failure_args() {
 
 origin_log_count() { git --git-dir="$ORIGIN" log --oneline main 2>/dev/null | wc -l | tr -d ' '; }
 notify_calls() { [ -f "$T/notify/calls.log" ] && cat "$T/notify/calls.log" || true; }
+
+# QA指摘2026-09-26 item15用の共通セットアップ: 確定条件(is_closable)を満たす請求月を1つ
+# 用意する。請求月は既存テストの前提(setup()のSEEDが"2026-09-01"を最終日としてorigin
+# にpushしている)と衝突しないよう固定で"2026-09"（使用期間2026-08-02〜2026-09-01）にし、
+# 09-01の行だけはSEEDのSTUB_DAILY_JSON既定値と完全に一致させる（G9の確定済み日一致要求を
+# 満たすため）。EARLY_EPOCH_BUNDLE/monthly_report.py の FIRST_REPORT_BILLING_MONTH を
+# "2026-09"に書き換える（本番の既定"2026-10"は本テスト実行時点ではまだ請求期間が
+# 終わっていないため）。BLOG_METRICS_TODAY をこのテストの間だけ"2026-09-05"に上書きする
+# （usage_period.end+1日以降・実時刻以前を満たすposts側のfirst_publishedにするため）。
+# 戻り値: グローバル変数 EARLY_EPOCH_BUNDLE / TARGET_MONTH / PROFILE_SINCE_DAYS を設定する。
+setup_closable_month_bundle() {
+  EARLY_EPOCH_BUNDLE="$T/blog-metrics-early-epoch"
+  cp -R "$BUNDLE" "$EARLY_EPOCH_BUNDLE"
+  python3 - "$EARLY_EPOCH_BUNDLE" "$T" <<'PY'
+import json
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+t = Path(sys.argv[2])
+sys.path.insert(0, str(bundle))
+import bill_model  # noqa: E402
+
+target_month = "2026-09"
+start, end = bill_model.billing_period(target_month, 2)  # 2026-08-02..2026-09-01
+
+tariff_path = bundle / "inputs" / "tariff.json"
+tariff = json.loads(tariff_path.read_text(encoding="utf-8"))
+# QA指摘2026-09-26 item15の副作用対応: build_daily.pyのsaving_yenはbill_model.per_kwh_prices()
+# の燃料費調整単価を使い、target_month(2026-09)が未確定の間はSEEDのpush時点で「直近確定月
+# (2026-08)の単価を暫定適用」していた。target_monthに新しい単価を追加すると2026-09-01の
+# saving_yenがSEEDと変わりG9(確定済み日の値不変)に落ちるため、直近確定月と同じ値にする。
+confirmed_months = [k for k in tariff["fuel_cost_adjustment_yen_per_kwh"] if k[:1].isdigit()]
+latest_confirmed_month = max(confirmed_months)
+fuel_rate = tariff["fuel_cost_adjustment_yen_per_kwh"][latest_confirmed_month]
+tariff["fuel_cost_adjustment_yen_per_kwh"][target_month] = fuel_rate
+tariff["capacity_contribution_yen_per_month"][target_month] = 213
+tariff_path.write_text(json.dumps(tariff, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+buy_path = bundle / "inputs" / "official_buy.json"
+official_buy = json.loads(buy_path.read_text(encoding="utf-8"))
+official_buy["months"].append({
+    "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
+    "official_buy_kwh": 80.0, "billed_yen": 3500,
+})
+buy_path.write_text(json.dumps(official_buy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+sell_path = bundle / "inputs" / "official_sell.json"
+official_sell = json.loads(sell_path.read_text(encoding="utf-8"))
+official_sell["months"].append({
+    "settlement_month": target_month, "period_from": start.isoformat(), "period_to": end.isoformat(),
+    "official_sell_kwh": 300.0, "sell_revenue_yen": 4800,
+})
+sell_path.write_text(json.dumps(official_sell, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+mr_path = bundle / "monthly_report.py"
+src = mr_path.read_text(encoding="utf-8")
+needle = 'FIRST_REPORT_BILLING_MONTH = "2026-10"'
+assert needle in src, "monthly_report.py の FIRST_REPORT_BILLING_MONTH が見つかりません"
+mr_path.write_text(src.replace(needle, f'FIRST_REPORT_BILLING_MONTH = "{target_month}"'), encoding="utf-8")
+
+# 2026-09-01は setup() の既定STUB_DAILY_JSONにも含まれ、origin の SEED commit に
+# 既に同じ日付でpush済み（G9: 確定済み日は前コミットと値まで一致させる必要がある）。
+SEED_LAST_DAY = {
+    "date": "2026-09-01", "solar_kwh": 20.0, "buy_kwh": 0.0, "sell_kwh": 5.0,
+    "nichicon_charge_kwh": 1.5, "ecoflow_charge_kwh": None, "status": "COMPLETE",
+}
+daily_rows = []
+d = start
+while d <= end:
+    if d.isoformat() == SEED_LAST_DAY["date"]:
+        daily_rows.append(SEED_LAST_DAY)
+    else:
+        daily_rows.append({
+            "date": d.isoformat(), "solar_kwh": 20.0, "buy_kwh": 1.0, "sell_kwh": 5.0,
+            "nichicon_charge_kwh": 1.0, "ecoflow_charge_kwh": 0.5, "status": "COMPLETE",
+        })
+    d += timedelta(days=1)
+
+(t / "stub_daily_full.json").write_text(json.dumps(daily_rows, ensure_ascii=False), encoding="utf-8")
+(t / "stub_meta_full.json").write_text(json.dumps({
+    "power_history_since": start.isoformat(), "nichicon_data_since": start.isoformat(), "ecoflow_data_since": None,
+}, ensure_ascii=False), encoding="utf-8")
+(t / "target_month.txt").write_text(target_month, encoding="utf-8")
+(t / "profile_end.txt").write_text(end.isoformat(), encoding="utf-8")
+# 実行時刻(date.today())から2026-08-02まで確実に遡れるだけの--profile-since-daysを計算する
+# （run-daily.sh自身の--profile-sinceは実時刻基準で計算されるため）。
+(t / "profile_since_days.txt").write_text(str((date.today() - start).days + 2), encoding="utf-8")
+PY
+  TARGET_MONTH=$(cat "$T/target_month.txt")
+  export STUB_DAILY_JSON=$(cat "$T/stub_daily_full.json")
+  export STUB_META_JSON=$(cat "$T/stub_meta_full.json")
+  export STUB_FULL_MONTH_END_DATE=$(cat "$T/profile_end.txt")
+  export BLOG_METRICS_TODAY="2026-09-05"
+  PROFILE_SINCE_DAYS=$(cat "$T/profile_since_days.txt")
+}
 
 echo "# 1. 変更あり: 1 commit 1 push（origin のコミット数が1増える）"
 setup
@@ -553,6 +696,95 @@ if printf '%s' "$STDERR16" | /usr/bin/grep -qF "ecoflow_daily の取得に失敗
 else
   ok
 fi
+teardown
+
+echo "# 17. monthly_report.py 呼び出し: run.log に実行の証跡が残る（設計判断2026-09-23/26）"
+setup
+run_daily_success_args >/dev/null 2>&1
+RC=$?
+assert_eq "17 exit" "$RC" "0"
+assert_contains "17 log mentions monthly_report.py invocation" "$(cat "$LOG_FILE" 2>/dev/null)" "monthly_report.py: wrote"
+[ -d "$CLONE/posts" ] && ok || fail "17 posts/ directory not created in clone"
+teardown
+
+echo "# 18. monthly_report.py が失敗してもデータのcommit・pushは続き、run-daily.shはexit 1になる"
+setup
+BROKEN_MR_BUNDLE="$T/blog-metrics-broken-mr"
+cp -R "$BUNDLE" "$BROKEN_MR_BUNDLE"
+cat > "$BROKEN_MR_BUNDLE/monthly_report.py" <<'STUB'
+#!/usr/bin/env python3
+# validate_metrics.py が `import monthly_report` するため、CLI実行時だけ失敗させる
+# （import時に落とすとvalidate_metrics.py自体が動かなくなり、テストの意図と違う経路で
+# commitが取り消されてしまう）。
+import sys
+if __name__ == "__main__":
+    print("monthly_report.py: forced failure for test 18", file=sys.stderr)
+    sys.exit(1)
+STUB
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$BROKEN_MR_BUNDLE" \
+  --clone-dir "$CLONE" \
+  --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" \
+  --log-file "$LOG_FILE" \
+  --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export.sh" \
+  --profile-since-days 1 >/dev/null 2>&1
+RC=$?
+assert_eq "18 exit is 1 despite data being committed" "$RC" "1"
+AFTER=$(origin_log_count)
+assert_eq "18 data commit still happened" "$AFTER" "$((BEFORE + 1))"
+assert_contains "18 log names monthly_report.py failure" "$(cat "$LOG_FILE" 2>/dev/null)" "monthly_report.py が失敗しました"
+WT_STATUS=$(git -C "$CLONE" status --porcelain)
+assert_eq "18 working tree clean after posts revert" "$WT_STATUS" ""
+teardown
+
+echo "# 19. 確定月のpostがcommitされる（設計判断2026-09-23/26「速報＋改訂」方式）"
+setup
+setup_closable_month_bundle
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" \
+  --blog-metrics-dir "$EARLY_EPOCH_BUNDLE" \
+  --clone-dir "$CLONE" \
+  --lock-file "$LOCK_FILE" \
+  --state-dir "$STATE_DIR" \
+  --log-file "$LOG_FILE" \
+  --ssh-host "fakehost" \
+  --export-cmd "$T/bin/stub-export-full-month.sh" \
+  --profile-since-days "$PROFILE_SINCE_DAYS" >/dev/null 2>&1
+RC=$?
+assert_eq "19 exit" "$RC" "0"
+AFTER=$(origin_log_count)
+assert_eq "19 commit count +1" "$AFTER" "$((BEFORE + 1))"
+POST_FILE="$CLONE/posts/${TARGET_MONTH}.json"
+if [ -f "$POST_FILE" ]; then ok; else fail "19 post file not created: $POST_FILE"; fi
+POST_STAGE=$(python3 -c "import json; print(json.load(open('$POST_FILE'))['stage'])" 2>/dev/null)
+assert_eq "19 post stage is final" "$POST_STAGE" "final"
+teardown
+
+echo "# 20. 確定月のpostがある状態で同一データを再実行してもcommitされない"
+setup
+setup_closable_month_bundle
+RUN20_ARGS=(
+  --blog-metrics-dir "$EARLY_EPOCH_BUNDLE"
+  --clone-dir "$CLONE"
+  --lock-file "$LOCK_FILE"
+  --state-dir "$STATE_DIR"
+  --log-file "$LOG_FILE"
+  --ssh-host "fakehost"
+  --export-cmd "$T/bin/stub-export-full-month.sh"
+  --profile-since-days "$PROFILE_SINCE_DAYS"
+)
+bash "$RUN_DAILY" "${RUN20_ARGS[@]}" >/dev/null 2>&1  # 1回目でpostをcommit
+BEFORE=$(origin_log_count)
+bash "$RUN_DAILY" "${RUN20_ARGS[@]}" >/dev/null 2>&1  # 2回目: 同一データ
+RC=$?
+assert_eq "20 exit" "$RC" "0"
+AFTER=$(origin_log_count)
+assert_eq "20 commit count unchanged" "$AFTER" "$BEFORE"
+WT_STATUS=$(git -C "$CLONE" status --porcelain)
+assert_eq "20 working tree clean" "$WT_STATUS" ""
 teardown
 
 echo "passed=$PASSES failed=$FAILS"

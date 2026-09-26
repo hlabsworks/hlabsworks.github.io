@@ -97,6 +97,12 @@ DAY_BUCKETS = 24 * 60 // BUCKET_MINUTES  # 288
 MONTH_USABLE_FRACTION_THRESHOLD = 0.90
 MAX_EXPORT_WARN_W = 9400  # DDR §2.6: PCS合計9.9kW、9400W超で無音丸めせずstderr警告
 
+# 設計判断(2026-09-23/26「速報＋改訂」方式、QA指摘2026-09-26で正本を1箇所に統一):
+# 請求期間の終了からこの日数以上経てば、preliminary_months[]の候補にする
+# （monthly_report.pyの速報公開判定もこの値を使う。layer_model.pyがpreliminary_months
+# を計算する唯一の場所であり、monthly_report.pyはlayer_modelをimportしてこの値を使う）。
+PRELIMINARY_DELAY_DAYS = 2
+
 # 蓄電池パラメータ（出典 https://www.nichicon.co.jp/products/ess/essh2l1.html 取得 2026-09-05、
 # 実測較正2026-09-01で上書き。DDR §2.4）。
 BATTERY_CHARGE_KWH_PER_100SOC = 10.4  # 実測: SOC 23→100%充電積分 7.99kWh
@@ -1141,11 +1147,24 @@ def build_month_layers(
     profile_by_date: dict[str, list[Bucket]],
     *,
     ecoflow_soc_by_date: dict[str, float] | None = None,
+    allow_provisional_tariff: bool = False,
 ) -> dict:
     """1請求期間分のレイヤーレコードを組み立てる（L0/L1/L1S/L2/L3）。層ごとに
     available/unavailable_reason を持つため、
     呼び出し側(build_layers)は「1つも available が無い月」だけを excluded_months に回す
-    （QA #4: 除外理由を層ごとに具体化するため、本関数は常にレコードを返す）。"""
+    （QA #4: 除外理由を層ごとに具体化するため、本関数は常にレコードを返す）。
+
+    allow_provisional_tariff=True（追補2026-09-26「速報＋改訂」方式、build_layers の
+    preliminary_months 用）のときだけ、billing_month の単価が未確定でも
+    bill_model.resolve_effective_tariff で直近確定月の単価を暫定適用してから計算する。
+    その場合は戻り値に tariff_provisional/tariff_source_month（build_in_progress と同型）を
+    追加する。既定値 False では暫定単価にフォールバックしない既存方針（確定表示に暫定単価を
+    混ぜない）を維持し、戻り値の形も従来と完全に同一のまま変えない。"""
+    tariff_provisional = False
+    tariff_source_month = None
+    if allow_provisional_tariff:
+        tariff, tariff_provisional, tariff_source_month = bill_model.resolve_effective_tariff(tariff, billing_month)
+
     meter_read_day = tariff["meter_read_day"]
     start, end = bill_model.billing_period(billing_month, meter_read_day)
     total_days = (end - start).days + 1
@@ -1346,7 +1365,7 @@ def build_month_layers(
 
     layers = {"L0": l0_layer, "L1": l1_layer, "L1S": l1s_layer, "L2": l2_layer, "L3": l3_layer}
 
-    return {
+    record = {
         "billing_month": billing_month,
         "usage_period": {"start": start.isoformat(), "end": end.isoformat(), "days": total_days},
         "coverage": round(coverage, 3),
@@ -1358,6 +1377,10 @@ def build_month_layers(
         "interpolated_buckets": month_interpolated_buckets,
         "interpolated_slots": month_interpolated_slots,
     }
+    if allow_provisional_tariff:
+        record["tariff_provisional"] = tariff_provisional
+        record["tariff_source_month"] = tariff_source_month
+    return record
 
 
 def build_daily_load(profile_by_date: dict[str, list[Bucket]]) -> list[dict]:
@@ -1694,6 +1717,29 @@ def build_in_progress(
     }
 
 
+def _is_confirmed_final_record(record: dict) -> bool:
+    """QA指摘2026-09-26 N1: build_month_layers()のレコードが「確定」とみなせる最小条件
+    （monthly_report.is_closable()の条件1〜4相当）。5番目のFIRST_REPORT_BILLING_MONTH
+    防波堤はmonthly_report.py側の公開方針であり、layer_model.pyが持つべき知識ではないため
+    ここには含めない。monthly_report.pyはlayer_model.pyをimportするため、逆方向のimport
+    （layer_model.py -> monthly_report.py）は循環importになり不可。そのためこの最小判定を
+    ここに複製する（is_closableの条件1〜4と完全に同じロジックを保つこと）。"""
+    layers = record.get("layers", {})
+    for key in ("L0", "L1", "L2", "L3"):
+        if not layers.get(key, {}).get("available"):
+            return False
+    l3 = layers["L3"]
+    if l3.get("buy_source") != "billed":
+        return False
+    if l3.get("sell_source") != "official_meter":
+        return False
+    uncertainty = record.get("uncertainty") or {}
+    l2_band = uncertainty.get("L2") or {}
+    if "net_cost_fit_yen_min" not in l2_band or "net_cost_fit_yen_max" not in l2_band:
+        return False
+    return True
+
+
 def build_layers(
     tariff: dict,
     daily_by_date: dict,
@@ -1738,13 +1784,15 @@ def build_layers(
     # として採用する（全チャネルが揃う前の断片的な過去データを公開しない）。
     effective_publish_since = publish_since if publish_since is not None else profile_since
 
+    today_resolved = today or date.today()
+
     months = []
     excluded = []
+    preliminary_months = []
     for billing_month in sorted(candidate_months):
-        if effective_publish_since is not None:
-            period_start, _period_end = bill_model.billing_period(billing_month, meter_read_day)
-            if period_start.isoformat() < effective_publish_since:
-                continue
+        period_start, period_end = bill_model.billing_period(billing_month, meter_read_day)
+        if effective_publish_since is not None and period_start.isoformat() < effective_publish_since:
+            continue
         record = build_month_layers(
             tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month, profile_by_date,
             ecoflow_soc_by_date=ecoflow_soc_by_date,
@@ -1760,6 +1808,23 @@ def build_layers(
                 "layer_reasons": {key: layer.get("unavailable_reason") for key, layer in layers.items()},
             })
 
+        # 追補(2026-09-26「速報＋改訂」方式、QA指摘2026-09-26で修正、QA再指摘N1/N2で再修正):
+        # L0〜L2がavailable(usable日数が閾値以上)で請求期間が終了済みの月はpreliminary_months
+        # 候補にする。ただし既に確定済み(_is_confirmed_final_record)の月は対象外にする
+        # （確定した月はmonths[]にだけ入れる。is_closableの完全な判定はFIRST_REPORT_
+        # BILLING_MONTHの防波堤を含めmonthly_report.py側の責務だが、循環importを避けるため
+        # 「計算上確定しているか」の最小判定はここに複製する）。L3だけがavailableな月
+        # (L0〜L2がunavailable)はpreliminaryにしない。境界はperiod_end+PRELIMINARY_DELAY_DAYS
+        # <= today_resolved（=today_resolvedがperiod_end+2日以降）。
+        if not _is_confirmed_final_record(record) and period_end + timedelta(days=PRELIMINARY_DELAY_DAYS) <= today_resolved:
+            preliminary_record = build_month_layers(
+                tariff, billing_month, daily_by_date, official_sell_by_month, official_buy_by_month,
+                profile_by_date, ecoflow_soc_by_date=ecoflow_soc_by_date, allow_provisional_tariff=True,
+            )
+            prelim_layers = preliminary_record["layers"]
+            if all(prelim_layers[key].get("available") for key in ("L0", "L1", "L2")):
+                preliminary_months.append(preliminary_record)
+
     cumulative = _build_cumulative(months)
 
     daily_layers = build_daily_layers(
@@ -1769,7 +1834,7 @@ def build_layers(
         daily_layers = [d for d in daily_layers if d["date"] >= effective_publish_since]
 
     in_progress = build_in_progress(
-        tariff, daily_by_date, profile_by_date, today or date.today(), ecoflow_soc_by_date=ecoflow_soc_by_date
+        tariff, daily_by_date, profile_by_date, today_resolved, ecoflow_soc_by_date=ecoflow_soc_by_date
     )
     if (
         in_progress is not None
@@ -1801,6 +1866,7 @@ def build_layers(
         "cumulative": cumulative,
         "daily": daily_layers,
         "in_progress": in_progress,
+        "preliminary_months": preliminary_months,
         "_note": _profile_source_note(profile_source),
     }
 
@@ -1976,7 +2042,8 @@ def main() -> None:
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
         f"wrote: {args.out} ({len(result['months'])} months, {len(result['excluded_months'])} excluded, "
-        f"{len(result['daily'])} daily rows, in_progress={'yes' if result['in_progress'] else 'no'})"
+        f"{len(result['preliminary_months'])} preliminary, {len(result['daily'])} daily rows, "
+        f"in_progress={'yes' if result['in_progress'] else 'no'})"
     )
 
     daily_load = {"days": build_daily_load(profile_by_date), "generated_at": result["generated_at"]}

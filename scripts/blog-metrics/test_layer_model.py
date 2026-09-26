@@ -915,6 +915,205 @@ class BuildMonthLayersTest(unittest.TestCase):
         self.assertEqual(record["interpolated_buckets"], len(lm.REQUIRED_LOAD_FIELDS) + 1)
 
 
+def _full_profile_month(billing_month: str, meter_read_day: int = 2) -> dict[str, list]:
+    start, end = bill_model.billing_period(billing_month, meter_read_day)
+    profile_by_date = {}
+    d = start
+    while d <= end:
+        profile_by_date[d.isoformat()] = build_synthetic_golden_day_buckets(day=d.isoformat())
+        d += timedelta(days=1)
+    return profile_by_date
+
+
+class BuildMonthLayersProvisionalTariffTest(unittest.TestCase):
+    """追補(2026-09-26「速報＋改訂」方式) A': allow_provisional_tariff=True で
+    resolve_effective_tariff の暫定単価を許容する経路。"""
+
+    def test_default_output_is_unchanged_when_tariff_missing(self):
+        # allow_provisional_tariff省略(既定False)では、単価未確定月は従来どおり全層
+        # unavailableのままで、tariff_provisional/tariff_source_monthキーも増えない
+        # （既存の確定表示は暫定単価に一切フォールバックしない、という既存方針を維持）。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+        )
+        daily = _full_month_daily("2026-09")
+        profile_by_date = _full_profile_month("2026-09")
+        record = lm.build_month_layers(tariff, "2026-09", daily, {}, {}, profile_by_date)
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertFalse(record["layers"][key]["available"])
+        self.assertNotIn("tariff_provisional", record)
+        self.assertNotIn("tariff_source_month", record)
+
+    def test_allow_provisional_tariff_true_patches_missing_month(self):
+        # 2026-08だけ確定しているtariffで、2026-09（未確定）をallow_provisional_tariff=True
+        # で計算すると、直近確定月(2026-08)の単価が暫定適用され全層availableになる。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+        )
+        daily = _full_month_daily("2026-09")
+        profile_by_date = _full_profile_month("2026-09")
+        record = lm.build_month_layers(
+            tariff, "2026-09", daily, {}, {}, profile_by_date, allow_provisional_tariff=True,
+        )
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertTrue(record["layers"][key]["available"], key)
+        self.assertTrue(record["tariff_provisional"])
+        self.assertEqual(record["tariff_source_month"], "2026-08")
+
+    def test_allow_provisional_tariff_true_no_confirmed_month_stays_unavailable(self):
+        # 確定月が1つも無ければ暫定適用元が無く、従来どおりunavailableのまま
+        # （resolve_effective_tariffがtariffをそのまま返し、compute_billがKeyErrorになる経路）。
+        tariff = make_tariff(capacity_contribution_yen_per_month={}, fuel_cost_adjustment_yen_per_kwh={})
+        daily = _full_month_daily("2026-09")
+        profile_by_date = _full_profile_month("2026-09")
+        record = lm.build_month_layers(
+            tariff, "2026-09", daily, {}, {}, profile_by_date, allow_provisional_tariff=True,
+        )
+        for key in ("L0", "L1", "L2", "L3"):
+            self.assertFalse(record["layers"][key]["available"])
+        self.assertFalse(record["tariff_provisional"])
+        self.assertIsNone(record["tariff_source_month"])
+
+    def test_allow_provisional_tariff_true_does_not_change_already_confirmed_month(self):
+        # 単価が既に確定している月では暫定適用は発生しない(tariff_provisional=False)。
+        tariff = make_tariff()  # 2026-09が確定済み
+        daily = _full_month_daily("2026-09")
+        record = lm.build_month_layers(
+            tariff, "2026-09", daily, {}, {}, profile_by_date={}, allow_provisional_tariff=True,
+        )
+        self.assertTrue(record["layers"]["L3"]["available"])
+        self.assertFalse(record["tariff_provisional"])
+        self.assertIsNone(record["tariff_source_month"])
+
+
+class BuildLayersPreliminaryMonthsTest(unittest.TestCase):
+    """追補(2026-09-26) A': build_layers の戻り値 preliminary_months[]。"""
+
+    def _confirmed_and_pending_setup(self):
+        # 2026-08は単価確定・2026-09(2026-08-02〜2026-09-01)は単価未確定。両月ともdaily/
+        # profileは全日usable。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+        )
+        daily = {}
+        daily.update(_full_month_daily("2026-08"))
+        daily.update(_full_month_daily("2026-09"))
+        profile_by_date = {}
+        profile_by_date.update(_full_profile_month("2026-08"))
+        profile_by_date.update(_full_profile_month("2026-09"))
+        return tariff, daily, profile_by_date
+
+    def test_ended_unconfirmed_month_appears_in_preliminary_months(self):
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        # 2026-09の請求期間終了(2026-09-01)より確実に後の日付。
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 10))
+        month_keys = {m["billing_month"] for m in result["months"]}
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-08", month_keys)
+        self.assertNotIn("2026-09", month_keys)
+        self.assertIn("2026-09", prelim_keys)
+        prelim_record = next(m for m in result["preliminary_months"] if m["billing_month"] == "2026-09")
+        self.assertTrue(prelim_record["tariff_provisional"])
+        self.assertEqual(prelim_record["tariff_source_month"], "2026-08")
+
+    def test_month_already_in_months_but_not_closable_also_appears_in_preliminary(self):
+        # QA指摘2026-09-26: 単価は確定済みだがL3がまだセンサー値、のような「months[]には
+        # availableな状態で入っているがis_closable(monthly_report.py側)を満たさない」月も
+        # preliminary_months候補にする（確定条件はlayer_model.pyの責務ではないため）。
+        # ここではtariffを両月とも確定させ、official_buy/sell無し(=buy/sell_source=="sensor")
+        # のまま2026-08を「単価確定済みだがL3センサー値」の状態で速報候補にできることを見る。
+        tariff = make_tariff(
+            capacity_contribution_yen_per_month={"2026-08": 213},
+            fuel_cost_adjustment_yen_per_kwh={"2026-08": -3.50},
+        )
+        daily = _full_month_daily("2026-08")
+        profile_by_date = _full_profile_month("2026-08")
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 10))
+        month_keys = {m["billing_month"] for m in result["months"]}
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-08", month_keys)
+        self.assertIn("2026-08", prelim_keys)  # 両方に入って良い(is_closable判定は上位層の責務)
+
+    def test_fully_confirmed_month_is_not_added_to_preliminary_months(self):
+        # QA再指摘2026-09-26 N1: 単価確定・L3がbilled/official_meter・L2の不確かさ帯ありの
+        # 「完全に確定した」月はpreliminary_monthsに入れない（months[]にだけ入る）。
+        tariff = make_tariff()  # 2026-09は確定済み
+        daily = _full_month_daily("2026-09")
+        profile_by_date = _full_profile_month("2026-09")
+        start, end = bill_model.billing_period("2026-09", meter_read_day=2)
+        official_buy_by_month = {
+            "2026-09": {
+                "settlement_month": "2026-09", "period_from": start.isoformat(), "period_to": end.isoformat(),
+                "official_buy_kwh": 100.0, "billed_yen": 4000,
+            }
+        }
+        official_sell_by_month = {
+            "2026-09": {
+                "settlement_month": "2026-09", "period_from": start.isoformat(), "period_to": end.isoformat(),
+                "official_sell_kwh": 200.0, "sell_revenue_yen": 3200,
+            }
+        }
+        result = lm.build_layers(
+            tariff, daily, official_sell_by_month, official_buy_by_month, profile_by_date, today=date(2026, 9, 10),
+        )
+        month = next(m for m in result["months"] if m["billing_month"] == "2026-09")
+        self.assertEqual(month["layers"]["L3"]["buy_source"], "billed")
+        self.assertEqual(month["layers"]["L3"]["sell_source"], "official_meter")
+        self.assertIn("net_cost_fit_yen_min", month["uncertainty"]["L2"])
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+
+    def test_preliminary_boundary_end_plus_1_day_is_excluded(self):
+        # QA再指摘2026-09-26 N2: 境界はperiod_end+PRELIMINARY_DELAY_DAYS<=todayであること。
+        # end+1日(todayがperiod_end+1)はまだ対象外。
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        # 2026-09の請求期間終了は2026-09-01。end+1日 = 2026-09-02。
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 2))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+
+    def test_preliminary_boundary_end_plus_2_days_is_included(self):
+        # end+2日(PRELIMINARY_DELAY_DAYS)以降は対象になる。
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 3))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-09", prelim_keys)
+
+    def test_month_still_in_progress_is_not_added_to_preliminary_months(self):
+        tariff, daily, profile_by_date = self._confirmed_and_pending_setup()
+        # todayを請求期間の最終日(2026-09-01)自体にすると、period_end_actual(=today-1日)より
+        # 前に確定しないため速報の対象にもならない(period_end < today-1日 が成立しない)。
+        result = lm.build_layers(tariff, daily, {}, {}, profile_by_date, today=date(2026, 9, 1))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+
+    def test_unresolvable_month_is_not_added_to_preliminary_months(self):
+        # 確定済みtariffが1つも無く(暫定適用元も無い)、profileも無い(usable 0%)月は、
+        # allow_provisional_tariff=Trueでも全層unavailableのままなのでpreliminary_monthsに
+        # 入らない(L0〜L2はcoverage不足、L3はtariffの暫定適用元が無いためunavailable)。
+        tariff = make_tariff(capacity_contribution_yen_per_month={}, fuel_cost_adjustment_yen_per_kwh={})
+        daily = _full_month_daily("2026-09")
+        result = lm.build_layers(tariff, daily, {}, {}, {}, today=date(2026, 9, 10))
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertNotIn("2026-09", prelim_keys)
+        excluded_keys = {m["billing_month"] for m in result["excluded_months"]}
+        self.assertIn("2026-09", excluded_keys)
+
+    def test_l3_only_available_month_is_not_added_to_preliminary_months(self):
+        # QA指摘2026-09-26「L3だけの月は入れない」: profileが無く(L0〜L2 unavailable)、
+        # L3だけがavailableな月(daily.jsonのみ揃っている)は速報の元にしない。
+        tariff = make_tariff()  # 2026-09は確定済みなのでL3はavailableになる
+        daily = _full_month_daily("2026-09")
+        result = lm.build_layers(tariff, daily, {}, {}, {}, today=date(2026, 9, 10))
+        month_keys = {m["billing_month"] for m in result["months"]}
+        prelim_keys = {m["billing_month"] for m in result["preliminary_months"]}
+        self.assertIn("2026-09", month_keys)  # L3のみavailableでもmonths[]には入る(既存仕様)
+        self.assertNotIn("2026-09", prelim_keys)
+
+
 class BuildLayersTest(unittest.TestCase):
     def test_empty_inputs_return_empty_result(self):
         tariff = make_tariff()

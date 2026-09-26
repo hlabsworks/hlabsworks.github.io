@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """validate_metrics.py — 別リポジトリ hlabsworks/solar-metrics-data（homelab が毎日 push する
 公開メトリクスデータ）から取り込む内容を、Hugo ビルドに反映する前に検査するゲート集
-(G1〜G13)。
+(G1〜G17)。
 
 必ず main ブランチのこのファイル（信頼されたコード）で実行し、_incoming 側からは JSON/
 Markdown のテキストしか読まない。ゲートを1つでも満たさない場合は非ゼロ終了し、
@@ -17,12 +17,19 @@ Markdown のテキストしか読まない。ゲートを1つでも満たさな�
   G7  時間帯粒度の禁止        G8  日付健全性                   G9  履歴不変性
   G10 物理レンジ              G11 前回比異常                   G12 整合性チェック
   G13 pipeline.json（警告のみ）
+  G14 posts/*.jsonのスキーマ・型   G15 posts/*.jsonの再計算一致・確定判定
+  G16 posts/*.jsonの履歴整合       G17 render_monthly_posts.pyの自己検査（別プロセスで実行）
+
+posts/YYYY-MM.json（月締めレポートの数値スナップショット、設計判断2026-09-23/26
+「速報＋改訂」方式）は monthly_report.py の is_closable()/build_snapshot_body() を
+import して使う（layer_model.py と同じ流儀で sys.path.insert する）。
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 from collections import Counter
 import re
 import statistics
@@ -30,6 +37,10 @@ import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bill_model  # noqa: E402  billing_period()を二重実装しない(G14のusage_period検査用)
+import monthly_report  # noqa: E402
 
 JST = timezone(timedelta(hours=9))
 
@@ -42,6 +53,13 @@ DATA_FILES = {
     "data/metrics/layers.json",
 }
 ALLOWED_FILES = DATA_FILES | {"README.md", "pipeline.json"}
+
+# posts/YYYY-MM.json は0〜MAX_POST_FILES件（必須ファイルではない）。既存7ファイルとの
+# 完全一致要求(ALLOWED_FILES)は変えず、posts/だけ別枠で数・命名パターンを検査する。
+# QA指摘2026-09-26 item8: \d はUnicodeの数字(全角等)にもマッチするため、ASCII数字限定の
+# re.ASCII を付ける。$ は文字列末尾の改行の直前にもマッチしうるため \Z にする。
+POST_FILE_RE = re.compile(r"^posts/(\d{4}-\d{2})\.json\Z", re.ASCII)
+MAX_POST_FILES = 240
 
 # --- G3: サイズ・行数上限 ---------------------------------------------------
 MAX_FILE_BYTES = 1 * 1024 * 1024
@@ -100,7 +118,7 @@ LAYERS_KEYS = {
     "month_usable_fraction_threshold", "months", "months_included",
     "net_cost_fit_yen", "net_cost_fit_yen_max", "net_cost_fit_yen_min",
     "net_cost_post_fit_yen", "nichicon_soc_end_pct", "nichicon_soc_start_pct",
-    "note", "params", "period_end_actual", "profile_rows_since",
+    "note", "params", "period_end_actual", "preliminary_months", "profile_rows_since",
     "profile_since", "profile_source", "pv_ac_efficiency", "pv_capacity_kw",
     "reason_code", "reason_detail", "reason_label", "renewable_levy_yen",
     "saving_yen_fit", "scale_factor", "sell_kwh", "sell_price_yen_per_kwh_fit",
@@ -122,17 +140,38 @@ PIPELINE_KEYS = {
     "row_counts", "daily", "monthly", "db_query_seconds",
 }
 
+# posts/YYYY-MM.json（月締めレポートのスナップショットv1）のキー allowlist（DDR §B・追補B'）。
+POST_KEYS = {
+    "schema_version", "billing_month", "report_month", "usage_period", "start", "end", "days",
+    "first_published", "revision", "revised", "estimation", "days_usable", "days_total",
+    "layers", "L0", "L1", "L2", "L3", "net_cost_fit_yen", "net_cost_post_fit_yen", "buy_kwh", "sell_kwh",
+    "l2_band", "net_cost_fit_yen_min", "net_cost_fit_yen_max",
+    "energy", "solar_kwh", "sell_kwh_sensor", "nichicon_charge_kwh", "ecoflow_charge_kwh",
+    "weather", "sunny_days", "cloudy_days", "overcast_days", "unknown_days",
+    "comparison", "prev_solar_kwh", "yoy_solar_kwh",
+    "stage", "tariff_basis", "l3_source", "buy", "sell",
+    "transitioned_from_preliminary",
+}
+# posts/*.jsonの文字列値は日付・月の正規表現か、以下の列挙値のどれかに限る（G14）。
+POST_STRING_ENUM_VALUES = {"full", "scaled", "preliminary", "final", "provisional", "confirmed", "sensor", "billed", "official_meter"}
+MAX_POST_BYTES = 16 * 1024
+
 # --- G5: 文字列フォーマット allowlist ---------------------------------------
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
-_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+# QA指摘2026-09-26 item8: ASCII数字限定(re.ASCII)＋\Z（$は末尾改行の直前にもマッチしうる）。
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z", re.ASCII)
+_MONTH_RE = re.compile(r"^\d{4}-\d{2}\Z", re.ASCII)
+_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\Z", re.ASCII)
 DATE_VALUE_KEYS = {
     "date", "start", "end", "period_end_actual",
     "profile_since", "profile_rows_since",
     "power_history_since", "nichicon_data_since", "ecoflow_data_since",
     "publish_since", "calibrated_on",
+    "first_published", "revised",
 }
-MONTH_VALUE_KEYS = {"month", "billing_month", "buy_sell_price_effective_month", "tariff_source_month"}
+MONTH_VALUE_KEYS = {
+    "month", "billing_month", "buy_sell_price_effective_month", "tariff_source_month",
+    "report_month",
+}
 
 # --- G6: 秘匿情報 deny（生テキストに正規表現） ------------------------------
 # sha256ダイジェスト（pipeline.json.inputs.*_sha256、64桁16進）は一方向ハッシュで
@@ -241,15 +280,23 @@ def _previous_commit_json(incoming: Path, relpath: str) -> list | dict | None:
     return None
 
 
-def gate1_file_allowlist(incoming: Path) -> None:
-    """G1: incoming の追跡ファイルが ALLOWED_FILES と完全一致すること。"""
+def gate1_file_allowlist(incoming: Path) -> list[str]:
+    """G1: incoming の追跡ファイルが、既存7ファイル(ALLOWED_FILES、完全一致)＋
+    posts/YYYY-MM.json（0〜MAX_POST_FILES件、命名パターン一致のみ要求）で構成されること。
+    戻り値: 見つかった posts/*.json の相対パスのリスト（既存の呼び出し側は無視できる）。"""
     tracked = set(_list_tracked_files(incoming))
-    unexpected = sorted(tracked - ALLOWED_FILES)
-    missing = sorted(ALLOWED_FILES - tracked)
+    post_files = sorted(p for p in tracked if p.startswith("posts/"))
+    non_post_tracked = tracked - set(post_files)
+    invalid_post_files = sorted(p for p in post_files if not POST_FILE_RE.match(p))
+    unexpected = sorted(non_post_tracked - ALLOWED_FILES) + invalid_post_files
+    missing = sorted(ALLOWED_FILES - non_post_tracked)
     if unexpected:
         raise ValidationFailure("G1", f"許可されていないファイルが含まれています: {unexpected}")
     if missing:
         raise ValidationFailure("G1", f"必須ファイルが不足しています: {missing}")
+    if len(post_files) > MAX_POST_FILES:
+        raise ValidationFailure("G1", f"posts/ のファイル数が上限({MAX_POST_FILES})を超えています ({len(post_files)})")
+    return [p for p in post_files if p not in invalid_post_files]
 
 
 def gate2_encoding(path: Path, relpath: str) -> str:
@@ -516,6 +563,356 @@ def gate12_consistency(daily: list[dict], monthly: list[dict], meta: dict) -> No
             raise ValidationFailure("G12", f"data/metrics/meta.json: {meta_key}({since}) が daily 側の最小計測日({min(column_dates)})より後です")
 
 
+_POST_REQUIRED_TOP_KEYS = {
+    "schema_version", "billing_month", "report_month", "usage_period", "first_published",
+    "revision", "revised", "estimation", "days_usable", "days_total", "layers", "l2_band",
+    "energy", "weather", "comparison", "stage", "tariff_basis", "l3_source",
+    "transitioned_from_preliminary",
+}
+_POST_LAYER_KEYS = {"net_cost_fit_yen", "net_cost_post_fit_yen", "buy_kwh", "sell_kwh"}
+_POST_ENERGY_KEYS = {"solar_kwh", "sell_kwh_sensor", "nichicon_charge_kwh", "ecoflow_charge_kwh"}
+_POST_WEATHER_KEYS = {"sunny_days", "cloudy_days", "overcast_days", "unknown_days"}
+MAX_POST_YEN_ABS = 200_000
+POST_KWH_RANGE = (0, 6200)
+
+
+def _check_yen_value(value, relpath: str, label: str) -> None:
+    if type(value) is not int:
+        raise ValidationFailure("G14", f"{relpath}: {label} は int である必要があります: {value!r}")
+    if abs(value) > MAX_POST_YEN_ABS:
+        raise ValidationFailure("G14", f"{relpath}: {label} が物理レンジ外です: {value} (許容 ±{MAX_POST_YEN_ABS})")
+
+
+def _check_kwh_value(value, relpath: str, label: str, *, nullable: bool) -> None:
+    if value is None:
+        if nullable:
+            return
+        raise ValidationFailure("G14", f"{relpath}: {label} が null です（必須）")
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValidationFailure("G14", f"{relpath}: {label} は有限の数値である必要があります: {value!r}")
+    low, high = POST_KWH_RANGE
+    if not (low <= value <= high):
+        raise ValidationFailure("G14", f"{relpath}: {label} が物理レンジ外です: {value} (許容 {low}〜{high})")
+
+
+def _require_dict(value, relpath: str, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValidationFailure("G14", f"{relpath}: {label} は object である必要があります: {value!r}")
+    return value
+
+
+def _parse_iso_date(value, relpath: str, label: str) -> date:
+    if not isinstance(value, str):
+        raise ValidationFailure("G14", f"{relpath}: {label} は文字列である必要があります: {value!r}")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValidationFailure("G14", f"{relpath}: {label} が実在する日付ではありません: {value!r} ({exc})") from exc
+
+
+def gate14_post_schema(post: object, relpath: str, today_jst: date, meter_read_day: int) -> None:
+    """G14: posts/YYYY-MM.json のスキーマ・型（DDR §D・追補D'、QA指摘2026-09-26で強化）。
+    postがdict以外（Tracebackにしない）・必須キー・型（円は`type(v) is int`、kWhは
+    int/floatかつmath.isfinite。json.loadsはNaNを通すため必須）・文字列は日付/月の
+    正規表現(ASCII数字限定)か列挙値のみ・usage_periodがbill_model.billing_period()と
+    完全一致・billing_monthがFIRST_REPORT_BILLING_MONTH以降・各種レンジを検査する。"""
+    post = _require_dict(post, relpath, "post")
+
+    missing = _POST_REQUIRED_TOP_KEYS - set(post)
+    if missing:
+        raise ValidationFailure("G14", f"{relpath}: 必須キーが不足しています: {sorted(missing)}")
+
+    # QA再指摘2026-09-26 R1: type(x) is intでbool混入を排除する(True/Falseは共に1ではない)。
+    if type(post.get("schema_version")) is not int or post.get("schema_version") != 1:
+        raise ValidationFailure("G14", f"{relpath}: schema_version が1ではありません: {post.get('schema_version')!r}")
+
+    # 文字列値は日付/月の正規表現(ASCII数字限定)か列挙値のどれかに限る
+    # （自由文を型のレベルで禁止する。§B）。
+    def _visit(key, value, rel):
+        if _DATE_RE.match(value) or _MONTH_RE.match(value):
+            return
+        if value in POST_STRING_ENUM_VALUES:
+            return
+        raise ValidationFailure("G14", f"{rel}: {key} の値が日付/月/許可された列挙値のいずれでもありません: {value!r}")
+
+    _walk_string_values(post, relpath, None, _visit)
+
+    billing_month = post["billing_month"]
+    if not isinstance(billing_month, str):
+        raise ValidationFailure("G14", f"{relpath}: billing_month は文字列である必要があります: {billing_month!r}")
+    if billing_month < monthly_report.FIRST_REPORT_BILLING_MONTH:
+        raise ValidationFailure(
+            "G14",
+            f"{relpath}: billing_month({billing_month}) が FIRST_REPORT_BILLING_MONTH"
+            f"({monthly_report.FIRST_REPORT_BILLING_MONTH}) より前です",
+        )
+    filename_month = Path(relpath).stem
+    if filename_month != billing_month:
+        raise ValidationFailure("G14", f"{relpath}: ファイル名の月({filename_month})とbilling_month({billing_month})が一致しません")
+
+    usage_period = _require_dict(post["usage_period"], relpath, "usage_period")
+    for key in ("start", "end", "days"):
+        if key not in usage_period:
+            raise ValidationFailure("G14", f"{relpath}: usage_period.{key} がありません")
+    start_date = _parse_iso_date(usage_period["start"], relpath, "usage_period.start")
+    end_date = _parse_iso_date(usage_period["end"], relpath, "usage_period.end")
+    days = usage_period["days"]
+    # QA再指摘2026-09-26 R1: type(x) is intでbool混入を排除する。
+    if type(days) is not int:
+        raise ValidationFailure("G14", f"{relpath}: usage_period.days は int である必要があります: {days!r}")
+    if not (28 <= days <= 31):
+        raise ValidationFailure("G14", f"{relpath}: usage_period.days が範囲外です: {days} (許容 28〜31)")
+    if days != (end_date - start_date).days + 1:
+        raise ValidationFailure("G14", f"{relpath}: usage_period.days が start/end と一致しません: {days}")
+    # QA指摘2026-09-26 item3: usage_periodはbill_model.billing_period(billing_month,
+    # meter_read_day)と完全一致すること（billing_monthを騙って別期間のusage_periodを
+    # 埋め込むことを防ぐ）。
+    try:
+        expected_start, expected_end = bill_model.billing_period(billing_month, meter_read_day)
+    except (KeyError, ValueError) as exc:
+        raise ValidationFailure("G14", f"{relpath}: billing_month({billing_month})からusage_periodを計算できません ({exc})") from exc
+    if start_date != expected_start or end_date != expected_end:
+        raise ValidationFailure(
+            "G14",
+            f"{relpath}: usage_period({start_date}..{end_date}) が billing_period"
+            f"({expected_start}..{expected_end}) と一致しません",
+        )
+    if post["report_month"] != usage_period["start"][:7]:
+        raise ValidationFailure("G14", f"{relpath}: report_month が usage_period.start と一致しません: {post['report_month']!r}")
+
+    days_usable, days_total = post["days_usable"], post["days_total"]
+    if type(days_usable) is not int or type(days_total) is not int:
+        raise ValidationFailure("G14", f"{relpath}: days_usable/days_total は int である必要があります")
+    if days_total != days:
+        raise ValidationFailure("G14", f"{relpath}: days_total が usage_period.days と一致しません: {days_total} != {days}")
+    if not (0 <= days_usable <= days_total):
+        raise ValidationFailure("G14", f"{relpath}: days_usable が範囲外です: {days_usable} (許容 0〜{days_total})")
+
+    revision = post["revision"]
+    if type(revision) is not int:
+        raise ValidationFailure("G14", f"{relpath}: revision は int である必要があります: {revision!r}")
+    if not (1 <= revision <= 12):
+        raise ValidationFailure("G14", f"{relpath}: revision が範囲外です: {revision} (許容 1〜12)")
+    revised = post["revised"]
+    if revised is not None and not isinstance(revised, str):
+        raise ValidationFailure("G14", f"{relpath}: revised は文字列かnullである必要があります: {revised!r}")
+    if (revised is None) != (revision == 1):
+        raise ValidationFailure("G14", f"{relpath}: revised is None は revision==1 と対応する必要があります (revision={revision}, revised={revised!r})")
+
+    stage = post["stage"]
+    if stage not in ("preliminary", "final"):
+        raise ValidationFailure("G14", f"{relpath}: stage が不正です: {stage!r}")
+    # QA指摘2026-09-26 item4: 速報(stage=preliminary)は初回公開後は凍結するため、
+    # revision==1かつrevised is Noneを強制する。
+    if stage == "preliminary" and (revision != 1 or revised is not None):
+        raise ValidationFailure(
+            "G14",
+            f"{relpath}: 速報(stage=preliminary)は revision==1 かつ revised is None である必要があります"
+            f" (revision={revision}, revised={revised!r})",
+        )
+
+    first_published = _parse_iso_date(post["first_published"], relpath, "first_published")
+    if not (end_date + timedelta(days=1) <= first_published <= today_jst):
+        raise ValidationFailure("G14", f"{relpath}: first_published が範囲外です: {first_published} (許容 {end_date + timedelta(days=1)}〜{today_jst})")
+    if revised is not None:
+        revised_date = _parse_iso_date(revised, relpath, "revised")
+        if not (first_published <= revised_date <= today_jst):
+            raise ValidationFailure("G14", f"{relpath}: revised が範囲外です: {revised_date} (許容 {first_published}〜{today_jst})")
+
+    layers = _require_dict(post["layers"], relpath, "layers")
+    for key in ("L0", "L1", "L2", "L3"):
+        if key not in layers:
+            raise ValidationFailure("G14", f"{relpath}: layers.{key} がありません")
+        layer = _require_dict(layers[key], relpath, f"layers.{key}")
+        missing_layer_keys = _POST_LAYER_KEYS - set(layer)
+        if missing_layer_keys:
+            raise ValidationFailure("G14", f"{relpath}: layers.{key} に必須キーが不足しています: {sorted(missing_layer_keys)}")
+        _check_yen_value(layer["net_cost_fit_yen"], relpath, f"layers.{key}.net_cost_fit_yen")
+        _check_yen_value(layer["net_cost_post_fit_yen"], relpath, f"layers.{key}.net_cost_post_fit_yen")
+        _check_kwh_value(layer["buy_kwh"], relpath, f"layers.{key}.buy_kwh", nullable=False)
+        _check_kwh_value(layer["sell_kwh"], relpath, f"layers.{key}.sell_kwh", nullable=False)
+
+    l2_band = _require_dict(post["l2_band"], relpath, "l2_band")
+    for key in ("net_cost_fit_yen_min", "net_cost_fit_yen_max"):
+        if key not in l2_band:
+            raise ValidationFailure("G14", f"{relpath}: l2_band.{key} がありません")
+        _check_yen_value(l2_band[key], relpath, f"l2_band.{key}")
+    if l2_band["net_cost_fit_yen_min"] > l2_band["net_cost_fit_yen_max"]:
+        raise ValidationFailure("G14", f"{relpath}: l2_band.net_cost_fit_yen_min が net_cost_fit_yen_max を超えています")
+
+    energy = _require_dict(post["energy"], relpath, "energy")
+    missing_energy_keys = _POST_ENERGY_KEYS - set(energy)
+    if missing_energy_keys:
+        raise ValidationFailure("G14", f"{relpath}: energy に必須キーが不足しています: {sorted(missing_energy_keys)}")
+    for key in _POST_ENERGY_KEYS:
+        _check_kwh_value(energy[key], relpath, f"energy.{key}", nullable=True)
+
+    weather = _require_dict(post["weather"], relpath, "weather")
+    missing_weather_keys = _POST_WEATHER_KEYS - set(weather)
+    if missing_weather_keys:
+        raise ValidationFailure("G14", f"{relpath}: weather に必須キーが不足しています: {sorted(missing_weather_keys)}")
+    for key in _POST_WEATHER_KEYS:
+        value = weather[key]
+        if type(value) is not int or value < 0:
+            raise ValidationFailure("G14", f"{relpath}: weather.{key} は0以上のintである必要があります: {value!r}")
+    if sum(weather[key] for key in _POST_WEATHER_KEYS) != days:
+        raise ValidationFailure("G14", f"{relpath}: weatherの日数合計がusage_period.daysと一致しません")
+
+    comparison = _require_dict(post["comparison"], relpath, "comparison")
+    for key in ("prev_solar_kwh", "yoy_solar_kwh"):
+        if key not in comparison:
+            raise ValidationFailure("G14", f"{relpath}: comparison.{key} がありません")
+        _check_kwh_value(comparison[key], relpath, f"comparison.{key}", nullable=True)
+
+    estimation = post["estimation"]
+    if estimation not in ("full", "scaled"):
+        raise ValidationFailure("G14", f"{relpath}: estimation が不正です: {estimation!r}")
+
+    tariff_basis = post["tariff_basis"]
+    if tariff_basis not in ("provisional", "confirmed"):
+        raise ValidationFailure("G14", f"{relpath}: tariff_basis が不正です: {tariff_basis!r}")
+    # QA再指摘2026-09-26 R4: 不変条件は「stage=="final" ⇒ tariff_basis=="confirmed"」の
+    # 片方向のみ（追補D'を緩和）。速報でも単価は既に確定済みという状態はありうる
+    # （buy_source/sell_sourceだけが未確定な月）。
+    if stage == "final" and tariff_basis != "confirmed":
+        raise ValidationFailure("G14", f"{relpath}: stage=final なのに tariff_basis が confirmed ではありません: {tariff_basis!r}")
+
+    l3_source = _require_dict(post["l3_source"], relpath, "l3_source")
+    for key in ("buy", "sell"):
+        if key not in l3_source:
+            raise ValidationFailure("G14", f"{relpath}: l3_source.{key} がありません")
+    if l3_source["buy"] not in ("sensor", "billed"):
+        raise ValidationFailure("G14", f"{relpath}: l3_source.buy が不正です: {l3_source['buy']!r}")
+    if l3_source["sell"] not in ("sensor", "official_meter"):
+        raise ValidationFailure("G14", f"{relpath}: l3_source.sell が不正です: {l3_source['sell']!r}")
+
+    transitioned_from_preliminary = post["transitioned_from_preliminary"]
+    if type(transitioned_from_preliminary) is not bool:
+        raise ValidationFailure("G14", f"{relpath}: transitioned_from_preliminary は bool である必要があります: {transitioned_from_preliminary!r}")
+    if stage == "preliminary" and transitioned_from_preliminary:
+        raise ValidationFailure("G14", f"{relpath}: 速報(stage=preliminary)で transitioned_from_preliminary が true になっています")
+
+
+def gate15_post_recompute(
+    post: dict, relpath: str, layers_json: dict, daily_json: list[dict], incoming: Path, meter_read_day: int,
+) -> None:
+    """G15: 確定段階(stage=final)の本体は monthly_report.expected_final_body() で
+    「今のlayers/dailyデータと前回コミットの本体」から期待される本体を計算し、完全一致する
+    ことを要求する（run()と同じ関数を共有するため、新規公開・速報からの遷移・既存確定版の
+    改版のどのケースでも同じロジックで検証できる。QA再指摘2026-09-26 N3: 以前はlayer由来
+    項目だけしか比較しておらず、energy/weather/comparisonの捏造がすり抜けていた）。
+    確定条件(is_closable)を満たさない「凍結された確定版」（420日窓の外に出た等）は、
+    前回コミットの本体と完全一致する場合だけ許可する。
+    速報段階は、前回と本体が同一なら凍結として許可、そうでなければ
+    layers.preliminary_months[]からの再計算と完全一致することを要求する。"""
+    billing_month = post["billing_month"]
+    stage = post["stage"]
+    daily_by_date = {row["date"]: row for row in daily_json}
+    body = monthly_report.body_without_meta(post)
+    prev = _previous_commit_json(incoming, relpath)
+    prev_stage = prev.get("stage") if isinstance(prev, dict) else None
+    prev_body = monthly_report.body_without_meta(prev) if isinstance(prev, dict) else None
+
+    if stage == "final":
+        month_rec = next((m for m in layers_json.get("months", []) if m["billing_month"] == billing_month), None)
+        if monthly_report.is_closable(month_rec):
+            expected = monthly_report.expected_final_body(billing_month, layers_json, daily_by_date, meter_read_day, prev_stage, prev_body)
+            if expected is None or expected != body:
+                raise ValidationFailure("G15", f"{relpath}: layers.months[]からの再計算(expected_final_body)と本体が一致しません")
+            return
+        # 確定条件を満たさない「凍結された確定版」: 前回コミットの本体と一致する場合だけ許可する
+        # （420日窓の外に出てmonths[]から消えた確定月が恒久的にreject対象になるのを防ぐ）。
+        if prev_stage == "final" and prev_body == body:
+            return
+        raise ValidationFailure(
+            "G15",
+            f"{relpath}: stage=final ですが確定条件(is_closable)を満たさず、前回コミットの確定版とも一致しません",
+        )
+
+    if stage == "preliminary":
+        if prev_body is not None and prev_body == body:
+            return  # 既に公開済みの速報（凍結）
+        recomputed = monthly_report.build_snapshot_body(billing_month, layers_json, daily_by_date, "preliminary", meter_read_day)
+        if recomputed != body:
+            raise ValidationFailure("G15", f"{relpath}: layers.preliminary_months[]からの再計算と本体が一致しません")
+        return
+
+    raise ValidationFailure("G15", f"{relpath}: stage が不正です: {stage!r}")
+
+
+def _previous_commit_depth_for_posts(incoming: Path) -> int | None:
+    """G16(posts/一覧の削除検知)が比較すべき祖先コミットの深さを、data/metrics/daily.json
+    （G8/G9/G11と同じ判断基準）が読める最も浅い祖先に揃える（QA指摘2026-09-26 item9:
+    以前はHEAD~1固定だったため、拒否pushをrevertした直後（HEAD~1が壊れたコミット）に
+    誤って「全post削除」と判定していた）。"""
+    if not (incoming / ".git").exists():
+        return None
+    for depth in range(1, PREVIOUS_COMMIT_MAX_DEPTH + 1):
+        result = subprocess.run(
+            ["git", "-C", str(incoming), "show", f"HEAD~{depth}:data/metrics/daily.json"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            json.loads(result.stdout)
+            return depth
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _previous_commit_post_paths(incoming: Path) -> list[str] | None:
+    """_previous_commit_depth_for_posts()が返す深さの祖先コミット時点のposts/配下ファイル
+    一覧（相対パス）。読めなければNone。"""
+    depth = _previous_commit_depth_for_posts(incoming)
+    if depth is None:
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(incoming), "ls-tree", "-r", "--name-only", f"HEAD~{depth}", "--", "posts"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def gate16_post_history(posts_by_relpath: dict[str, dict], incoming: Path, allow_history_change: bool) -> None:
+    """G16: 前回コミット（_previous_commit_depth_for_postsと同じ深さ）との履歴整合
+    （--allow-history-changeでスキップ可）。
+    ・前回にあったpostが削除されていないこと
+    ・first_publishedが変わっていないこと
+    ・本体が変わったらrevisionが+1であること。本体が同じならrevision/revisedも同じこと
+    ・追補(2026-09-26)D': stageがfinal→preliminaryに後退したらreject。
+      preliminary→finalはrevision==前回+1が必須。"""
+    if allow_history_change:
+        return
+    prev_paths = _previous_commit_post_paths(incoming)
+    if prev_paths is None:
+        return
+    if not set(prev_paths) <= set(posts_by_relpath):
+        removed = sorted(set(prev_paths) - set(posts_by_relpath))
+        raise ValidationFailure("G16", f"前回コミットにあったpostsが削除されています（--allow-history-changeが必要）: {removed}")
+
+    for relpath in prev_paths:
+        prev = _previous_commit_json(incoming, relpath)
+        if not isinstance(prev, dict):
+            continue
+        cur = posts_by_relpath[relpath]
+        if cur["first_published"] != prev["first_published"]:
+            raise ValidationFailure("G16", f"{relpath}: first_published が前コミットと異なります（--allow-history-changeが必要）: {prev['first_published']} -> {cur['first_published']}")
+        if prev.get("stage") == "final" and cur.get("stage") == "preliminary":
+            raise ValidationFailure("G16", f"{relpath}: stageがfinal→preliminaryに後退しています（--allow-history-changeが必要）")
+        prev_body = monthly_report.body_without_meta(prev)
+        cur_body = monthly_report.body_without_meta(cur)
+        if prev_body == cur_body:
+            if cur["revision"] != prev["revision"] or cur["revised"] != prev["revised"]:
+                raise ValidationFailure("G16", f"{relpath}: 本体が同一なのにrevision/revisedが変わっています（--allow-history-changeが必要）")
+            continue
+        if cur["revision"] != prev["revision"] + 1:
+            raise ValidationFailure("G16", f"{relpath}: 本体が変わったのにrevisionが+1になっていません（--allow-history-changeが必要）: {prev['revision']} -> {cur['revision']}")
+
+
 def default_input_paths(repo: Path) -> dict[str, Path]:
     """--repo（Hugoリポジトリのフルチェックアウト）を前提にした、G13入力ハッシュ照合先の
     既定パス。homelab の /opt/blog-metrics/ のようなフラットなbundleレイアウトでは
@@ -565,25 +962,29 @@ def validate(
     repo: Path,
     allow_history_change: bool,
     input_paths: dict[str, Path] | None = None,
+    today: date | None = None,
 ) -> list[str]:
     """全ゲートを実行する。戻り値は警告メッセージのリスト（fatalではない）。
     fatal な違反があれば ValidationFailure を送出する。
 
     input_paths: G13入力ハッシュ照合先の override（省略時は --repo を Hugoリポジトリの
     フルチェックアウトとみなした既定パスを使う。homelab の run-daily.sh はフラットな
-    bundle レイアウト(/opt/blog-metrics/inputs/*)向けに明示的に渡す）。"""
-    gate1_file_allowlist(incoming)
+    bundle レイアウト(/opt/blog-metrics/inputs/*)向けに明示的に渡す）。
+    today: G14(first_published<=today)の基準日のoverride（省略時は実行日のJST日付。
+    monthly_report.run()と同じ流儀でテストから注入できるようにする）。"""
+    post_files = gate1_file_allowlist(incoming)
+    all_files = sorted(ALLOWED_FILES) + post_files
 
     texts: dict[str, str] = {}
     total_bytes = 0
-    for relpath in sorted(ALLOWED_FILES):
+    for relpath in all_files:
         path = incoming / relpath
         raw_bytes = path.stat().st_size
         total_bytes += raw_bytes
         texts[relpath] = gate2_encoding(path, relpath)
 
     parsed: dict[str, object] = {}
-    for relpath in sorted(DATA_FILES | {"pipeline.json"}):
+    for relpath in sorted(DATA_FILES | {"pipeline.json"}) + post_files:
         try:
             parsed[relpath] = json.loads(texts[relpath])
         except json.JSONDecodeError as exc:
@@ -591,6 +992,10 @@ def validate(
 
     for relpath in sorted(ALLOWED_FILES):
         gate3_size_and_rows(incoming, relpath, incoming.joinpath(relpath).stat().st_size, total_bytes, parsed.get(relpath))
+    for relpath in post_files:
+        raw_bytes = incoming.joinpath(relpath).stat().st_size
+        if raw_bytes > MAX_POST_BYTES:
+            raise ValidationFailure("G3", f"{relpath}: サイズが上限({MAX_POST_BYTES}bytes)を超えています ({raw_bytes}bytes)")
 
     key_allowlists = {
         "data/metrics/meta.json": META_KEYS,
@@ -604,17 +1009,20 @@ def validate(
         _walk_keys(row, "data/metrics/daily.json", DAILY_ROW_KEYS)
     for row in parsed["data/metrics/monthly.json"]:
         _walk_keys(row, "data/metrics/monthly.json", MONTHLY_ROW_KEYS)
+    for relpath in post_files:
+        _walk_keys(parsed[relpath], relpath, POST_KEYS)
 
-    for relpath in sorted(DATA_FILES | {"pipeline.json"}):
+    for relpath in sorted(DATA_FILES | {"pipeline.json"}) + post_files:
         gate5_string_format(parsed[relpath], relpath)
         gate7_no_time_of_day(parsed[relpath], relpath)
 
-    for relpath in sorted(ALLOWED_FILES):
+    for relpath in all_files:
         gate6_secret_deny(texts[relpath], relpath)
 
     daily = parsed["data/metrics/daily.json"]
     monthly = parsed["data/metrics/monthly.json"]
     meta = parsed["data/metrics/meta.json"]
+    layers_json = parsed["data/metrics/layers.json"]
 
     gate8_date_health(daily, incoming, allow_history_change)
     gate9_history_immutability(daily, incoming, allow_history_change)
@@ -623,6 +1031,20 @@ def validate(
     gate12_consistency(daily, monthly, meta)
 
     resolved_input_paths = input_paths if input_paths is not None else default_input_paths(repo)
+
+    # QA再指摘2026-09-26 R2: tariff.jsonの読み込み(meter_read_day取得)はpostが1件以上
+    # あるときだけ行う（posts/が無い日にファイルアクセス・I/Oを増やさない）。
+    posts_by_relpath = {relpath: parsed[relpath] for relpath in post_files}
+    if posts_by_relpath:
+        today_jst = today if today is not None else datetime.now(JST).date()
+        tariff_path = resolved_input_paths["tariff_sha256"]
+        meter_read_day = json.loads(tariff_path.read_text(encoding="utf-8"))["meter_read_day"]
+    for relpath, post in posts_by_relpath.items():
+        gate14_post_schema(post, relpath, today_jst, meter_read_day)
+    for relpath, post in posts_by_relpath.items():
+        gate15_post_recompute(post, relpath, layers_json, daily, incoming, meter_read_day)
+    gate16_post_history(posts_by_relpath, incoming, allow_history_change)
+
     return gate13_pipeline(parsed["pipeline.json"], resolved_input_paths)
 
 

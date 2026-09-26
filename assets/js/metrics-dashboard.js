@@ -403,21 +403,81 @@
       "</table>";
   }
 
+  // 追補(2026-09-26「速報＋改訂」方式): layers.preliminary_months[]（確定条件
+  // (is_closable、請求書の実額・検針値の反映)を満たさないが、請求期間が終了済みで暫定単価
+  // により試算できる月）を「速報」バッジ付きで表示する。確定月(months[])とは別の小さな表で、
+  // 累計(cumulative)には含めない（追補A': 確定した月はmonths[]にだけ入る）。
+  // QA指摘2026-09-26 item13: 月表記は記事と同じ「YYYY年M月分」（usage_period.startの
+  // 年月）にし、金額はFIT/卒FITトグル(layerChartMetric)に追随させる。
+  function renderPreliminaryMonths(layers) {
+    var el = document.getElementById("metrics-preliminary-months");
+    if (!el) return;
+    var months = (layers && layers.preliminary_months) || [];
+    // QA再指摘2026-09-26 N1(二重防御): L3がbuy_source=="billed"かつsell_source==
+    // "official_meter"（=買電・売電とも確定した月）はlayer_model.py側で既に除外される
+    // はずだが、ダッシュボード側でも同じ条件で除外する。
+    // QA再指摘2026-09-26 item2: 買電・売電が確定していても単価(tariff_provisional)が
+    // まだ暫定のままの月は「完全には確定していない」ため速報表に残す。
+    var isFullyConfirmed = function (m) {
+      var l3 = m.layers && m.layers.L3;
+      return !!l3 && l3.buy_source === "billed" && l3.sell_source === "official_meter" &&
+        m.tariff_provisional === false;
+    };
+    var rows = months
+      .filter(function (m) { return m.layers && m.layers.L3 && m.layers.L3.available && !isFullyConfirmed(m); })
+      .map(function (m) {
+        var ym = yearMonthOf(m.usage_period.start);
+        var label = ym.year + "年" + ym.month + "月分";
+        return "<tr><td>" + escapeHtml(label) + " " + badge("速報") + "</td>" +
+          "<td>" + yen(m.layers.L3[layerChartMetric]) + "</td></tr>";
+      })
+      .join("");
+    if (!rows) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML =
+      "<table><thead><tr><th>対象月</th><th>実質電気代（速報）</th></tr></thead>" +
+      "<tbody>" + rows + "</tbody></table>" +
+      "<p class=\"metrics-notes\">電気料金は前月の単価で仮計算。請求書の反映後に確定値へ更新します。</p>";
+  }
+
+  // 速報表の金額をFIT/卒FITトグルに追随させる。renderLayerToggle自体は変更せず、
+  // トグルボタンに別途クリックリスナーを追加するだけにする（担当者が同時に変更中のため
+  // renderLayerToggleには触れない。リスナーの実行順はDOM上の追加順なので、
+  // renderLayerToggle側のlayerChartMetric更新より後に呼ばれる）。
+  function bindPreliminaryMonthsToPriceToggle(layers) {
+    var fitBtn = document.getElementById("layer-price-toggle-fit");
+    var postFitBtn = document.getElementById("layer-price-toggle-postfit");
+    if (!fitBtn || !postFitBtn) return;
+    fitBtn.addEventListener("click", function () { renderPreliminaryMonths(layers); });
+    postFitBtn.addEventListener("click", function () { renderPreliminaryMonths(layers); });
+  }
+
   // 「月ごとの電気代と節約額」。確定月（4層すべてがそろう請求月）が無い間は、いつ最初の
-  // 月が表示されるかだけを1文で示す（グラフ・表・長い説明文は出さない）。
+  // 月が表示されるかだけを1文で示す（グラフ・表・長い説明文は出さない）。速報行がある場合は
+  // その案内文自体を出さない（QA指摘2026-09-26 item13）。
   function renderMonthlySection(layers) {
     var el = document.getElementById("metrics-monthly-section");
     if (!el) return;
     var cumulative = layers && layers.cumulative;
+    var hasPreliminaryRows = ((layers && layers.preliminary_months) || []).some(function (m) {
+      return m.layers && m.layers.L3 && m.layers.L3.available;
+    });
     if (!cumulative || !cumulative.available) {
-      var ip = layers && layers.in_progress;
-      if (ip && ip.usage_period) {
-        var startYM = yearMonthOf(ip.usage_period.start);
-        var endMonth = monthOf(ip.usage_period.end);
-        el.innerHTML = "<p>最初の月（" + startYM.year + "年" + startYM.month + "月分）は" + endMonth + "月上旬に表示されます。</p>";
-      } else {
-        el.innerHTML = "<p>月ごとの電気代を表示するためのデータがまだありません。</p>";
+      var placeholder = "";
+      if (!hasPreliminaryRows) {
+        var ip = layers && layers.in_progress;
+        if (ip && ip.usage_period) {
+          var startYM = yearMonthOf(ip.usage_period.start);
+          var endMonth = monthOf(ip.usage_period.end);
+          placeholder = "<p>最初の月（" + startYM.year + "年" + startYM.month + "月分）は" + endMonth + "月上旬に表示されます。</p>";
+        } else {
+          placeholder = "<p>月ごとの電気代を表示するためのデータがまだありません。</p>";
+        }
       }
+      el.innerHTML = placeholder + "<div id=\"metrics-preliminary-months\"></div>";
+      renderPreliminaryMonths(layers);
       return;
     }
     var c = cumulative.net_cost_fit_yen;
@@ -427,10 +487,12 @@
       "</strong> 節約できています（そのうち SolarChargeController の効果: " + yen(savingL2L3Yen) + "）。</p>" +
       "<canvas id=\"chart-layer-bills\" height=\"140\"></canvas>" +
       "<div id=\"metrics-layer-cumulative-table\"></div>" +
-      "<div id=\"metrics-l1s-branch-table\"></div>";
+      "<div id=\"metrics-l1s-branch-table\"></div>" +
+      "<div id=\"metrics-preliminary-months\"></div>";
     renderLayerBillsChart(layers);
     renderLayerCumulativeTable(layers);
     renderL1sBranchTable(layers);
+    renderPreliminaryMonths(layers);
   }
 
   // 「FIT期間中16円／FIT終了後8円」の2択セグメント。今月ここまでカード・日次グラフ・
@@ -489,6 +551,7 @@
     renderDailyLayersChart(layers);
     renderMonthlySection(layers);
     renderLayerToggle(layers);
+    bindPreliminaryMonthsToPriceToggle(layers);
   }
 
   if (document.readyState === "loading") {

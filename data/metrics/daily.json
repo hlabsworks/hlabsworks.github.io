@@ -1,0 +1,262 @@
+[
+  {
+    "date": "2026-08-29",
+    "solar_kwh": 4.352,
+    "buy_kwh": 9.571,
+    "sell_kwh": 0.233,
+    "nichicon_charge_kwh": 1.675,
+    "ecoflow_charge_kwh": 0.803,
+    "self_consumption_shift_kwh": 2.478,
+    "saving_yen": 175
+  },
+  {
+    "date": "2026-08-30",
+    "solar_kwh": 3.631,
+    "buy_kwh": 13.806,
+    "sell_kwh": 0.062,
+    "nichicon_charge_kwh": 0.82,
+    "ecoflow_charge_kwh": 1.058,
+    "self_consumption_shift_kwh": 1.878,
+    "saving_yen": 149
+  },
+  {
+    "date": "2026-08-31",
+    "solar_kwh": 19.287,
+    "buy_kwh": 4.813,
+    "sell_kwh": 4.441,
+    "nichicon_charge_kwh": 10.748,
+    "ecoflow_charge_kwh": 5.755,
+    "self_consumption_shift_kwh": 16.503,
+    "saving_yen": 688
+  },
+  {
+    "date": "2026-09-01",
+    "solar_kwh": 27.715,
+    "buy_kwh": 0.186,
+    "sell_kwh": 18.584,
+    "nichicon_charge_kwh": 7.995,
+    "ecoflow_charge_kwh": 3.554,
+    "self_consumption_shift_kwh": 11.549,
+    "saving_yen": 677
+  },
+  {
+    "date": "2026-09-02",
+    "solar_kwh": 25.761,
+    "buy_kwh": 0.523,
+    "sell_kwh": 7.086,
+    "nichicon_charge_kwh": 11.04,
+    "ecoflow_charge_kwh": 3.86,
+    "self_consumption_shift_kwh": 14.9,
+    "saving_yen": 890
+  },
+  {
+    "date": "2026-09-03",
+    "solar_kwh": 11.84,
+    "buy_kwh": 4.942,
+    "sell_kwh": 1.953,
+    "nichicon_charge_kwh": 9.075,
+    "ecoflow_charge_kwh": 0.723,
+    "self_consumption_shift_kwh": 9.798,
+    "saving_yen": 442
+  },
+  {
+    "date": "2026-09-04",
+    "solar_kwh": 8.132,
+    "buy_kwh": 10.307,
+    "sell_kwh": 0.683,
+    "nichicon_charge_kwh": 5.311,
+    "ecoflow_charge_kwh": 1.23,
+    "self_consumption_shift_kwh": 6.541,
+    "saving_yen": 321
+  },
+  {
+    "date": "2026-09-05",
+    "solar_kwh": 12.841,
+    "buy_kwh": 4.808,
+    "sell_kwh": 2.223,
+    "nichicon_charge_kwh": 10.972,
+    "ecoflow_charge_kwh": 2.124,
+    "self_consumption_shift_kwh": 13.096,
+    "saving_yen": 477
+  },
+  {
+    "date": "2026-09-06",
+    "solar_kwh": 3.044,
+    "buy_kwh": 3.082,
+    "sell_kwh": 0.026,
+    "nichicon_charge_kwh": 0.786,
+    "ecoflow_charge_kwh": 0.716,
+    "self_consumption_shift_kwh": 1.502,
+    "saving_yen": 126
+  },
+  {
+    "date": "2026-09-07",
+    "solar_kwh": 3.888,
+    "buy_kwh": 13.261,
+    "sell_kwh": 0.177,
+    "nichicon_charge_kwh": 6.865,
+    "ecoflow_charge_kwh": 1.043,
+    "self_consumption_shift_kwh": 7.908,
+    "saving_yen": 157
+  },
+  {
+    "date": "2026-09-08",
+    "solar_kwh": 18.3,
+    "buy_kwh": 4.692,
+    "sell_kwh": 3.788,
+    "nichicon_charge_kwh": 10.919,
+    "ecoflow_charge_kwh": 3.815,
+    "self_consumption_shift_kwh": 14.734,
+    "saving_yen": 664
+  },
+  {
+    "date": "2026-09-09",
+    "solar_kwh": 10.103,
+    "buy_kwh": 19.787,
+    "sell_kwh": 3.102,
+    "nichicon_charge_kwh": 8.28,
+    "ecoflow_charge_kwh": 2.673,
+    "self_consumption_shift_kwh": 10.953,
+    "saving_yen": 341
+  },
+  {
+    "date": "2026-09-10",
+    "solar_kwh": 8.92,
+    "buy_kwh": 3.588,
+    "sell_kwh": 3.223,
+    "nichicon_charge_kwh": 0.0,
+    "ecoflow_charge_kwh": 3.157,
+    "self_consumption_shift_kwh": 3.157,
+    "saving_yen": 288
+  },
+  {
+    "date": "2026-09-11",
+    "solar_kwh": 4.095,
+    "buy_kwh": 2.003,
+    "sell_kwh": 0.361,
+    "nichicon_charge_kwh": 2.319,
+    "ecoflow_charge_kwh": 0.495,
+    "self_consumption_shift_kwh": 2.814,
+    "saving_yen": 161
+  },
+  {
+    "date": "2026-09-12",
+    "solar_kwh": 12.334,
+    "buy_kwh": 3.483,
+    "sell_kwh": 2.797,
+    "nichicon_charge_kwh": 9.612,
+    "ecoflow_charge_kwh": 2.463,
+    "self_consumption_shift_kwh": 12.075,
+    "saving_yen": 441
+  },
+  {
+    "date": "2026-09-13",
+    "solar_kwh": 13.809,
+    "buy_kwh": 0.166,
+    "sell_kwh": 4.38,
+    "nichicon_charge_kwh": 8.585,
+    "ecoflow_charge_kwh": 4.067,
+    "self_consumption_shift_kwh": 12.652,
+    "saving_yen": 462
+  },
+  {
+    "date": "2026-09-14",
+    "solar_kwh": 21.351,
+    "buy_kwh": 0.201,
+    "sell_kwh": 10.3,
+    "nichicon_charge_kwh": 8.494,
+    "ecoflow_charge_kwh": 3.398,
+    "self_consumption_shift_kwh": 11.892,
+    "saving_yen": 624
+  },
+  {
+    "date": "2026-09-15",
+    "solar_kwh": 8.309,
+    "buy_kwh": 1.726,
+    "sell_kwh": 1.141,
+    "nichicon_charge_kwh": 6.529,
+    "ecoflow_charge_kwh": 0.848,
+    "self_consumption_shift_kwh": 7.377,
+    "saving_yen": 316
+  },
+  {
+    "date": "2026-09-16",
+    "solar_kwh": 5.761,
+    "buy_kwh": 9.97,
+    "sell_kwh": 0.733,
+    "nichicon_charge_kwh": 4.043,
+    "ecoflow_charge_kwh": 1.258,
+    "self_consumption_shift_kwh": 5.301,
+    "saving_yen": 221
+  },
+  {
+    "date": "2026-09-17",
+    "solar_kwh": 27.657,
+    "buy_kwh": 4.134,
+    "sell_kwh": 18.036,
+    "nichicon_charge_kwh": 10.922,
+    "ecoflow_charge_kwh": 5.26,
+    "self_consumption_shift_kwh": 16.182,
+    "saving_yen": 688
+  },
+  {
+    "date": "2026-09-18",
+    "solar_kwh": 28.743,
+    "buy_kwh": 0.181,
+    "sell_kwh": 28.364,
+    "nichicon_charge_kwh": 7.43,
+    "ecoflow_charge_kwh": 3.025,
+    "self_consumption_shift_kwh": 10.455,
+    "saving_yen": 470
+  },
+  {
+    "date": "2026-09-19",
+    "solar_kwh": 13.224,
+    "buy_kwh": 0.123,
+    "sell_kwh": 3.924,
+    "nichicon_charge_kwh": 5.726,
+    "ecoflow_charge_kwh": 3.22,
+    "self_consumption_shift_kwh": 8.946,
+    "saving_yen": 449
+  },
+  {
+    "date": "2026-09-20",
+    "solar_kwh": 5.284,
+    "buy_kwh": 6.761,
+    "sell_kwh": 0.065,
+    "nichicon_charge_kwh": 2.058,
+    "ecoflow_charge_kwh": 1.068,
+    "self_consumption_shift_kwh": 3.126,
+    "saving_yen": 218
+  },
+  {
+    "date": "2026-09-21",
+    "solar_kwh": 1.822,
+    "buy_kwh": 23.208,
+    "sell_kwh": 0.0,
+    "nichicon_charge_kwh": 11.219,
+    "ecoflow_charge_kwh": 0.734,
+    "self_consumption_shift_kwh": 11.953,
+    "saving_yen": 76
+  },
+  {
+    "date": "2026-09-22",
+    "solar_kwh": 26.558,
+    "buy_kwh": 0.088,
+    "sell_kwh": 15.359,
+    "nichicon_charge_kwh": 9.48,
+    "ecoflow_charge_kwh": 5.326,
+    "self_consumption_shift_kwh": 14.806,
+    "saving_yen": 711
+  },
+  {
+    "date": "2026-09-23",
+    "solar_kwh": 3.308,
+    "buy_kwh": 6.405,
+    "sell_kwh": 0.206,
+    "nichicon_charge_kwh": 1.408,
+    "ecoflow_charge_kwh": 0.535,
+    "self_consumption_shift_kwh": 1.943,
+    "saving_yen": 132
+  }
+]

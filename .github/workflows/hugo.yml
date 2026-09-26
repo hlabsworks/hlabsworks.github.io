@@ -3,7 +3,15 @@ name: Deploy Hugo site to Pages
 on:
   push:
     branches: [main]
+  schedule:
+    # 08:00 JST（homelab の run-daily.sh が push した最新データを毎朝反映する）
+    - cron: "0 23 * * *"
   workflow_dispatch:
+    inputs:
+      allow_history_change:
+        description: "確定済み日(today-20日以前)の値変更を許可する（validate_metrics.py の G9 をスキップ）"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,9 +41,41 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          persist-credentials: false
+      # homelab (run-daily.sh) が毎日 push する公開メトリクスデータ。このジョブで実行される
+      # コードは全て main 側（このリポジトリ）のものであり、_incoming 配下は
+      # validate_metrics.py が JSON/Markdown としてしか読まない（コードとして実行しない）。
+      # solar-metrics-data は private リポジトリのため、既定の GITHUB_TOKEN では読めない
+      # （別リポジトリなので権限が及ばない）。読み取り専用のCI用 deploy key（write権限なし、
+      # runbook §2-3参照）を Actions Secret METRICS_DATA_READ_KEY に登録して使う。
+      - name: Checkout solar-metrics-data (incoming)
+        uses: actions/checkout@v4
+        with:
+          repository: hlabsworks/solar-metrics-data
+          path: _incoming
+          fetch-depth: 2
+          persist-credentials: false
+          ssh-key: ${{ secrets.METRICS_DATA_READ_KEY }}
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
+      # QA指摘F1: このリポジトリ自身の data/metrics/*.json（旧スキーマの初期シードを含む）に
+      # 依存するテスト(test_old_shaped_daily_json_is_rejected_by_gate4)があるため、
+      # 「Sync incoming metrics data」で data/metrics/ を _incoming の内容(新スキーマ)で
+      # 上書きするより前に実行する。
+      - name: Run blog-metrics unit tests
+        run: python3 -m unittest discover -s scripts/blog-metrics -p 'test_*.py'
+      - name: Validate incoming metrics data
+        env:
+          ALLOW_HISTORY_CHANGE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_history_change }}
+        run: |
+          ARGS=()
+          if [[ "${ALLOW_HISTORY_CHANGE}" == "true" ]]; then
+            ARGS+=(--allow-history-change)
+          fi
+          python3 scripts/blog-metrics/validate_metrics.py --incoming _incoming --repo . "${ARGS[@]}"
+      - name: Sync incoming metrics data into data/metrics
+        run: cp _incoming/data/metrics/*.json data/metrics/
       - name: Build with Hugo
         env:
           HUGO_ENVIRONMENT: production

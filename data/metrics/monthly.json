@@ -1,0 +1,22 @@
+[
+  {
+    "month": "2026-08",
+    "solar_kwh": 27.27,
+    "buy_kwh": 28.19,
+    "sell_kwh": 4.736,
+    "nichicon_charge_kwh": 13.243,
+    "ecoflow_charge_kwh": 7.616,
+    "self_consumption_shift_kwh": 20.859,
+    "saving_yen": 1012
+  },
+  {
+    "month": "2026-09",
+    "solar_kwh": 302.799,
+    "buy_kwh": 123.625,
+    "sell_kwh": 126.511,
+    "nichicon_charge_kwh": 159.068,
+    "ecoflow_charge_kwh": 54.592,
+    "self_consumption_shift_kwh": 213.66,
+    "saving_yen": 9352
+  }
+]

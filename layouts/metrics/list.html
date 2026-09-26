@@ -1,0 +1,58 @@
+{{- define "main" }}
+<article class="post-single">
+  <header class="post-header">
+    <h1 class="post-title">{{ .Title }}</h1>
+    {{- with .Description }}
+    <div class="post-description">{{ . | markdownify }}</div>
+    {{- end }}
+  </header>
+
+  <div class="post-content md-content">
+    <div class="metrics-in-progress-card">
+      {{ .Content }}
+      <div id="metrics-intro-solar"></div>
+    </div>
+
+    <h2>
+      {{- with site.Data.metrics.layers.in_progress }}
+      今月ここまでの電気代（{{ (time.AsTime .usage_period.start).Format "1/2" }}〜{{ (time.AsTime .period_end_actual).Format "1/2" }}、{{ .days_elapsed }}日中{{ .days_covered }}日分）
+      {{- else }}
+      今月ここまでの電気代
+      {{- end }}
+    </h2>
+    <div id="metrics-in-progress-card"></div>
+    <button id="layer-chart-toggle" type="button">卒FIT（8円）で計算</button>
+
+    <h2>日ごとの電気代（5つの構成で比較）</h2>
+    <p class="metrics-notes">試算の4本はシミュレーション、実際の1本は計測値です。</p>
+    <div id="metrics-daily-layers-empty"></div>
+    <canvas id="chart-daily-layers" height="140"></canvas>
+
+    <h2>月ごとの電気代と節約額</h2>
+    <div id="metrics-monthly-section"></div>
+
+    <h2>このデータについて</h2>
+    {{- with site.Data.metrics.meta }}
+    <p>
+      自宅で計測した実測値と、電力会社からの請求額をもとにしています。試算はシミュレーションです。
+      公開しているのは全ての機器の計測が揃った {{ .publish_since }} 以降の日次・月次の集計だけで、
+      時間帯ごとのデータや機器の識別情報は公開しません。詳しくは<a href="/metrics/methodology/">このデータについて</a>をご覧ください。
+    </p>
+    {{- end }}
+  </div>
+</article>
+
+<script id="metrics-daily-data" type="application/json">{{ site.Data.metrics.daily | jsonify | safeJS }}</script>
+<script id="metrics-layers-data" type="application/json">{{ site.Data.metrics.layers | jsonify | safeJS }}</script>
+
+{{- /* footer.html は partialCached でラップされ .Type をキーに含まないため、
+       extend_footer.html 経由だと他セクションのキャッシュが混入する。
+       ページ固有のスクリプトはこの main ブロック内（非キャッシュ）で読み込む。
+       外部CDNは使わない（chart.umd.min.js は Maven webjar からの vendored copy）。 */}}
+{{- with resources.Get "js/vendor/chart.umd.min.js" }}
+<script defer src="{{ .RelPermalink }}"></script>
+{{- end }}
+{{- with resources.Get "js/metrics-dashboard.js" }}
+<script defer src="{{ .RelPermalink }}"></script>
+{{- end }}
+{{- end }}

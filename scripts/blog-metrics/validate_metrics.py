@@ -206,18 +206,36 @@ def _list_tracked_files(incoming: Path) -> list[str]:
     return sorted(files)
 
 
-def _previous_commit_text(incoming: Path, relpath: str) -> str | None:
-    """incoming の HEAD~1 時点の relpath の内容を返す。取得できなければ None
-    （最初のコミット・git リポジトリでない等）。"""
+PREVIOUS_COMMIT_MAX_DEPTH = 10  # hugo.yml の _incoming checkout fetch-depth と揃える
+
+
+def _previous_commit_json(incoming: Path, relpath: str) -> list | dict | None:
+    """incoming の祖先コミット（HEAD~1, HEAD~2, …）のうち relpath が JSON として読める
+    最新のものを返す。祖先に relpath が無い（最初のコミット・git リポジトリでない等）なら None。
+
+    HEAD~1 だけを見ると、検証で拒否された壊れた push を revert した直後の CI が
+    JSONDecodeError で落ちて復旧できない（N2 負テスト 2026-09-26 で発見）。読めない祖先は
+    飛ばして次を見る。PREVIOUS_COMMIT_MAX_DEPTH 以内に読める祖先が無ければ比較対象なしとして
+    None を返し stderr に警告する（G9 を迂回するには連続 MAX_DEPTH 回の壊れた push が要り、
+    かつ書込鍵の保持者は既にゲート範囲内の数値を自由に書ける立場のため、脅威モデル上許容）。"""
     if not (incoming / ".git").exists():
         return None
-    result = subprocess.run(
-        ["git", "-C", str(incoming), "show", f"HEAD~1:{relpath}"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout
+    saw_unparseable = False
+    for depth in range(1, PREVIOUS_COMMIT_MAX_DEPTH + 1):
+        result = subprocess.run(
+            ["git", "-C", str(incoming), "show", f"HEAD~{depth}:{relpath}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            break
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            saw_unparseable = True
+            continue
+    if saw_unparseable:
+        print(f"::warning::{relpath}: 直近{PREVIOUS_COMMIT_MAX_DEPTH}コミット内に JSON として読める前回値が無いため、前コミット比較(G8/G9/G11)をスキップします", file=sys.stderr)
+    return None
 
 
 def gate1_file_allowlist(incoming: Path) -> None:
@@ -360,10 +378,9 @@ def gate8_date_health(daily: list[dict], incoming: Path, allow_history_change: b
         if date.fromisoformat(d) > today_jst:
             raise ValidationFailure("G8", f"data/metrics/daily.json: 未来日が含まれています: {d}")
 
-    prev_text = _previous_commit_text(incoming, "data/metrics/daily.json")
-    if prev_text is None:
+    prev_daily = _previous_commit_json(incoming, "data/metrics/daily.json")
+    if prev_daily is None:
         return
-    prev_daily = json.loads(prev_text)
     if not prev_daily:
         return
     prev_last_date = prev_daily[-1]["date"]
@@ -378,10 +395,10 @@ def gate9_history_immutability(daily: list[dict], incoming: Path, allow_history_
     --allow-history-change でスキップ可能。"""
     if allow_history_change:
         return
-    prev_text = _previous_commit_text(incoming, "data/metrics/daily.json")
-    if prev_text is None:
+    prev_daily = _previous_commit_json(incoming, "data/metrics/daily.json")
+    if prev_daily is None:
         return
-    prev_by_date = {row["date"]: row for row in json.loads(prev_text)}
+    prev_by_date = {row["date"]: row for row in prev_daily}
     today_jst = datetime.now(JST).date()
     cutoff = today_jst - timedelta(days=20)
     for row in daily:
@@ -427,9 +444,9 @@ def gate10_physical_range(daily: list[dict], monthly: list[dict]) -> None:
 def gate11_anomaly(daily: list[dict], monthly: list[dict], incoming: Path) -> None:
     """G11: 新規日の solar_kwh が直近30日中央値の3倍超、monthly 最終月 saving_yen が
     前月比±10倍超で fail。"""
-    prev_text = _previous_commit_text(incoming, "data/metrics/daily.json")
-    if prev_text is not None:
-        prev_dates = {row["date"] for row in json.loads(prev_text)}
+    prev_daily = _previous_commit_json(incoming, "data/metrics/daily.json")
+    if prev_daily is not None:
+        prev_dates = {row["date"] for row in prev_daily}
         new_rows = [row for row in daily if row["date"] not in prev_dates]
         by_date = {row["date"]: row for row in daily}
         sorted_dates = sorted(by_date)

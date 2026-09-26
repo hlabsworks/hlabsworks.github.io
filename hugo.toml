@@ -38,7 +38,7 @@ pagination.pagerSize = 10
   [params.adsense]
     # ca-pub-XXXXXXXXXXXXXXXX（AdSense の発行者ID）を設定すると、本番ビルドでのみ
     # extend_head.html から AdSense の自動広告タグが出力される。空文字なら何も出力されない。
-    client = ""
+    client = "ca-pub-5727688963640408"
 
   [params.cloudflareAnalytics]
     # Cloudflare Web Analytics のビーコン token を設定すると、本番ビルドでのみ

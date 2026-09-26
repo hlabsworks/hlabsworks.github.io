@@ -375,6 +375,62 @@ class ConfirmedTariffMonthsTest(unittest.TestCase):
         self.assertEqual(bill_model.confirmed_tariff_months(merged), {"2026-08", "2026-09"})
 
 
+class TariffConflictsTest(unittest.TestCase):
+    def test_overlay_none_returns_empty_list(self):
+        self.assertEqual(bill_model.tariff_conflicts(make_tariff(), None), [])
+
+    def test_no_conflicts_returns_empty_list(self):
+        base = make_tariff()
+        overlay = {"fuel_cost_adjustment_yen_per_kwh": {"2026-09": 9.12}}
+        self.assertEqual(bill_model.tariff_conflicts(base, overlay), [])
+
+    def test_fuel_conflict_is_reported(self):
+        base = make_tariff()
+        overlay = {"fuel_cost_adjustment_yen_per_kwh": {"2026-08": 999.0}}
+        self.assertEqual(
+            bill_model.tariff_conflicts(base, overlay),
+            [("fuel_cost_adjustment_yen_per_kwh", "2026-08")],
+        )
+
+    def test_capacity_conflict_is_reported(self):
+        base = make_tariff()
+        overlay = {"capacity_contribution_yen_per_month": {"2026-08": 1}}
+        self.assertEqual(
+            bill_model.tariff_conflicts(base, overlay),
+            [("capacity_contribution_yen_per_month", "2026-08")],
+        )
+
+    def test_levy_conflict_is_reported(self):
+        base = make_tariff()
+        overlay = {"renewable_levy_yen_per_kwh_observed": {"2026-08..2026-08": 1.0}}
+        self.assertEqual(
+            bill_model.tariff_conflicts(base, overlay),
+            [("renewable_levy_yen_per_kwh_observed", "2026-08..2026-08")],
+        )
+
+    def test_multiple_conflicts_are_all_reported(self):
+        base = make_tariff()
+        overlay = {
+            "fuel_cost_adjustment_yen_per_kwh": {"2026-08": 999.0},
+            "capacity_contribution_yen_per_month": {"2026-08": 1},
+            "renewable_levy_yen_per_kwh_observed": {"2026-08..2026-08": 1.0},
+        }
+        conflicts = bill_model.tariff_conflicts(base, overlay)
+        self.assertEqual(len(conflicts), 3)
+        self.assertIn(("fuel_cost_adjustment_yen_per_kwh", "2026-08"), conflicts)
+        self.assertIn(("capacity_contribution_yen_per_month", "2026-08"), conflicts)
+        self.assertIn(("renewable_levy_yen_per_kwh_observed", "2026-08..2026-08"), conflicts)
+
+    def test_matching_values_are_not_conflicts(self):
+        base = make_tariff()
+        overlay = {
+            "fuel_cost_adjustment_yen_per_kwh": {"2026-08": -3.50},
+            "capacity_contribution_yen_per_month": {"2026-08": 213},
+            "renewable_levy_yen_per_kwh_observed": {"2026-08..2026-08": 4.18},
+        }
+        self.assertEqual(bill_model.tariff_conflicts(base, overlay), [])
+
+
 class BuildMonthRecordTest(unittest.TestCase):
     def _daily_row(self, d: str, buy=1.0, solar=10.0, sell=5.0, consumption=6.0) -> dict:
         return {"date": d, "buy_kwh": buy, "solar_kwh": solar, "sell_kwh": sell, "consumption_kwh": consumption}

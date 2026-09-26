@@ -381,6 +381,45 @@ def confirmed_tariff_months(tariff: dict) -> set[str]:
     return fuel_months & capacity_months
 
 
+def tariff_conflicts(base: dict, overlay: dict | None) -> list[tuple[str, str]]:
+    """overlay(inputs/tariff_months.json)のうち base と値が食い違う月・レンジを
+    (field, key) のリストとして列挙する（merge_tariff()は最初の矛盾で ValueError を
+    送出して打ち切るため、衝突が複数あっても全件は分からない。run-daily.sh の
+    build_effective_tariff が、衝突した月だけを tariff_months.json から機械的に
+    除去してから実効tariffを作り直す際に使う）。
+
+    field は "fuel_cost_adjustment_yen_per_kwh" / "capacity_contribution_yen_per_month" /
+    "renewable_levy_yen_per_kwh_observed"、key はそれぞれの overlay 側のキー
+    （fuel/capacityは'YYYY-MM'、levyは単月レンジ'YYYY-MM..YYYY-MM'のまま）。
+    overlay が None、または衝突が無ければ空リストを返す。"""
+    if overlay is None:
+        return []
+    conflicts: list[tuple[str, str]] = []
+
+    for field in ("fuel_cost_adjustment_yen_per_kwh", "capacity_contribution_yen_per_month"):
+        base_field = base.get(field, {})
+        for month, value in overlay.get(field, {}).items():
+            if month.startswith("_"):
+                continue
+            existing = base_field.get(month)
+            if existing is not None and existing != value:
+                conflicts.append((field, month))
+
+    base_levy = base.get("renewable_levy_yen_per_kwh", {})
+    for rng, value in overlay.get("renewable_levy_yen_per_kwh_observed", {}).items():
+        if rng.startswith("_") or ".." not in rng:
+            continue
+        lo, _hi = rng.split("..")
+        try:
+            existing = renewable_levy_rate({"renewable_levy_yen_per_kwh": base_levy}, lo)
+        except KeyError:
+            existing = None
+        if existing is not None and existing != value:
+            conflicts.append(("renewable_levy_yen_per_kwh_observed", rng))
+
+    return conflicts
+
+
 def reconcile_bill(tariff: dict, billing_month: str, usage_kwh: float, billed_yen: int) -> int:
     """compute_bill(tariff, usage_kwh, billing_month).total_yen と billed_yen の差額(円)を
     返す（0なら一致）。import_official_inputs.py の突合・validate_metrics.py の G19 で使う。"""

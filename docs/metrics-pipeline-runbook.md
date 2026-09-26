@@ -99,6 +99,15 @@ push してしまう**。このとき GitHub Actions が checkout する main �
 ② を行った場合に限る（その場合は新しい G1 がこの `inputs/` 追加を最初から許可しているため
 問題にならない）。詳細は §6 末尾参照。
 
+### 1-a. 通知（notify.sh）の前提
+
+`/usr/local/bin/notify.sh` は `/etc/solar-notify.env`（root 所有）を読む。blog-metrics.service は
+一般ユーザーで動くため、そのままでは読めず LINE 通知が黙って送られない。homelab では
+グループ `solar-notify` を作り、env を `root:solar-notify 0640` にして実行ユーザーをグループに
+追加してある（2026-09-26）。実行ユーザーを変える場合は同じ手当てをすること。
+また `/opt/blog-metrics` は他ユーザー（自動取得の実行ユーザー）からも読める 0755 にしておく
+（`deploy-homelab.sh` が配備のたびに戻す）。
+
 ## 2. 鍵の作成と authorized_keys
 
 ### 2-1. homelab -> solarchgctl（metrics-export.sh 実行用）

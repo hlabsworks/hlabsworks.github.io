@@ -160,6 +160,12 @@ else
     # プロンプト(read)が EOF になり「中断しました」で終わる（2026-09-26 初回配備で発生）。
     # rsync には標準入力を渡さない。
     rsync "${RSYNC_OPTS[@]}" "${BUNDLE}/" "${HOST}:${DEST}/" < /dev/null
+    # bundle は mktemp の 0700 ディレクトリから rsync -a されるため、配備先ディレクトリの
+    # 権限も 0700 に揃ってしまう。別ユーザー（energy-fetch）が inputs/tariff.json と
+    # import_official_inputs.py を読む必要があるので、配備のたびに 0755 に戻す。
+    if [[ "${DRY_RUN}" != true ]]; then
+        ssh -n "${HOST}" "chmod 755 '${DEST}'"
+    fi
 fi
 
 if [[ "${DRY_RUN}" == true ]]; then

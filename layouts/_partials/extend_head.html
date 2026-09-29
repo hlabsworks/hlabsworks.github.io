@@ -1,0 +1,18 @@
+{{- /* Head custom content area start */ -}}
+{{- /*     Insert any custom code (web-analytics, resources, etc.) - it will appear in the <head></head> section of every page. */ -}}
+{{- /*     Can be overwritten by partial with the same name in the global layouts. */ -}}
+{{- $isProduction := hugo.IsProduction | or (eq site.Params.env "production") -}}
+{{- if $isProduction -}}
+{{- with site.Params.adsense.client -}}
+{{- /* Google AdSense 自動広告タグ。site.Params.adsense.client が空文字なら本ブロック全体を
+     出力しない（ID未取得の間は一切のタグを出さない設計）。
+     出典: https://support.google.com/adsense/answer/9274634（取得日 2026-09-26） */ -}}
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ . }}" crossorigin="anonymous"></script>
+{{- end -}}
+{{- with site.Params.cloudflareAnalytics.token -}}
+{{- /* Cloudflare Web Analytics のビーコン。token が空文字なら出力しない。
+     出典: https://developers.cloudflare.com/web-analytics/get-started/（取得日 2026-09-26） */ -}}
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "{{ . }}"}'></script>
+{{- end -}}
+{{- end -}}
+{{- /* Head custom content area end */ -}}

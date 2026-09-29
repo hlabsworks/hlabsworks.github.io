@@ -1,0 +1,36 @@
+[Unit]
+Description=blog-metrics: solar-metrics-data の日次更新（aggregate.sh -> validate_metrics.py -> commit/push）
+# 制御機(solarchgctl)へのSSH到達性に依存するため、network-online.target を待つ。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 実行ユーザー名は公開リポジトリに実値を残さないためプレースホルダにしている。
+# deploy-homelab.sh --service-user <name> が配備時に実際のユーザー名へ置換する。
+User=__SERVICE_USER__
+# LogsDirectory/RuntimeDirectory/StateDirectory を指定すると、systemd がそれぞれ
+# /var/log/blog-metrics・/run/blog-metrics・/var/lib/blog-metrics を Service 実行前に
+# User= の所有で自動作成する（オーナーが事前に mkdir/chown する手間を減らす）。
+# run-daily.sh の既定値 --log-file/--lock-file もこれらのパスに合わせてある。
+LogsDirectory=blog-metrics
+RuntimeDirectory=blog-metrics
+StateDirectory=blog-metrics
+# 多重起動防止は run-daily.sh 自身が --lock-file（既定 /run/blog-metrics/run.lock）に対する
+# flock(1) で行う（scripts/blog-metrics/tests/run-daily-test.sh の「flock 競合」テストで検証済み）。
+# systemd 側で別途 flock ラップを重ねると、同一ロックファイルに対する二重ロックで
+# 挙動が分かりにくくなるため、ExecStart は run-daily.sh を直接呼ぶだけにしている。
+# --state-dir は StateDirectory=blog-metrics が作る /var/lib/blog-metrics に統一する
+# （run-daily.sh の既定値 ~/.local/state/blog-metrics のままだと deploy-homelab.sh が
+# allow-history-once フラグを置く場所とずれてしまうため。QA指摘#5/#6）。
+ExecStart=/opt/blog-metrics/run-daily.sh --state-dir /var/lib/blog-metrics
+# CPU/IOは太陽光発電・充電制御の本体アプリ（制御機側）を邪魔しない優先度に下げる
+# （本ユニットはhomelab側で動くため直接の競合は無いが、同一Pi上の他ジョブへの配慮として統一）。
+Nice=10
+IOSchedulingClass=idle
+# 5分プロファイル（最大420日分、1回のSSH往復で一括取得）・請求額シミュレーション等を
+# 含むため長めに確保する。
+TimeoutStartSec=900
+
+# [Install] は付けない。本ユニットは blog-metrics.timer からのみ起動する oneshot であり、
+# 単体で `systemctl enable` する運用は無い（timer側の [Install] WantedBy=timers.target のみで足りる）。

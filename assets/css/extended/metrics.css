@@ -1,0 +1,130 @@
+/*
+ * /metrics/ ページ専用の補助スタイル。
+ * PaperMod は resources.Match "css/extended/*.css" で assets/css/extended/ 配下の全CSSを
+ * 自動連結する（themes/PaperMod/layouts/_partials/head.html 参照）。テーマは submodule の
+ * ため直接編集できないが、このファイルはリポジトリ側の assets/css/extended/ に置くだけで
+ * Hugo のマウント（プロジェクトassets優先・テーマassetsとの合成）により自動的に取り込まれる。
+ */
+.metrics-notes {
+  font-size: 0.85em;
+  color: var(--secondary, #6c6c6c);
+  line-height: 1.6;
+}
+
+/* オーナー承認機能（2026-09-06）: 「今月ここまで」カードの推定/途中/暫定単価バッジ。 */
+.metrics-badge {
+  display: inline-block;
+  font-size: 0.75em;
+  padding: 0.1em 0.6em;
+  margin-right: 0.3em;
+  border-radius: 1em;
+  background: var(--tertiary, #e0e0e0);
+  color: var(--content, #333);
+}
+
+.metrics-in-progress-card {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 0.5em;
+  padding: 0.8em 1em;
+  margin: 0.5em 0 1em;
+}
+
+.metrics-in-progress-card ul {
+  margin: 0.4em 0 0;
+}
+
+/*
+ * オーナー指摘（2026-09-23）: 「4つの値の関係が分からない（足し算の関係？）」への対応。
+ * 今月ここまでカード・月ごとの比較表を「1つ前の構成との差」を挟んだ階段表示にした。
+ * table-layout:fixed + word-break で、列数の多い月ごとの比較表を含めモバイル幅でも
+ * テーブルが横スクロールせずに折り返すようにする（新しい列を追加してもここは変更不要）。
+ */
+.metrics-in-progress-card table,
+#metrics-layer-cumulative-table table,
+#metrics-l1s-branch-table table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+
+.metrics-in-progress-card th,
+.metrics-in-progress-card td,
+#metrics-layer-cumulative-table th,
+#metrics-layer-cumulative-table td,
+#metrics-l1s-branch-table th,
+#metrics-l1s-branch-table td {
+  padding: 0.35em 0.5em;
+  text-align: left;
+  word-break: break-word;
+  border-bottom: 1px solid var(--border, #ddd);
+  font-size: 0.92em;
+}
+
+/* 電気代が1つ前の構成より下がった(緑)/上がった(控えめな赤)場合の色分け。
+   既存のグラフ配色（LAYER_COLORS.L2の緑）に合わせ、上昇側はそれより彩度を落とした赤にする。 */
+.metrics-diff-decrease {
+  color: #2f8f5d;
+  font-weight: 600;
+}
+
+.metrics-diff-increase {
+  color: #a24a4a;
+  font-weight: 600;
+}
+
+/*
+ * オーナー指摘（一般読者から「ボタンの意味が分からない」）への対応: 単発トグルボタンを
+ * ラベル付きの2択（セグメント風）に変更。375px幅でも折れない2列flexで、選択中は
+ * aria-pressed="true" を唯一の状態源にして背景色・太字で示す（別クラスの併用はしない）。
+ */
+.metrics-price-toggle {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 0.5em;
+  padding: 0.8em 1em;
+  margin: 0.8em 0 1.2em;
+}
+
+.metrics-price-toggle-title {
+  margin: 0 0 0.5em;
+  font-size: 0.9em;
+  color: var(--secondary, #6c6c6c);
+}
+
+.metrics-price-toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+
+.metrics-price-toggle-btn {
+  flex: 1 1 160px;
+  min-width: 140px;
+  padding: 0.5em 0.8em;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 0.4em;
+  background: var(--entry, #fff);
+  color: var(--content, #333);
+  font-size: 0.95em;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.metrics-price-toggle-btn[aria-pressed="true"] {
+  border-color: var(--primary, #1e1e1e);
+  background: var(--primary, #1e1e1e);
+  color: var(--theme, #fff);
+  font-weight: 600;
+}
+
+.metrics-price-toggle-sub {
+  display: inline-block;
+  font-size: 0.85em;
+}
+
+.metrics-price-toggle-assumption {
+  margin: 0.6em 0 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--secondary, #6c6c6c);
+}

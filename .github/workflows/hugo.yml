@@ -1,0 +1,110 @@
+name: Deploy Hugo site to Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 08:00 JST（homelab の run-daily.sh が push した最新データを毎朝反映する）
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+    inputs:
+      allow_history_change:
+        description: "確定済み日(today-20日以前)の値変更を許可する（validate_metrics.py の G9 をスキップ）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: 0.148.2
+    steps:
+      - name: Install Hugo CLI
+        run: |
+          wget -O ${{ runner.temp }}/hugo.deb https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb
+          sudo dpkg -i ${{ runner.temp }}/hugo.deb
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      # homelab (run-daily.sh) が毎日 push する公開メトリクスデータ。このジョブで実行される
+      # コードは全て main 側（このリポジトリ）のものであり、_incoming 配下は
+      # validate_metrics.py が JSON/Markdown としてしか読まない（コードとして実行しない）。
+      # solar-metrics-data は private リポジトリのため、既定の GITHUB_TOKEN では読めない
+      # （別リポジトリなので権限が及ばない）。読み取り専用のCI用 deploy key（write権限なし、
+      # runbook §2-3参照）を Actions Secret METRICS_DATA_READ_KEY に登録して使う。
+      - name: Checkout solar-metrics-data (incoming)
+        uses: actions/checkout@v4
+        with:
+          repository: hlabsworks/solar-metrics-data
+          path: _incoming
+          # validate_metrics.py の前コミット比較(G8/G9/G11)は、壊れた push を revert した直後でも
+          # 読める祖先まで遡れるよう PREVIOUS_COMMIT_MAX_DEPTH(10) と揃える
+          fetch-depth: 10
+          persist-credentials: false
+          ssh-key: ${{ secrets.METRICS_DATA_READ_KEY }}
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      # QA指摘F1: このリポジトリ自身の data/metrics/*.json（旧スキーマの初期シードを含む）に
+      # 依存するテスト(test_old_shaped_daily_json_is_rejected_by_gate4)があるため、
+      # 「Sync incoming metrics data」で data/metrics/ を _incoming の内容(新スキーマ)で
+      # 上書きするより前に実行する。
+      - name: Run blog-metrics unit tests
+        run: python3 -m unittest discover -s scripts/blog-metrics -p 'test_*.py'
+      - name: Run site head tests (GA4 / AdSense / Cloudflare Web Analytics)
+        run: bash scripts/tests/site-head-test.sh
+      - name: Run no-draft-leak test (未完成記事の公開漏れ検出)
+        run: bash scripts/tests/no-draft-leak-test.sh
+      - name: Validate incoming metrics data
+        env:
+          ALLOW_HISTORY_CHANGE: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_history_change }}
+        run: |
+          ARGS=()
+          if [[ "${ALLOW_HISTORY_CHANGE}" == "true" ]]; then
+            ARGS+=(--allow-history-change)
+          fi
+          python3 scripts/blog-metrics/validate_metrics.py --incoming _incoming --repo . "${ARGS[@]}"
+      - name: Sync incoming metrics data into data/metrics
+        run: cp _incoming/data/metrics/*.json data/metrics/
+      # 設計判断(2026-09-23/26「速報＋改訂」方式): posts/YYYY-MM.json（homelab生成の数値
+      # スナップショット、G1〜G16で検証済み）から記事Markdownを生成する。文言・分岐は
+      # main側のこのファイルにのみあり、G17(check_rendered)に失敗すれば非ゼロ終了して
+      # ここでビルド・デプロイを止める。
+      - name: Render monthly report posts
+        run: python3 scripts/blog-metrics/render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/monthly-report
+      - name: Build with Hugo
+        env:
+          HUGO_ENVIRONMENT: production
+        run: |
+          hugo --gc --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

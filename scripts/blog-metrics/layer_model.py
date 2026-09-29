@@ -1858,7 +1858,7 @@ def build_layers(
             "profile_rows_since": profile_rows_since,
             "profile_source": profile_source,
             "month_usable_fraction_threshold": MONTH_USABLE_FRACTION_THRESHOLD,
-            "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）",
+            "_source": "ニチコンESS-H2L1製品仕様値を基に実測較正値で補正（蓄電池パラメータ出典）",
             "l1s_model": _l1s_model_params_dict(),
         },
         "months": months,

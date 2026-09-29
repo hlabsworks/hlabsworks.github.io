@@ -1,0 +1,102 @@
+/*
+ * 事業トップ(/)・事業者情報(/about/)向けの補助スタイル。
+ * PaperMod は resources.Match "css/extended/*.css" で assets/css/extended/ 配下の全CSSを
+ * 自動連結する（themes/PaperMod/layouts/_partials/head.html 参照）。テーマは submodule の
+ * ため直接編集できないが、このファイルはリポジトリ側の assets/css/extended/ に置くだけで
+ * Hugo のマウント（プロジェクトassets優先・テーマassetsとの合成）により自動的に取り込まれる。
+ * ダーク/ライト両テーマで読めるよう、色は PaperMod のCSS変数(--content 等)を使う。
+ */
+/* PaperModの `.md-content dl { margin: 0 }`（詳細度0,2,0）が
+ * `.business-info { margin }`（詳細度0,1,0）に勝ってしまい、本文内でmarginが効かない。
+ * `.md-content dl.business-info` を明示して同等以上の詳細度にする。 */
+.md-content dl.business-info,
+.business-info {
+  margin: 0.5em 0 1em;
+}
+
+/* PaperModのテーマCSS(themes/PaperMod/assets/css/common/md-content.css)に
+ * `.md-content dl { display: flex; flex-wrap: wrap }` があり、本文(.md-content)内で
+ * dl.business-info を使うとdlそのものがflexコンテナになってしまう。dlの直接の子は
+ * .business-info-row（各行のdiv）であり、dtではないため、行同士が横並びになって
+ * レイアウトが崩れる（PC:「屋号」「よみ」等が1行に並ぶ / スマホ:各行が極端に狭くなり
+ * dtが1文字ずつ折り返す）。dl自体はflexにせず、行を縦に積む通常のブロック要素に戻す。 */
+.md-content dl.business-info,
+dl.business-info {
+  display: block;
+}
+
+.business-info-row {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  gap: 0.5em 1em;
+  padding: 0.5em 0;
+  border-bottom: 1px solid var(--border, #ddd);
+}
+
+/* PaperModの `.md-content dt`/`.md-content dd`（width: 25%/75%）を、本文内・本文外の
+ * どちらでも確実に上書きするため、.md-content配下版も明示的に定義する。 */
+.md-content .business-info-row dt,
+.business-info-row dt {
+  width: auto;
+  flex: 0 0 6em;
+  color: var(--secondary, #6c6c6c);
+  font-weight: normal;
+}
+
+.md-content .business-info-row dd,
+.business-info-row dd {
+  width: auto;
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding-inline-start: 0;
+  color: var(--content, #333);
+}
+
+.business-info-row dd ul {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+/* スマートフォン幅では2カラムのflexだと窮屈なので縦積みにする。 */
+@media (max-width: 480px) {
+  .business-info-row {
+    flex-direction: column;
+    gap: 0.2em;
+  }
+
+  /* このセレクタ(詳細度0,1,1)が、本文内で効く`.md-content .business-info-row dt`
+   * (詳細度0,2,1)に負けてflex-basis:autoが適用されず、縦積み時にdtの高さが6em(108px)に
+   * なっていた。同じ詳細度で両方指定する。 */
+  .md-content .business-info-row dt,
+  .business-info-row dt {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .md-content .business-info-row dd,
+  .business-info-row dd {
+    flex: 0 0 auto;
+    width: auto;
+  }
+}
+
+.home-kana {
+  color: var(--secondary, #6c6c6c);
+  margin-top: -0.5em;
+}
+
+.home-activities-list,
+.home-apps-list,
+.home-labs-themes,
+.home-latest-posts {
+  padding-left: 1.2em;
+}
+
+.home-latest-posts-date {
+  color: var(--secondary, #6c6c6c);
+  font-size: 0.85em;
+  margin-left: 0.5em;
+  white-space: nowrap;
+}

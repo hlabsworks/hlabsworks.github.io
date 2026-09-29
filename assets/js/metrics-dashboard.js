@@ -1,6 +1,6 @@
 /*
- * 実績ダッシュボードのグラフ描画。/metrics/ ページ専用（layouts/_partials/extend_footer.html から
- * .Type == "metrics" のときだけ読み込まれる）。
+ * 実績ダッシュボードのグラフ描画。/labs/solar/metrics/ ページ専用（layouts/metrics/list.html から
+ * resources.Get "js/metrics-dashboard.js" で読み込まれる）。
  *
  * データは <script type="application/json"> 経由で埋め込まれた daily.json / layers.json
  * （scripts/blog-metrics/aggregate.sh, bill_model.py, layer_model.py の生成物）を読む。
@@ -12,7 +12,7 @@
  * 加えた5つの構成を持つ。L0・L1・L1S・L2は試算、L3のみ実測。L1Sは「家庭用蓄電池が無い
  * ご家庭なら」の分岐（noHomeBatteryBranchHtml/renderL1sBranchTable）でのみ表示し、
  * 階段表(LAYER_ORDER)には含めない。available:false の構成は描画しない（捏造しない）。
- * 数値の算出ロジックの詳細は /metrics/methodology/ を参照。
+ * 数値の算出ロジックの詳細は /labs/solar/metrics/methodology/ を参照。
  */
 (function () {
   "use strict";

@@ -1,0 +1,35 @@
+{{- /* /apps/ の一覧ページ。PaperMod既定のlist.html
+     (themes/PaperMod/layouts/list.html)をベースに、一覧対象を`union .RegularPages .Sections`
+     から`appEntry: true`のページだけに絞る。将来 `/apps/<slug>/privacy/`・
+     `/apps/<slug>/support/` を追加したとき、それらが一覧にアプリ本体として混入するのを防ぐ
+     （事業トップ側の同種の絞り込みはlayouts/index.htmlのコメント参照）。 */ -}}
+{{- define "main" }}
+{{- partial "breadcrumbs.html" . }}
+<header class="page-header">
+  <h1>{{ .Title }}</h1>
+  {{- if .Description }}
+  <div class="post-description">{{ .Description | markdownify }}</div>
+  {{- end }}
+</header>
+
+{{- if .Content }}
+<div class="post-content md-content">
+  {{- partial "anchored_headings.html" .Content -}}
+</div>
+{{- end }}
+
+{{- $apps := where .RegularPages "Params.appEntry" true }}
+{{- range $apps }}
+<article class="post-entry">
+  <header class="entry-header">
+    <h2 class="entry-hint-parent">{{ .Title }}</h2>
+  </header>
+  {{- if (ne (.Param "hideSummary") true) }}
+  <div class="entry-content">
+    <p>{{ .Summary | plainify | htmlUnescape }}{{ if .Truncated }}...{{ end }}</p>
+  </div>
+  {{- end }}
+  <a class="entry-link" aria-label="post link to {{ .Title | plainify }}" href="{{ .Permalink }}"></a>
+</article>
+{{- end }}
+{{- end }}

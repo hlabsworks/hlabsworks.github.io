@@ -1,0 +1,6 @@
+{{- /* 事業の連絡先メールアドレスを mailto リンクとして表示する共通partial。
+     business_info.html・_shortcodes/business-email.html・layouts/index.html から呼ぶ
+     （表示形式を一箇所にまとめ、ページごとの書式ズレを防ぐ）。 */ -}}
+{{- with site.Params.business.email -}}
+<a href="mailto:{{ . }}">{{ . }}</a>
+{{- end -}}

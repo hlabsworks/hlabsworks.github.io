@@ -18,7 +18,12 @@ hlabsworks.com に GA4・Cloudflare Web Analytics・Google AdSense を「ID を�
   の内側で出力する
 - 回帰テスト: `scripts/tests/site-head-test.sh`（ID未設定/設定済み × production/development の
   3パターンを `hugo` の実ビルド出力で検証。CI では `.github/workflows/hugo.yml` の
-  「Run blog-metrics unit tests」の直後に実行される）
+  「Run blog-metrics unit tests」の直後に実行される）。URL移設(Phase 1、2026-09-27。テーマ別
+  パス化R1'、2026-09-28)後は`scripts/tests/site-structure-test.sh`
+  （`docs/site-structure-runbook.md` §6）がその直後に続けて実行され、GA4/AdSense/Cloudflare
+  のタグ出力とは別に、`/labs/<テーマ>/` 配下への移設・旧URLのリダイレクト・内部リンクの
+  整合性を検証する。CIが生成する月次レポートページ（`content/labs/solar/monthly-report/`）も
+  フィクスチャ経由で同スクリプト内で生成・検査する。
 
 ## 1. GA4（Google アナリティクス）
 
@@ -70,7 +75,12 @@ AdSense の審査は独自コンテンツの量・質を見る。2026-09-26 時�
 2. サイト所有権確認: AdSense が提示する確認用 `<script>` タグは、
    `hugo.toml` の `[params.adsense]` `client` に発行された `ca-pub-XXXXXXXXXXXXXXXX` を
    設定すれば、`extend_head.html` が出力する自動広告タグで同じ確認要件を満たせる
-   （確認用に別のタグを追加する必要はない）
+   （確認用に別のタグを追加する必要はない）。
+   **前提**: この確認方法はトップページ（`/`）等の事業ページで広告タグが出力されていること
+   （§3-3の `adsOnBusinessPages` が `true`）が前提。`false` にしている間は事業ページに
+   広告タグが出ないため、サイト所有権確認にトップページを使う場合は事前に `true` であることを
+   確認すること（`/labs/` 配下の記事ページでは `adsOnBusinessPages` の値に関わらず常に出力
+   されるため、そちらを確認先にしてもよい）
 3. `static/ads.txt` を新規作成し、以下の1行を書く（`XXXXXXXXXXXXXXXX` は発行された pub ID に
    置き換える）:
    ```
@@ -84,6 +94,29 @@ AdSense の審査は独自コンテンツの量・質を見る。2026-09-26 時�
    この設定に依存する）
 7. 審査中・広告非表示の間も `client` を空文字のままにしておけば、他の挙動
    （ページ表示・GA4・Cloudflare Web Analytics）に影響しない
+
+### 3-3. 事業ページへの広告表示について（noAds / adsOnBusinessPages）
+
+事業トップ（`/`）・事業者情報（`/about/`）・お問い合わせ（`/contact/`）・プライバシーポリシー・
+`/apps/` 配下は front matter の `noAds: true`（`content/apps/_index.md` は cascade で配下にも
+継承）を持つ（`layouts/_partials/extend_head.html`）。ただし `noAds: true` だけを見て
+「事業ページには広告が出ない」と早合点しないこと。`hugo.toml` の
+`[params.business] adsOnBusinessPages` が `true` の間（**現状の既定値**）は、AdSense の審査・
+サイト所有権確認のためにトップページ等のコードが確認される場合があるのを踏まえ、`noAds`
+ページでも広告タグを出力する。つまり `noAds: true` は
+「`adsOnBusinessPages` が `false` になったときに広告を止める」ためのフラグであり、単独では
+広告出力の有無を決めない。
+
+- **現状（2026-09-28確認）**: hlabsworks.com は AdSense 未承認（審査リクエスト前または審査待ち）。
+  `adsOnBusinessPages` の既定値は `true`（審査対応のため事業ページにも広告コードを出す）
+- **AdSense 承認後**: `hugo.toml` の `adsOnBusinessPages` を `false` に変更し、main に push する
+  （事業ページ（`/`, `/about/`, `/contact/`, `/privacy-policy/`, `/apps/` 配下）には広告を
+  出さない運用に戻す。Labs（`/labs/` 配下）は `noAds` を付けていないため、この設定に関わらず
+  常に広告が出る）
+- 回帰テスト: `scripts/tests/site-head-test.sh` が `adsOnBusinessPages` true/false 両方の
+  ケースを検証する
+- `content/privacy-policy.md` の広告配信についての記述は、事業ページでの表示有無を断定しない
+  表現にしてある（フラグの値によって内容が事実と食い違わないようにするため）
 
 ## 4. ロールバック
 

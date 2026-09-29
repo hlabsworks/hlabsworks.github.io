@@ -1,0 +1,5 @@
+{{- /* 所在地の表示ロジックの共通化。address が空の間は開示請求に
+     応じる旨を表示する（特定商取引法上の対応と同様の考え方）。layouts/index.html・
+     business_info.html の両方から呼ぶことで、ロジックの重複と表示の食い違いを防ぐ。 */ -}}
+{{- $b := site.Params.business -}}
+{{- if $b.address }}{{ $b.address }}{{ else }}ご請求いただければ遅滞なく開示いたします。{{ end -}}

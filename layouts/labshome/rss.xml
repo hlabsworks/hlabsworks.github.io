@@ -1,0 +1,39 @@
+{{- /* Labsトップ(/labs/、type: labshome)のRSS。PaperMod既定のrss.xml(themes/PaperMod/layouts/rss.xml)は
+     セクションのRSSに `.RegularPages` (直下の子ページのみ、サブセクション配下は含まない)を使うため、
+     Labsトップの/labs/index.xmlには直下の非記事ページ(content/labs/about.md)しか入らず、
+     太陽光テーマ等サブセクション配下の記事が一切入らなくなる。
+     layouts/index.htmlの最新記事一覧・layouts/labs/list.htmlの記事一覧と同じ考え方で、
+     テーマ横断でtagsを持つページ(=記事・月次レポート)だけを対象にする。 */ -}}
+{{- $pages := where site.RegularPages "Params.tags" "!=" nil }}
+{{- $pages = where $pages "Params.hiddenInRss" "!=" true }}
+{{- $limit := site.Config.Services.RSS.Limit }}
+{{- if ge $limit 1 }}
+{{- $pages = $pages.ByDate.Reverse | first $limit }}
+{{- else }}
+{{- $pages = $pages.ByDate.Reverse }}
+{{- end }}
+{{- printf "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>" | safeHTML }}
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>{{ if eq .Title site.Title }}{{ site.Title }}{{ else }}{{ with .Title }}{{ . }} on {{ end }}{{ site.Title }}{{ end }}</title>
+    <link>{{ .Permalink }}</link>
+    <description>Recent content {{ if ne .Title site.Title }}{{ with .Title }}in {{ . }} {{ end }}{{ end }}on {{ site.Title }}</description>
+    <generator>Hugo</generator>
+    <language>{{ site.Language.LanguageCode }}</language>
+    {{- with site.Copyright }}
+    <copyright>{{ . | markdownify | plainify | strings.TrimPrefix "© " }}</copyright>
+    {{- end }}
+    {{- with .OutputFormats.Get "RSS" }}
+    {{ printf "<atom:link href=%q rel=\"self\" type=%q />" .Permalink .MediaType | safeHTML }}
+    {{- end }}
+    {{- range $pages }}
+    <item>
+      <title>{{ .Title }}</title>
+      <link>{{ .Permalink }}</link>
+      <pubDate>{{ .PublishDate.Format "Mon, 02 Jan 2006 15:04:05 -0700" | safeHTML }}</pubDate>
+      <guid>{{ .Permalink }}</guid>
+      <description>{{ with .Description | html }}{{ . }}{{ else }}{{ .Summary | html }}{{ end -}}</description>
+    </item>
+    {{- end }}
+  </channel>
+</rss>

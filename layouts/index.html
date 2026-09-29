@@ -1,0 +1,94 @@
+{{- /* 事業トップ。
+     Hugoのホームページ用テンプレート探索順は「index.html」が最優先(古いHugoから存在する
+     名前)で、CI(0.148.2)・ローカル(0.165.0)のどちらでも確実に有効。0.146で導入された
+     「home.html」は本リポジトリでは実機確認できていない(バイナリのダウンロードはしない
+     方針のためCIのHugoバージョンを別途用意できない)ため、index.htmlを選んだ。
+     PaperMod既定のlist.html(記事一覧、class="post-entry")は使わず、mainブロックを
+     まるごと独自マークアップにする。 */ -}}
+{{- define "main" }}
+{{- $b := site.Params.business }}
+<article class="post-single home-business-top">
+  <header class="post-header">
+    <h1 class="post-title">{{ $b.name }}</h1>
+    {{- with $b.nameKana }}
+    <p class="home-kana">{{ . }}</p>
+    {{- end }}
+  </header>
+
+  <div class="post-content md-content">
+    {{ .Content }}
+
+    <h2>事業内容</h2>
+    {{- with $b.activities }}
+    <ul class="home-activities-list">
+      {{- range . }}
+      <li>{{ . }}</li>
+      {{- end }}
+    </ul>
+    {{- end }}
+
+    <h2>アプリ</h2>
+    {{- /* "Section" "apps" だけで絞ると、将来 /apps/<slug>/privacy/ や
+         /apps/<slug>/support/ を追加した際に、それらもアプリ扱いでここに並んでしまう
+         （Sectionは配下のページすべてで"apps"になり、ページ階層(親子関係)は将来の
+         コンテンツ構成次第でどちらにでもなりうるため親子関係では区別できない）。
+         アプリ本体のページにだけ front matter で `appEntry: true` を明示させ、それだけを
+         対象にする（privacy/supportページは付けないので自動的に除外される）。
+         新しいアプリを追加する際は content/apps/<slug>.md 等に appEntry: true を
+         必ず設定すること（docs/site-structure-runbook.md §4参照）。 */ -}}
+    {{- $apps := where (where site.RegularPages "Section" "apps") "Params.appEntry" true }}
+    {{- if eq (len $apps) 0 }}
+    <p>現在、インターバルタイマーアプリ（Android / iOS 向け）を開発中です。公開後にアプリページでご案内します。</p>
+    {{- else }}
+    <ul class="home-apps-list">
+      {{- range $apps }}
+      <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+      {{- end }}
+    </ul>
+    {{- end }}
+    <p><a href="/apps/">アプリ一覧を見る</a></p>
+
+    <h2>Labs</h2>
+    <p>Labs では、太陽光発電・蓄電池・ポータブル電源を組み合わせた設備の実測データと、検証の記録を公開しています。</p>
+    {{- /* content/labs/直下のサブセクションをテーマとして列挙する
+         （labshome/list.htmlの一覧と同じ考え方。新テーマはフォルダと_index.mdを追加するだけで
+         ここにも自動的に並ぶ）。 */ -}}
+    {{- with site.GetPage "/labs" }}
+    <ul class="home-labs-themes">
+      {{- range .Sections.ByTitle }}
+      <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+      {{- end }}
+    </ul>
+    {{- end }}
+    {{- /* テーマが増えると特定テーマ名を固定で書けなくなるため、ダッシュボードへの固定文言は
+         置かず、テーマトップ(上記一覧)への導線だけにする。各テーマのダッシュボード等への
+         リンクはテーマトップ自身(例: /labs/solar/)に掲載する。 */ -}}
+    {{- /* 2つ目以降のテーマも含めてサイト全体からtagsを持つページ=記事を拾う。
+         テーマトップ(layouts/labs/list.html)は自テーマの記事だけに絞るため.RegularPagesを
+         使うが、事業トップは全テーマ横断で新しい順に見せたいのでsite.RegularPagesを使う。 */ -}}
+    {{- $posts := (where site.RegularPages "Params.tags" "!=" nil).ByDate.Reverse.Limit 3 }}
+    {{- with $posts }}
+    <h3>最新の記事</h3>
+    <ul class="home-latest-posts">
+      {{- range . }}
+      <li><a href="{{ .RelPermalink }}">{{ .Title }}</a> <time class="home-latest-posts-date" datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "2006-01-02" }}</time></li>
+      {{- end }}
+    </ul>
+    {{- else }}
+    <p>まだ記事がありません。</p>
+    {{- end }}
+    <p><a href="/labs/">Labsを見る</a></p>
+
+    <h2>事業者情報</h2>
+    <p>
+      所在地: {{ partial "business_address.html" . }}
+    </p>
+    <p><a href="/about/">事業者情報の詳細を見る</a></p>
+
+    <h2>お問い合わせ</h2>
+    <p>{{ partial "business_email.html" . }} または<a href="/contact/">お問い合わせページ</a>からご連絡ください。</p>
+
+    <p><a href="/privacy-policy/">プライバシーポリシー</a></p>
+  </div>
+</article>
+{{- end }}

@@ -1,0 +1,24 @@
+{{- /* PaperMod既定(themes/PaperMod/layouts/_partials/post_nav_links.html)は
+     `where site.RegularPages "Type" "in" site.Params.mainSections` で前後記事を選ぶ。
+     `.Type` はcontent/内の物理パスに関わらずルートセクション名になるため、テーマ別パス化
+     後は content/labs/ 配下のページが全テーマ・非記事ページ(Labs について等)を含めて
+     `Type: "labs"` に揃ってしまい、前後リンクがテーマをまたいで繋がってしまう。
+     同一テーマ(.CurrentSection)配下かつtagsを持つページ(=実際の記事・月次レポート、
+     layouts/labs/list.htmlの一覧と同じ絞り込み)だけを対象にする。 */ -}}
+{{- $pages := where .CurrentSection.RegularPages "Params.tags" "!=" nil }}
+{{- if and (gt (len $pages) 1) (in $pages . ) }}
+<nav class="paginav">
+  {{- with $pages.Next . }}
+  <a class="prev" href="{{ .Permalink }}">
+    <span class="title">« {{ i18n "prev_page" }}</span>
+    <span>{{- .Name -}}</span>
+  </a>
+  {{- end }}
+  {{- with $pages.Prev . }}
+  <a class="next" href="{{ .Permalink }}">
+    <span class="title">{{ i18n "next_page" }} »</span>
+    <span>{{- .Name -}}</span>
+  </a>
+  {{- end }}
+</nav>
+{{- end }}

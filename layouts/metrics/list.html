@@ -1,4 +1,5 @@
 {{- define "main" }}
+{{- partial "breadcrumbs.html" . }}
 <article class="post-single">
   <header class="post-header">
     <h1 class="post-title">{{ .Title }}</h1>
@@ -49,9 +50,9 @@
     <h2>このデータについて</h2>
     {{- with site.Data.metrics.meta }}
     <p>
-      自宅で計測した実測値と、電力会社からの請求額をもとにしています。試算はシミュレーションです。
+      計測器の実測値と、電力会社からの請求額をもとにしています。試算はシミュレーションです。
       公開しているのは全ての機器の計測が揃った {{ .publish_since }} 以降の日次・月次の集計だけで、
-      時間帯ごとのデータや機器の識別情報は公開しません。詳しくは<a href="/metrics/methodology/">このデータについて</a>をご覧ください。
+      時間帯ごとのデータや機器の識別情報は公開しません。詳しくは<a href="/labs/solar/metrics/methodology/">このデータについて</a>をご覧ください。
     </p>
     {{- end }}
   </div>

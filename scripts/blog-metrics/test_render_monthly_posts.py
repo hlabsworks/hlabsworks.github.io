@@ -147,7 +147,7 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertNotIn("| 発電量 |", md)
         self.assertNotIn("前月", md)
         self.assertNotIn("前年同月", md)
-        self.assertNotIn("自家消費率", md)  # 行を出さないので注記も出ない(QA指摘item11)
+        self.assertNotIn("自家消費率", md)  # 行を出さないので注記も出ない
 
     def test_rendering_is_deterministic(self):
         snap = base_snapshot()
@@ -357,7 +357,7 @@ class CheckRenderedTest(unittest.TestCase):
 
     def test_disallowed_external_link_is_rejected(self):
         md = rmp.render_markdown(base_snapshot())
-        injected = md.replace("[実績ダッシュボード](/metrics/)", "[実績ダッシュボード](https://evil.example.com/)")
+        injected = md.replace(f"[実績ダッシュボード]({rmp.METHODOLOGY_URL})", "[実績ダッシュボード](https://evil.example.com/)")
         problems = rmp.check_rendered(injected)
         self.assertTrue(any("evil.example.com" in p for p in problems))
 
@@ -406,8 +406,8 @@ class RunTest(unittest.TestCase):
             self.assertEqual(written, 0)
 
     def test_normal_post_is_rendered_to_expected_filename(self):
-        # QA指摘2026-09-26 item12: 出力先はcontent/posts/monthly-report/、ファイル名YYYY-MM.md
-        # （URLは/posts/monthly-report/2026-09/になる）。
+        # 出力先はcontent/labs/solar/monthly-report/、ファイル名YYYY-MM.md
+        # （URLは/labs/solar/monthly-report/2026-09/になる）。
         with tempfile.TemporaryDirectory() as tmp:
             posts_dir = Path(tmp) / "posts"
             posts_dir.mkdir()
@@ -433,6 +433,130 @@ class RunTest(unittest.TestCase):
             out_dir = Path(tmp) / "out"
             with self.assertRaises(SystemExit):
                 rmp.run(posts_dir, out_dir)
+
+
+class PipelineWiringTest(unittest.TestCase):
+    """render_monthly_posts.pyの定数・CI設定がcontent構成とずれていないことを機械的に
+    確認する（口頭確認だけだと移設のたびに同じ食い違いを繰り返す）。
+
+    content/metrics・content/solar-charge-controller.mdはcontent/labs/solar/配下へ移し、
+    url: front matterのオーバーライドをやめて素のpermalink（ディレクトリ構成そのまま）に
+    した（layouts/metrics/list.htmlのレイアウト引き当てはtype: metricsで保つ。実ビルドで
+    確認済み）。そのためfront matterのurl:行ではなく、定数から逆算したファイルパスが
+    実在することを確認する方式にする。"""
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    def _front_matter_url(self, relpath: str) -> str:
+        # 本文中に"url:"で始まる行があっても誤って拾わないよう、
+        # front matter(最初の"---"から次の"---"まで)だけを走査する。値の引用符も剥がす。
+        text = (self.REPO_ROOT / relpath).read_text(encoding="utf-8")
+        lines = text.split("\n")
+        if not lines or lines[0].strip() != "---":
+            raise AssertionError(f"{relpath} に front matter の開始行(---)がありません")
+        try:
+            end_idx = lines.index("---", 1)
+        except ValueError:
+            raise AssertionError(f"{relpath} に front matter の終端行(---)がありません")
+        for line in lines[1:end_idx]:
+            if line.startswith("url:"):
+                return line.split(":", 1)[1].strip().strip('"').strip("'")
+        raise AssertionError(f"{relpath} に url: front matter がありません")
+
+    def test_front_matter_url_ignores_body_text_and_strips_quotes(self):
+        """本文中の"url:"行を誤って拾わないこと、
+        front matter側の値がクォート付きでも正しく剥がして返すことを確認する。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.md"
+            path.write_text(
+                '---\ntitle: "sample"\nurl: "/blog/example/"\n---\n\nurl: これは本文です\n',
+                encoding="utf-8",
+            )
+            original_root = self.REPO_ROOT
+            self.REPO_ROOT = Path(tmp)
+            try:
+                self.assertEqual(self._front_matter_url("sample.md"), "/blog/example/")
+            finally:
+                self.REPO_ROOT = original_root
+
+    def _assert_url_matches_natural_content_path(self, url: str, relpath: str):
+        """front matterのurl:オーバーライドを持たないページ用。urlが `content/`+relpathの
+        ディレクトリ構成から素直に導けるHugoのpermalinkと一致することを確認する。"""
+        path = self.REPO_ROOT / relpath
+        self.assertTrue(path.exists(), f"{relpath} が存在しません")
+        lines = path.read_text(encoding="utf-8").split("\n")
+        front_matter_end = lines.index("---", 1) if lines and lines[0].strip() == "---" else -1
+        front_matter = lines[1:front_matter_end] if front_matter_end > 0 else []
+        self.assertFalse(
+            any(line.startswith("url:") for line in front_matter),
+            f"{relpath} はurl: front matterでオーバーライドされているため、この検証方法は使えません",
+        )
+        if relpath.endswith("/_index.md"):
+            expected = "/" + relpath[len("content/"):-len("_index.md")]
+        else:
+            expected = "/" + relpath[len("content/"):-len(".md")] + "/"
+        self.assertEqual(url, expected, f"{url} が {relpath} の素のpermalink({expected})と一致しません")
+
+    def test_methodology_url_matches_content_location(self):
+        self._assert_url_matches_natural_content_path(
+            rmp.METHODOLOGY_URL, "content/labs/solar/metrics/_index.md"
+        )
+
+    def test_solar_charge_controller_url_matches_content_location(self):
+        self._assert_url_matches_natural_content_path(
+            rmp.SOLAR_CHARGE_CONTROLLER_URL, "content/labs/solar/solar-charge-controller.md"
+        )
+
+    def test_hugo_workflow_out_dir_is_content_labs_solar_monthly_report(self):
+        workflow = (self.REPO_ROOT / ".github/workflows/hugo.yml").read_text(encoding="utf-8")
+        self.assertIn("--out content/labs/solar/monthly-report", workflow)
+
+    def test_hugo_workflow_runs_all_test_scripts(self):
+        """4つのテストスクリプトのどれか1つでもhugo.ymlから外れると、そのスクリプトが
+        検出するはずの回帰がCIをすり抜ける。CI設定自体がこれらを実行していることを
+        機械的に確認する（各スクリプト単体を実行しても、CIから呼ばれているかは検証できない）。"""
+        workflow = (self.REPO_ROOT / ".github/workflows/hugo.yml").read_text(encoding="utf-8")
+        for script in (
+            "scripts/tests/site-head-test.sh",
+            "scripts/tests/site-structure-test.sh",
+            "scripts/tests/site-structure-safety-test.sh",
+            "scripts/tests/no-draft-leak-test.sh",
+        ):
+            self.assertIn(
+                f"run: bash {script}", workflow, f"hugo.yml が {script} を実行していません"
+            )
+
+    def test_labs_solar_index_exists(self):
+        self.assertTrue((self.REPO_ROOT / "content/labs/solar/_index.md").exists())
+
+    def test_gitignore_matches_labs_solar_monthly_report_out_dir(self):
+        gitignore = (self.REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("content/labs/solar/monthly-report/", gitignore)
+
+    def test_allowed_link_targets_have_matching_content(self):
+        """ALLOWED_LINK_TARGETSの内部パス(/で始まるもの)に対応するcontentが
+        実在すること。front matterのurl:を持つページはその値を、持たないページ(
+        url:オーバーライドをやめたmetrics/solar-charge-controller)はディレクトリ構成から
+        導ける素のpermalinkを候補に加える。外部URL(http/https、CO2係数の出典等)は対象外。"""
+        content_urls = set()
+        for md_path in (self.REPO_ROOT / "content").rglob("*.md"):
+            relpath = md_path.relative_to(self.REPO_ROOT).as_posix()
+            has_url_field = False
+            for line in md_path.read_text(encoding="utf-8").split("\n"):
+                if line.startswith("url:"):
+                    content_urls.add(line.split(":", 1)[1].strip().strip('"').strip("'"))
+                    has_url_field = True
+            if not has_url_field:
+                if relpath.endswith("/_index.md"):
+                    content_urls.add("/" + relpath[len("content/"):-len("_index.md")])
+                else:
+                    content_urls.add("/" + relpath[len("content/"):-len(".md")] + "/")
+        for target in rmp.ALLOWED_LINK_TARGETS:
+            if target.startswith(("http://", "https://")):
+                continue
+            self.assertIn(
+                target, content_urls, f"{target} に対応するcontentのページが見つかりません"
+            )
 
 
 if __name__ == "__main__":

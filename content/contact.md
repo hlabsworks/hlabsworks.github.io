@@ -1,21 +1,17 @@
 ---
 title: "お問い合わせ"
 url: /contact/
-summary: "当サイトへのお問い合わせ方法"
+summary: "H Labs Works へのお問い合わせ方法"
 showtoc: false
+noAds: true
+ShowReadingTime: false
 ---
 
-当サイトへのお問い合わせ・記事内容の指摘・質問は、以下の方法で受け付けています。
+H Labs Works へのお問い合わせ（事業・アプリ・Labsの記事内容に関するもの全般）は、以下の方法で受け付けています。
 
-## GitHub でのお問い合わせ
+## メールでのお問い合わせ
 
-当サイトは GitHub 上で運営しています。記事内容への指摘・質問・要望は、以下のリポジトリの Issue からお寄せください（GitHub アカウントが必要です）。
-
-- [github.com/hlabsworks/hlabsworks.github.io/issues](https://github.com/hlabsworks/hlabsworks.github.io/issues)
-
-## お問い合わせフォーム
-
-お問い合わせフォームは現在準備中です。開設までは上記 GitHub Issue をご利用ください。
+{{< business-email >}} 宛にメールをお送りください。Labsの記事内容への指摘・質問も、こちらのメール宛にお寄せください。
 
 ---
 

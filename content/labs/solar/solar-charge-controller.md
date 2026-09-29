@@ -1,13 +1,15 @@
 ---
 title: "SolarChargeController とは"
-url: /solar-charge-controller/
+type: labs-page
+aliases: ["/solar-charge-controller/"]
 summary: "太陽光の余剰電力でポータブル電源を自動充電する自作システムの紹介"
+hiddenInRss: true
 showtoc: false
 ShowReadingTime: false
 ShowShareButtons: false
 ---
 
-**SolarChargeController** は、太陽光発電の余剰電力を使って複数のポータブル電源（EcoFlow DELTA）を順番に自動充電する、自作の常駐システムです。[実績ダッシュボード](/metrics/) の実測値（L3）は、このシステムを実際に24時間稼働させた結果です。
+**SolarChargeController** は、太陽光発電の余剰電力を使って複数のポータブル電源（EcoFlow DELTA）を順番に自動充電する、自作の常駐システムです。[実績ダッシュボード](/labs/solar/metrics/) の実測値（L3）は、このシステムを実際に24時間稼働させた結果です。
 
 ## 何をするか
 
@@ -29,9 +31,9 @@ ShowShareButtons: false
 
 ## 今後の予定
 
-現時点ではオーナー宅専用の自作システムとして運用しています。安定運用の実績を積んだ上で、他の家庭でも使える形での提供を検討しています（時期は未定です）。
+現時点では1か所の設備専用の自作システムとして運用しています。安定運用の実績を積んだ上で、他のご家庭でも使える形での提供を検討しています（時期は未定です）。
 
 ## 関連ページ
 
-- [実績ダッシュボード](/metrics/) — このシステムの導入効果（L0→L3 の節約額、L2→L3 の導入効果）
-- [計測と推定の方法](/metrics/methodology/) — 数値の算出ロジックの詳細
+- [実績ダッシュボード](/labs/solar/metrics/) — このシステムの導入効果（L0→L3 の節約額、L2→L3 の導入効果）
+- [計測と推定の方法](/labs/solar/metrics/methodology/) — 数値の算出ロジックの詳細

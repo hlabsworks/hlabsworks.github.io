@@ -1,0 +1,38 @@
+{{- /* 事業トップ(/、Home)のRSS。PaperMod既定のrss.xml(themes/PaperMod/layouts/rss.xml)は
+     ホームのRSSに `site.RegularPages` (mainSectionsに関わらずサイト全体の全ページ)を使うため、
+     /index.xmlに事業ページ(/about/, /contact/, /privacy-policy/, /labs/about/等)まで
+     混入してしまう。layouts/labshome/rss.xmlと同じ考え方で、テーマ横断でtagsを持つ
+     ページ(=Labsの記事・月次レポート)だけを対象にする。 */ -}}
+{{- $pages := where site.RegularPages "Params.tags" "!=" nil }}
+{{- $pages = where $pages "Params.hiddenInRss" "!=" true }}
+{{- $limit := site.Config.Services.RSS.Limit }}
+{{- if ge $limit 1 }}
+{{- $pages = $pages.ByDate.Reverse | first $limit }}
+{{- else }}
+{{- $pages = $pages.ByDate.Reverse }}
+{{- end }}
+{{- printf "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>" | safeHTML }}
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>{{ site.Title }}</title>
+    <link>{{ .Permalink }}</link>
+    <description>Recent content on {{ site.Title }}</description>
+    <generator>Hugo</generator>
+    <language>{{ site.Language.LanguageCode }}</language>
+    {{- with site.Copyright }}
+    <copyright>{{ . | markdownify | plainify | strings.TrimPrefix "© " }}</copyright>
+    {{- end }}
+    {{- with .OutputFormats.Get "RSS" }}
+    {{ printf "<atom:link href=%q rel=\"self\" type=%q />" .Permalink .MediaType | safeHTML }}
+    {{- end }}
+    {{- range $pages }}
+    <item>
+      <title>{{ .Title }}</title>
+      <link>{{ .Permalink }}</link>
+      <pubDate>{{ .PublishDate.Format "Mon, 02 Jan 2006 15:04:05 -0700" | safeHTML }}</pubDate>
+      <guid>{{ .Permalink }}</guid>
+      <description>{{ with .Description | html }}{{ . }}{{ else }}{{ .Summary | html }}{{ end -}}</description>
+    </item>
+    {{- end }}
+  </channel>
+</rss>

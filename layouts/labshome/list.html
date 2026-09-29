@@ -1,0 +1,39 @@
+{{- /* Labs トップ(/labs/)。content/labs/_index.md の type: labshome で
+     このテンプレートを明示的に選択する（layouts/labs/list.html はテーマトップ用のため、
+     Labsトップ自身をこの type で明確に分離する。パスベースのネストしたレイアウト検索
+     (layouts/labs/list.html と同じディレクトリにテーマがある場合の優先順位)はHugoのバージョン間で
+     挙動を確認できていないため使わない）。
+     テーマ一覧は content/labs/ 直下のサブセクション(.Sections)を列挙する。新テーマは
+     フォルダと_index.mdを追加するだけでここに並ぶ。予告・準備中テーマは載せない
+     （現在のテーマ(solar)のみ掲載）。 */ -}}
+{{- define "main" }}
+{{- partial "breadcrumbs.html" . }}
+<article class="post-single">
+  <header class="post-header">
+    <h1 class="post-title">{{ .Title }}</h1>
+    {{- with .Description }}
+    <div class="post-description">{{ . | markdownify }}</div>
+    {{- end }}
+  </header>
+
+  <div class="post-content md-content">
+    {{ .Content }}
+
+    <h2>テーマ</h2>
+    <ul class="labs-theme-list">
+      {{- range .Sections.ByTitle }}
+      <li>
+        <a href="{{ .RelPermalink }}">{{ .Title }}</a>
+        {{- with .Description }}
+        <p>{{ . | markdownify }}</p>
+        {{- else }}
+        {{- with .Summary }}
+        <p>{{ . | plainify }}</p>
+        {{- end }}
+        {{- end }}
+      </li>
+      {{- end }}
+    </ul>
+  </div>
+</article>
+{{- end }}

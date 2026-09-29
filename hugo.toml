@@ -1,12 +1,41 @@
 baseURL = "https://hlabsworks.com/"
+# 言語設定: defaultContentLanguage/[languages.ja]で全ページの
+# <html lang>をjaにする。languageCode・languages.ja.languageNameはいずれもHugo v0.158.0で
+# 非推奨になり、0.165.0はビルド時に両方とも警告を出すが、CIのHugo(0.148.2)はv0.158.0より
+# 前で代替キー(locale/label)を持たないため、非推奨キーを外したり置き換えたりはしない
+# (両バージョンで有効なキーだけを使う方針。警告は無害でビルドは成功する。出典:
+# https://gohugo.io/getting-started/configuration/ のCHANGELOG記載、
+# Hugo Release Notes v0.158.0「languageCode is now deprecated」「languageName is now
+# deprecated」取得日2026-09-28)。
 languageCode = "ja"
-title = "HLabsWorks"
+defaultContentLanguage = "ja"
+defaultContentLanguageInSubdir = false
+title = "H Labs Works"
 theme = "PaperMod"
 timeZone = "Asia/Tokyo"
 hasCJKLanguage = true
 enableRobotsTXT = true
+copyright = "© 2026 H Labs Works"
 
 pagination.pagerSize = 10
+
+# tagsのみ使い、Hugo既定のcategoriesタクソノミーは無効化する（未使用なのに空の
+# /categories/ ページがsitemapに載ってしまうため。categories:を使う記事は無い）。
+[taxonomies]
+  tag = "tags"
+
+[languages]
+  [languages.ja]
+    languageName = "日本語"
+    weight = 1
+
+# og:locale用。テーマのopengraph.html(themes/PaperMod/layouts/_partials/templates/opengraph.html)は
+# .Params.locale (未設定なら site.Language.LanguageCode = "ja") をog:localeに使うため、
+# LanguageCode自体は<rss><language>やCloudflare等が参照するISO 639-1の"ja"のまま変えず、
+# 全ページにcascadeでParams.localeをOpenGraphの慣例的な"ja_JP"表記で設定する。
+[[cascade]]
+  [cascade.params]
+    locale = "ja_JP"
 
 [services]
   [services.googleAnalytics]
@@ -20,8 +49,20 @@ pagination.pagerSize = 10
   [privacy.googleAnalytics]
     respectDoNotTrack = true
 
+# Labs関連コンテンツを /labs/ 配下、太陽光テーマは /labs/solar/ 配下に集約するための
+# タクソノミー出力先の書き換え。taxonomy=一覧ページ(/labs/tags/)、term=個別タグページ
+# (/labs/tags/<slug>/)。タグはテーマ横断のためテーマ名を含めない。
+# 参考: https://gohugo.io/content-management/urls/#permalinks
+# （ローカルの hugo v0.165.0 で実ビルド確認済み。日本語タグのディレクトリ名が移設前と
+# 一致することも確認済み。docs/site-structure-runbook.md 参照）。
+[permalinks]
+  [permalinks.taxonomy]
+    tags = "/labs/tags/"
+  [permalinks.term]
+    tags = "/labs/tags/:slug/"
+
 [params]
-  description = "太陽光×蓄電池×ポータブル電源で「買電量実質ゼロ」を目指す実測記録"
+  description = "H Labs Works は、スマートフォン・タブレット・パソコン向けアプリケーションの開発と、3Dプリンターを使ったオリジナル雑貨・小物の企画・製造・販売を事業内容としています。Labsでは太陽光×蓄電池×ポータブル電源の実測データも公開しています。"
   defaultTheme = "auto"
   ShowReadingTime = true
   ShowShareButtons = false
@@ -30,10 +71,38 @@ pagination.pagerSize = 10
   ShowCodeCopyButtons = true
   ShowToc = true
   dateFormat = "2006-01-02"
+  # ホームの記事一覧・RSSの対象セクションをlabsのみにする。labsはトップ
+  # レベルのセクション名で、太陽光テーマ(labs/solar)はそのサブセクション。
+  # 事業トップ(layouts/index.html)はmainSectionsを見ないため変更不要
+  # (archives.htmlが引き続き参照する。前後リンクはlayouts/_partials/post_nav_links.htmlの
+  # オーバーライドで.CurrentSection基準に変えたためこの値を見なくなった)。
+  mainSections = ["labs"]
 
-  [params.homeInfoParams]
-    Title = "HLabsWorks"
-    Content = "太陽光発電の余剰電力を蓄電池とポータブル電源に自動で振り分けて「買電量実質ゼロ」を目指す、実測データ主体の記録です。蓄電池もポタ電も実運用している家が、想像ではなく測定値で書きます。"
+  # 事業トップ(layouts/index.html)に掲載する屋号・所在地・連絡先等。
+  # 空文字の項目は非掲載（layouts/_partials/business_info.htmlが行ごと出力を省略する）。
+  [params.business]
+    name = "H Labs Works"
+    nameKana = "エイチラボワークス"
+    summaryEn = ""
+    owner = ""
+    established = "2026-10-03"
+    address = "静岡県沼津市"
+    email = "info@hlabsworks.com"
+    phone = ""
+    activities = [
+      "スマートフォン・タブレット・パソコン向けアプリケーションの開発・運営",
+      "3Dプリンター等を利用したオリジナル雑貨・小物の企画・製造・販売",
+    ]
+    # Google AdSense の審査ではトップページのコードを確認される場合があり、審査目的で
+    # 事業ページ(/, /about/, /contact/, /privacy-policy/, /apps/配下)にも一時的に広告を
+    # 出したい場合がある。機能フラグの乱用を避けるため、これは運営者判断のための単一の
+    # 設定値とする。
+    # 既定はtrue(事業ページにも広告を出す): 2026-09-28時点でhlabsworks.comはAdSense未承認
+    # (審査リクエスト前または審査待ち)であり、審査・サイト所有権確認でトップページ等の
+    # コードが確認される可能性があるため。AdSense承認後にfalseへ変更する
+    # (docs/ads-analytics-runbook.md §3-3参照)。
+    # layouts/_partials/extend_head.html 参照。
+    adsOnBusinessPages = true
 
   [params.adsense]
     # ca-pub-XXXXXXXXXXXXXXXX（AdSense の発行者ID）を設定すると、本番ビルドでのみ
@@ -47,36 +116,34 @@ pagination.pagerSize = 10
     # （設定すると二重計測になる。docs/ads-analytics-runbook.md §2）。
     token = ""
 
+  [params.footer]
+    # メニュー4項目化により、プライバシーポリシー・事業者情報への導線をメニューから外し、
+    # 全ページ共通のフッターに移す。PaperMod本来のfooter.text(themes/PaperMod/layouts/_partials/footer.html)
+    # はmarkdownifyされたうえで著作権表示(site.Copyright)と"Powered by Hugo & PaperMod"の間に
+    # <footer class="footer">の中で中央寄せ表示される。独自partial(extend_footer.html)で
+    # </footer>の外に出力していたのをやめ、テーマの仕組みに乗せることでレイアウト崩れを防ぐ。
+    text = "[プライバシーポリシー](/privacy-policy/) · [事業者情報](/about/)"
+
 [menu]
   [[menu.main]]
-    identifier = "posts"
-    name = "記事"
-    url = "/posts/"
+    identifier = "about"
+    name = "事業者情報"
+    url = "/about/"
     weight = 10
   [[menu.main]]
-    identifier = "metrics"
-    name = "実績ダッシュボード"
-    url = "/metrics/"
-    weight = 15
-  [[menu.main]]
-    identifier = "solar-charge-controller"
-    name = "SolarChargeControllerとは"
-    url = "/solar-charge-controller/"
-    weight = 17
-  [[menu.main]]
-    identifier = "about"
-    name = "このサイトについて"
-    url = "/about/"
+    identifier = "apps"
+    name = "アプリ"
+    url = "/apps/"
     weight = 20
+  [[menu.main]]
+    identifier = "labs"
+    name = "Labs"
+    url = "/labs/"
+    weight = 30
   [[menu.main]]
     identifier = "contact"
     name = "お問い合わせ"
     url = "/contact/"
-    weight = 30
-  [[menu.main]]
-    identifier = "privacy"
-    name = "プライバシーポリシー"
-    url = "/privacy-policy/"
     weight = 40
 
 [markup.goldmark.renderer]

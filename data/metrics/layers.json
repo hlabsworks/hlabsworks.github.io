@@ -11,7 +11,7 @@
     "profile_rows_since": "2026-03-07",
     "profile_source": "pi_energy_profile_5min（dt加重ゼロ次ホールド、SolarChargeController V1.00.059〜）",
     "month_usable_fraction_threshold": 0.9,
-    "_source": "ニチコンESS-H2L1製品仕様値を基に自宅の実測較正値で補正（蓄電池パラメータ出典）",
+    "_source": "ニチコンESS-H2L1製品仕様値を基に実測較正値で補正（蓄電池パラメータ出典）",
     "l1s_model": {
       "unit_count": 4,
       "capacity_kwh_nominal": 14.336,

@@ -1,0 +1,36 @@
+{{- /* 事業者情報の共通表示。/about/ (content/about.md からの business-info ショートコード
+     経由)から呼ぶ。代表者名・電話番号は運営者判断で非掲載のため、値が空の間は行そのものを
+     出さない（空欄表示や「未定」等の中途半端な表示にしない。個人情報の混入も防ぐ）。
+     所在地が空の場合は開示請求に応じる旨を表示する（特定商取引法上の対応と同様の考え方）。 */ -}}
+{{- $b := site.Params.business -}}
+<dl class="business-info">
+  {{- with $b.name }}
+  <div class="business-info-row"><dt>屋号</dt><dd>{{ . }}</dd></div>
+  {{- end }}
+  {{- with $b.nameKana }}
+  <div class="business-info-row"><dt>よみ</dt><dd>{{ . }}</dd></div>
+  {{- end }}
+  <div class="business-info-row"><dt>所在地</dt><dd>{{ partial "business_address.html" . }}</dd></div>
+  {{- with $b.established }}
+  <div class="business-info-row"><dt>開業日</dt><dd>{{ . }}</dd></div>
+  {{- end }}
+  {{- with $b.activities }}
+  <div class="business-info-row">
+    <dt>事業内容</dt>
+    <dd>
+      <ul>
+        {{- range . }}
+        <li>{{ . }}</li>
+        {{- end }}
+      </ul>
+    </dd>
+  </div>
+  {{- end }}
+  <div class="business-info-row"><dt>連絡先</dt><dd>{{ partial "business_email.html" . }}</dd></div>
+  {{- with $b.owner }}
+  <div class="business-info-row"><dt>代表者</dt><dd>{{ . }}</dd></div>
+  {{- end }}
+  {{- with $b.phone }}
+  <div class="business-info-row"><dt>電話</dt><dd>{{ . }}</dd></div>
+  {{- end }}
+</dl>

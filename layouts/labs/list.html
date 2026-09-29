@@ -1,0 +1,55 @@
+{{- /* Labsのテーマトップ(/labs/<テーマ>/)。content/labs/<テーマ>/_index.md
+     (type未指定、既定のtype="labs")がこのテンプレートを使う。PaperMod既定のlist.html
+     (themes/PaperMod/layouts/list.html)をベースに、記事一覧を「union .RegularPages .Sections」
+     から「tagsを持つページ(=実際の記事・月次レポート)」だけに絞る。既定のunionのままだと
+     テーマ直下の非記事ページ(SolarChargeControllerとは等、tagsを持たない)や、
+     サブセクション自体(実績ダッシュボード等)が記事一覧に記事として混ざってしまうため。 */ -}}
+{{- define "main" }}
+{{- partial "breadcrumbs.html" . }}
+<header class="page-header">
+  <h1>{{ .Title }}</h1>
+  {{- if .Description }}
+  <div class="post-description">{{ .Description | markdownify }}</div>
+  {{- end }}
+</header>
+
+{{- if .Content }}
+<div class="post-content md-content">
+  {{- partial "anchored_headings.html" .Content -}}
+</div>
+{{- end }}
+
+{{- $articles := where .RegularPages "Params.tags" "!=" nil }}
+{{- $paginator := .Paginate $articles.ByDate.Reverse }}
+{{- range $paginator.Pages }}
+<article class="post-entry">
+  <header class="entry-header">
+    <h2 class="entry-hint-parent">{{ .Title }}</h2>
+  </header>
+  {{- if (ne (.Param "hideSummary") true) }}
+  <div class="entry-content">
+    <p>{{ .Summary | plainify | htmlUnescape }}{{ if .Truncated }}...{{ end }}</p>
+  </div>
+  {{- end }}
+  {{- if not (.Param "hideMeta") }}
+  <footer class="entry-footer">
+    {{- partial "post_meta.html" . -}}
+  </footer>
+  {{- end }}
+  <a class="entry-link" aria-label="post link to {{ .Title | plainify }}" href="{{ .Permalink }}"></a>
+</article>
+{{- end }}
+
+{{- if gt $paginator.TotalPages 1 }}
+<footer class="page-footer">
+  <nav class="pagination">
+    {{- if $paginator.HasPrev }}
+    <a class="prev" href="{{ $paginator.Prev.URL | absURL }}">« {{ i18n "prev_page" }}</a>
+    {{- end }}
+    {{- if $paginator.HasNext }}
+    <a class="next" href="{{ $paginator.Next.URL | absURL }}">{{ i18n "next_page" }} »</a>
+    {{- end }}
+  </nav>
+</footer>
+{{- end }}
+{{- end }}

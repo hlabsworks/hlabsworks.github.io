@@ -8,7 +8,7 @@ Markdown を生成する。CIのビルド時（main側の信頼済みコード�
 （posts/*.json の値は validate_metrics.py のG14で日付・月・列挙値以外の文字列を全て拒否する）。
 
 使い方（.github/workflows/hugo.yml から呼ばれる）:
-  python3 render_monthly_posts.py --posts-dir _incoming/posts --out content/posts/monthly-report
+  python3 render_monthly_posts.py --posts-dir _incoming/posts --out content/labs/solar/monthly-report
 """
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ POST_FILE_RE = re.compile(r"^(\d{4}-\d{2})\.json\Z", re.ASCII)
 # main をコミットするだけで特定の請求月の記事を非公開にできる（DDR §C 停止スイッチ）。
 SUPPRESSED_BILLING_MONTHS: frozenset[str] = frozenset()
 
-METHODOLOGY_URL = "/metrics/"
-SOLAR_CHARGE_CONTROLLER_URL = "/solar-charge-controller/"  # 追補(2026-09-26) C'
+METHODOLOGY_URL = "/labs/solar/metrics/"  # content/labs/solar/metrics/_index.md の実際のURLと一致させる
+SOLAR_CHARGE_CONTROLLER_URL = "/labs/solar/solar-charge-controller/"  # content/labs/solar/solar-charge-controller.md の実際のURLと一致させる
 
 # 環境省・経済産業省「電気事業者別排出係数(特定排出者の温室効果ガス排出量算定用)-R6年度実績-」
 # （令和8年提出用rev4、R8.1.9公表、R8.8.3一部追加・更新）。全国平均係数 0.000423 t-CO2/kWh
@@ -310,7 +310,7 @@ def render_markdown(snapshot: dict) -> str:
     parts.append("")
     if self_consumption_pct is not None:
         # QA指摘2026-09-26 item11: 注記は行を出したときだけ。方法論的な記述（分子・分母等）は削る。
-        parts.append("自家消費率は発電量のうち自宅で使った割合です。")
+        parts.append("自家消費率は発電量のうち、売電せずに使った割合です。")
         parts.append("")
 
     # 3. 構成別の電気代（QA指摘2026-09-26 item11: 列見出しをダッシュボードの表記に揃える。

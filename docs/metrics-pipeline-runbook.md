@@ -71,7 +71,7 @@ Host エイリアス推奨）、`<controller>` は制御機(solarchgctl)の SSH 
 13. **systemd unit をインストールし、timer を有効化する（オーナーが実行）**:
     ```sh
     scripts/blog-metrics/deploy-homelab.sh --service-user <homelabの実行ユーザー名> --install-units
-    ssh <homelab> 'sudo systemctl enable --now blog-metrics.timer'
+    ssh <homelab> 'sudo systemctl enable --now blog-metrics.timer blog-site-health.timer'
     ```
     実施記録: 2026-09-26 に有効化。初回実行で timer の `OnCalendar` 構文誤り（bad unit file
     setting）と G11 の部分月誤検知（publish_since 直後の 8 月が 3 日分）を発見し修正済み。
@@ -238,9 +238,27 @@ rm -f /tmp/id_ed25519_metrics-data-read /tmp/id_ed25519_metrics-data-read.pub
   旧ビルドのまま（期待どおり）。revert 直後の再実行が HEAD~1 の壊れた JSON を読んで
   Traceback で落ちる回帰を発見し、読める祖先まで遡る修正（PR #2）を入れて復旧を確認した。
 
+### 4-a. 障害の LINE 通知（オーナー指示 2026-10-10「システム的なクリティカル問題は LINE で」）
+
+LINE（`/usr/local/bin/notify.sh`、ACTION 扱い）が届くのは次の 4 種類。いずれも同じ事象で
+再送せず、回復時に 1 通だけ「復旧」を送る。
+
+| 件名 | 送信元 | 条件 |
+|---|---|---|
+| blog-metrics 障害 / 復旧 | `run-daily.sh`（07:30/12:30/19:30） | 同じ暦日で 2 回続けて失敗、または 2 暦日連続で失敗した時点（1 回だけの失敗は一過性とみなし送らない） |
+| サイトのビルド失敗 / 復旧 | `site-health-check.sh`（`blog-site-health.timer` 10:30/21:30） | GitHub Actions `hugo.yml` の最新完了ランが success でない（公開 repo の REST API を認証なしで参照） |
+| サイトのデータが古い / 復旧 | 同上 | 公開中の `data/metrics/meta.json` の `generated_at` が homelab のデータ repo clone より 30 時間以上古い（ビルド成功でも配信が止まった場合を拾う） |
+| energy-fetch 失敗 | `energy-fetch-alert.service`（別 repo） | 請求データ自動取得の失敗（energy-archive の README 参照） |
+
+ネットワーク到達不能（curl 失敗）は `site-health.log` に記録するだけで送らない。状態は
+`/var/lib/blog-metrics/{fail_state,site_health}.json`。テストは
+`bash scripts/blog-metrics/tests/run-daily-test.sh` と `tests/site-health-check-test.sh`。
+実例: 2026-10-09〜10 に CI の日付依存テストが月替わりで落ち、ダッシュボードが 2 日間更新されない
+まま気づけなかった（当時は CI 失敗を LINE に送らない設計だった）ことから導入。
+
 ## 5. ロールバック
 
-- **timer を止める**: `ssh <homelab> 'sudo systemctl disable --now blog-metrics.timer'`
+- **timer を止める**: `ssh <homelab> 'sudo systemctl disable --now blog-metrics.timer blog-site-health.timer'`
 - **公開済みの悪い値を戻す**: `solar-metrics-data` 側で該当コミットを
   `git revert <sha>` して push する（`validate_metrics.py` の G9 に引っかかる場合は
   `workflow_dispatch` の `allow_history_change` を有効にして手動実行する）。
@@ -315,8 +333,8 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
    `tariff_months.json` が置かれていれば、`run-daily.sh` が毎回 `validate_metrics.py
    --check-inputs-dir`（G2/G3/G6/G7/G18/G19）で検査し、合格したファイルだけ
    `~/solar-metrics-data/inputs/` へ反映する。不合格なら既存の `inputs/` を維持したまま
-   データのcommit・pushは続行し、run全体は失敗扱い（`run.log` に理由が残り、3暦日連続で
-   LINE通知の対象になる）。G19（突合）は、`tariff_months.json` が `tariff.json` に対して
+   データのcommit・pushは続行し、run全体は失敗扱い（`run.log` に理由が残り、続けて失敗すると
+   LINE通知の対象になる。§4-a 参照）。G19（突合）は、`tariff_months.json` が `tariff.json` に対して
    **新たに確定させた**請求月について、`official_buy.json` に対応する月があり
    `reconcile_bill()==0` であることを必須にする（無ければ fatal）。`tariff.json` 側で
    既に確定済みの月にはこの必須要件は適用されない。
@@ -343,7 +361,7 @@ homelab 側に `/var/lib/blog-metrics/allow-history-once` フラグを
 （`excluded_months[月] = "tariff_conflict"` として記録。他の月・`official_buy.json`・
 `official_sell.json` は変更しない）。除去後の内容で実効tariffを作り直してデータの
 commit・pushは通常どおり続行しつつ、その回の `run-daily.sh` はrun全体としては失敗扱いに
-なる（`run.log` に除去した月が記録され、3暦日連続で LINE通知の対象になる。
+なる（`run.log` に除去した月が記録され、続けて失敗すると LINE通知の対象になる（§4-a）。
 `allow-history-once` フラグの手動操作は不要）。
 
 **S1 導入時の配備順序は §1 末尾の注意を必ず参照すること**（main へのマージ → 

@@ -96,6 +96,7 @@ cp "${SCRIPT_DIR}/import_official_buy.py" "${BUNDLE}/import_official_buy.py"
 cp "${SCRIPT_DIR}/import_official_sell.py" "${BUNDLE}/import_official_sell.py"
 cp "${SCRIPT_DIR}/import_official_inputs.py" "${BUNDLE}/import_official_inputs.py"
 cp "${SCRIPT_DIR}/run-daily.sh" "${BUNDLE}/run-daily.sh"
+cp "${SCRIPT_DIR}/site-health-check.sh" "${BUNDLE}/site-health-check.sh"
 NEW_TARIFF="${BUNDLE}/inputs/tariff.json"
 cp "${SCRIPT_DIR}/tariff.json" "${NEW_TARIFF}"
 
@@ -115,6 +116,8 @@ done
 # （公開リポジトリの元ファイルには実ユーザー名を書かないため。QA指摘F7）。
 sed "s/__SERVICE_USER__/${SERVICE_USER}/" "${SCRIPT_DIR}/systemd/blog-metrics.service" > "${BUNDLE}/systemd/blog-metrics.service"
 cp "${SCRIPT_DIR}/systemd/blog-metrics.timer" "${BUNDLE}/systemd/blog-metrics.timer"
+sed "s/__SERVICE_USER__/${SERVICE_USER}/" "${SCRIPT_DIR}/systemd/blog-site-health.service" > "${BUNDLE}/systemd/blog-site-health.service"
+cp "${SCRIPT_DIR}/systemd/blog-site-health.timer" "${BUNDLE}/systemd/blog-site-health.timer"
 
 git -C "${REPO_ROOT}" rev-parse --short HEAD > "${BUNDLE}/BUNDLE_REV" 2>/dev/null || echo "unknown" > "${BUNDLE}/BUNDLE_REV"
 
@@ -210,9 +213,11 @@ else
     esac
     ssh "${HOST}" "sudo install -m 644 '${DEST}/systemd/blog-metrics.service' /etc/systemd/system/blog-metrics.service && \
         sudo install -m 644 '${DEST}/systemd/blog-metrics.timer' /etc/systemd/system/blog-metrics.timer && \
+        sudo install -m 644 '${DEST}/systemd/blog-site-health.service' /etc/systemd/system/blog-site-health.service && \
+        sudo install -m 644 '${DEST}/systemd/blog-site-health.timer' /etc/systemd/system/blog-site-health.timer && \
         sudo systemctl daemon-reload"
 fi
 
 echo ""
 echo "deploy-homelab.sh: 完了。有効化する場合はオーナーが以下を実行してください:"
-echo "  ssh ${HOST:-<homelab>} 'sudo systemctl enable --now blog-metrics.timer'"
+echo "  ssh ${HOST:-<homelab>} 'sudo systemctl enable --now blog-metrics.timer blog-site-health.timer'"

@@ -1,0 +1,12 @@
+[Unit]
+Description=blog-site-health: site-health-check.sh を1日2回起動するタイマー
+
+[Timer]
+# JST 10:30 / 21:30。朝の定時ビルド（08:00 JST 予定、混雑で数時間遅れることがある）が
+# 終わっているはずの時刻と、夜の念押し。blog-metrics.timer（07:30/12:30/19:30）とは重ねない。
+OnCalendar=*-*-* 10,21:30:00
+Persistent=true
+Unit=blog-site-health.service
+
+[Install]
+WantedBy=timers.target

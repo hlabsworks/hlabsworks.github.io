@@ -436,19 +436,29 @@ AFTER=$(origin_log_count)
 assert_eq "3 commit count unchanged despite generated_at drift" "$AFTER" "$BEFORE"
 teardown
 
-echo "# 4. 失敗3回（同一暦日）: 通知なし・fail_streak_days=1"
+echo "# 4. 同一暦日の失敗: 1回目は通知なし、2回目で通知1通、3回目は再送なし・fail_streak_days=1"
 setup
 run_daily_failure_args >/dev/null 2>&1
+assert_eq "4 no notify after first failure" "$(notify_calls)" ""
 run_daily_failure_args >/dev/null 2>&1
+CALLS=$(notify_calls)
+CALL_COUNT=$(printf '%s\n' "$CALLS" | /usr/bin/grep -c . || true)
+assert_eq "4 notify after second failure" "$CALL_COUNT" "1"
+assert_contains "4 notify subject" "$CALLS" "障害"
 run_daily_failure_args >/dev/null 2>&1
+CALLS=$(notify_calls)
+CALL_COUNT=$(printf '%s\n' "$CALLS" | /usr/bin/grep -c . || true)
+assert_eq "4 no resend on third failure" "$CALL_COUNT" "1"
 STREAK=$(python3 -c "import json;print(json.load(open('$STATE_DIR/fail_state.json'))['fail_streak_days'])" 2>/dev/null)
 assert_eq "4 fail_streak_days" "$STREAK" "1"
-assert_eq "4 no notify" "$(notify_calls)" ""
+RUNS=$(python3 -c "import json;print(json.load(open('$STATE_DIR/fail_state.json'))['fail_runs_today'])" 2>/dev/null)
+assert_eq "4 fail_runs_today" "$RUNS" "3"
 teardown
 
-echo "# 5. 3暦日連続失敗: 通知1通（障害）"
+echo "# 5. 暦日連続失敗（各日1回）: 1日目は通知なし、2日目で通知1通（障害）、3日目は再送なし"
 setup
 BLOG_METRICS_TODAY="2026-09-01" run_daily_failure_args >/dev/null 2>&1
+assert_eq "5 no notify on first day" "$(notify_calls)" ""
 BLOG_METRICS_TODAY="2026-09-02" run_daily_failure_args >/dev/null 2>&1
 BLOG_METRICS_TODAY="2026-09-03" run_daily_failure_args >/dev/null 2>&1
 CALLS=$(notify_calls)
@@ -617,7 +627,7 @@ assert_eq "13 local commit rolled back" "$AFTER_HEAD" "$BEFORE_HEAD"
 assert_contains "13 log mentions validate failure" "$(cat "$LOG_FILE" 2>/dev/null)" "validate_metrics.py が失敗したため"
 teardown
 
-echo "# 14. 3日連続失敗→通知1通、6日ギャップ→新インシデントとして再度3日連続失敗→2通目の通知(QA指摘#2)"
+echo "# 14. 連続失敗→通知1通、6日ギャップ→新インシデントとして再度連続失敗→2通目の通知(QA指摘#2)"
 setup
 BLOG_METRICS_TODAY="2026-09-01" run_daily_failure_args >/dev/null 2>&1
 BLOG_METRICS_TODAY="2026-09-02" run_daily_failure_args >/dev/null 2>&1

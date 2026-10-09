@@ -1,0 +1,15 @@
+[Unit]
+Description=blog-site-health: 公開サイトのビルド結果とデータ鮮度を確認し障害だけ LINE 通知する
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# deploy-homelab.sh --service-user <name> が配備時に実ユーザー名へ置換する（blog-metrics.service と同じ）。
+User=__SERVICE_USER__
+LogsDirectory=blog-metrics
+StateDirectory=blog-metrics
+ExecStart=/opt/blog-metrics/site-health-check.sh --state-dir /var/lib/blog-metrics
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=120

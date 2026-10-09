@@ -51,8 +51,11 @@
 #     pipeline.json更新 -> (変更があれば)commit -> validate_metrics.py
 #     -> 失敗ならcommitを取り消し / 成功ならpush(3回リトライ)。
 #   - データに実質的な変更が無い日（generated_at 以外が前回と同一）はcommitしない。
-#   - 失敗は「連続する暦日」でカウントし（間が空いたら1からカウントし直す）、3暦日連続で
-#     全失敗した場合のみ通知を1通送る（4日目以降は連続していても再送しない）。回復時に1通送る。
+#   - 失敗は「連続する暦日」と「同じ暦日内の失敗回数」でカウントし（間が空いたら1から
+#     カウントし直す）、同じ暦日で2回続けて失敗した時点、または2暦日連続で失敗した時点で
+#     通知を1通送る（以後は連続していても再送しない）。回復時に1通送る。
+#     （オーナー指示 2026-10-10: LINE が激減したのでシステム的な障害は早めに知らせる。
+#     1回だけの失敗は制御機の再起動等の一過性があり得るので、2回目で確定扱いにする。）
 #   - ${STATE_DIR}/allow-history-once フラグ（deploy-homelab.sh が tariff.json の変更を
 #     検知したときだけ置く）を検出したら、そのcommit試行1回に限り validate_metrics.py に
 #     --allow-history-change を付与し、フラグを消費(削除)する。
@@ -544,16 +547,18 @@ today = date.fromisoformat(today_str)
 try:
     state = json.loads(Path(path).read_text(encoding="utf-8"))
 except (FileNotFoundError, json.JSONDecodeError):
-    state = {"fail_streak_days": 0, "last_fail_date": None, "alerted": False}
+    state = {"fail_streak_days": 0, "fail_runs_today": 0, "last_fail_date": None, "alerted": False}
 
 action = ""
 if outcome == "failure":
     last_fail_str = state.get("last_fail_date")
     last_fail = date.fromisoformat(last_fail_str) if last_fail_str else None
     if last_fail == today:
-        pass  # 同じ暦日内の再実行は既にカウント済み（複数回失敗しても1日分）
+        # 同じ暦日内の再実行。暦日のカウントは増やさず、同日内の失敗回数だけ数える
+        state["fail_runs_today"] = state.get("fail_runs_today", 0) + 1
     elif last_fail is not None and last_fail == today - timedelta(days=1):
         state["fail_streak_days"] = state.get("fail_streak_days", 0) + 1
+        state["fail_runs_today"] = 1
         state["last_fail_date"] = today_str
     else:
         # 前回失敗の記録が無い、または間が空いている(連続していない) → 新しい連続失敗として1から
@@ -562,15 +567,16 @@ if outcome == "failure":
         # alerted=Trueが残ったままになり、新インシデントが3日連続に達しても再通知されない
         # (QA指摘#2)。
         state["fail_streak_days"] = 1
+        state["fail_runs_today"] = 1
         state["last_fail_date"] = today_str
         state["alerted"] = False
-    if state["fail_streak_days"] >= 3 and not state.get("alerted"):
+    if (state["fail_streak_days"] >= 2 or state.get("fail_runs_today", 0) >= 2) and not state.get("alerted"):
         state["alerted"] = True
         action = "alert"
 else:
     if state.get("fail_streak_days", 0) > 0 and state.get("alerted"):
         action = "recover"
-    state = {"fail_streak_days": 0, "last_fail_date": None, "alerted": False}
+    state = {"fail_streak_days": 0, "fail_runs_today": 0, "last_fail_date": None, "alerted": False}
 
 Path(path).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(action)
@@ -642,7 +648,7 @@ run_once() {
 
     # stage_inputs/build_effective_tariffが不合格だった回は、データのcommit・push自体は
     # （既存のclone/inputs値のまま）成功させつつ、run全体としては失敗扱いにする
-    # （既存の「3暦日連続失敗でLINE1通」の仕組みに乗せる。monthly_report_failedと同じ流儀）。
+    # （既存の「連続失敗でLINE1通」の仕組みに乗せる。monthly_report_failedと同じ流儀）。
     if [[ "${stage_inputs_failed}" == true || "${effective_tariff_failed}" == true ]]; then
         return 1
     fi
@@ -671,7 +677,7 @@ main() {
 
     action=$(update_fail_state "${outcome}")
     case "${action}" in
-        alert) notify "blog-metrics 障害" "blog-metrics の自動更新が3日連続で失敗しています。$(today_str) 時点。/var/log/blog-metrics/run.log を確認してください。" ;;
+        alert) notify "blog-metrics 障害" "blog-metrics の自動更新が続けて失敗しています（同日2回以上または2日連続）。$(today_str) 時点。実績ダッシュボードが更新されません。homelab の /var/log/blog-metrics/run.log を確認してください。" ;;
         recover) notify "blog-metrics 復旧" "blog-metrics の自動更新が復旧しました（$(today_str)）。" ;;
     esac
 

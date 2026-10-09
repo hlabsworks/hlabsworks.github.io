@@ -16,10 +16,10 @@ showtoc: true
 
 | 機器 | 名目容量 |
 |---|---|
-| DELTA 2 Max（本体） | 6,144Wh |
-| DELTA 2 Max エクストラバッテリー | 4,096Wh |
-| DELTA 2 Max エクストラバッテリー | 2,048Wh |
-| DELTA 3 Plus | 2,048Wh |
+| DELTA2 Max + エクストラバッテリー2台 | 6,144Wh |
+| DELTA2 Max + エクストラバッテリー | 4,096Wh |
+| DELTA2 Max | 2,048Wh |
+| DELTA3 Plus + エクストラバッテリー | 2,048Wh |
 | **合計** | **14,336Wh（14.3kWh）** |
 
 ## で、使えない分はどこに消えているのか

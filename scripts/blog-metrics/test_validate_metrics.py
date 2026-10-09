@@ -96,21 +96,27 @@ def make_daily_fixture() -> list[dict]:
 
 
 def make_monthly_fixture(daily: list[dict]) -> list[dict]:
-    total_solar = round(sum(r["solar_kwh"] for r in daily), 3)
-    total_buy = round(sum(r["buy_kwh"] for r in daily), 3)
-    total_sell = round(sum(r["sell_kwh"] for r in daily), 3)
-    total_saving = sum(r["saving_yen"] for r in daily)
+    """daily の暦月ごとに 1 行ずつ集計する（G12 は月別に daily 和と突合するため、月をまたぐ
+    daily を 1 行にまとめると、wall-clock 依存のフィクスチャ（_old_daily_fixture 等）が
+    月初付近に差しかかる数日間だけ G12 で落ちる。2026-10-09〜11 の CI 失敗で判明）。
+    daily が空なら従来どおり 2026-09 の空行を返す。"""
+    months: dict[str, list[dict]] = {}
+    for r in daily:
+        months.setdefault(r["date"][:7], []).append(r)
+    if not months:
+        months = {"2026-09": []}
     return [
         {
-            "month": "2026-09",
-            "solar_kwh": total_solar,
-            "buy_kwh": total_buy,
-            "sell_kwh": total_sell,
+            "month": month,
+            "solar_kwh": round(sum(r["solar_kwh"] for r in rows), 3),
+            "buy_kwh": round(sum(r["buy_kwh"] for r in rows), 3),
+            "sell_kwh": round(sum(r["sell_kwh"] for r in rows), 3),
             "nichicon_charge_kwh": None,
             "ecoflow_charge_kwh": None,
             "self_consumption_shift_kwh": None,
-            "saving_yen": total_saving,
+            "saving_yen": sum(r["saving_yen"] for r in rows),
         }
+        for month, rows in sorted(months.items())
     ]
 
 
@@ -1881,12 +1887,16 @@ class Gate9ProvisionalShiftTest(unittest.TestCase):
     9/2 以降の暫定値が一斉に動き G9 で公開が止まった）。"""
 
     def _run(self, *, newly_confirmed: bool, changed_key: str) -> Path:
-        rows = _old_daily_fixture()
-        # billing_month_for_date("2026-09-05", meter_read_day=2) == "2026-10"（未確定＝暫定単価の月）
-        prov_day = dict(rows[0], date="2026-09-05", saving_yen=100)
-        old_rows = rows[1:] + [prov_day]  # 日付昇順（G8）を保つため暫定月の日は末尾
+        # wall-clock に依存しない固定日付で組む（today-20 日より十分過去。相対日付と固定日付を
+        # 混ぜると日付昇順(G8)が月替わりで崩れる — 2026-10-09〜 の CI 失敗の教訓）。
+        # 2026-08-19〜21 は請求月 2026-09（確定対象）、"2026-09-05" は
+        # billing_month_for_date(meter_read_day=2) == "2026-10"（未確定＝暫定単価の月）。
+        base_row = make_daily_fixture()[0]
+        rows = [dict(base_row, date=d) for d in ("2026-08-19", "2026-08-20", "2026-08-21")]
+        prov_day = dict(base_row, date="2026-09-05", saving_yen=100)
+        old_rows = rows + [prov_day]  # 日付昇順（G8）を保つため暫定月の日は末尾
         changed = {changed_key: (999 if changed_key == "saving_yen" else 12.34)}
-        new_rows = rows[1:] + [dict(prov_day, **changed)]
+        new_rows = rows + [dict(prov_day, **changed)]
         tmp = tempfile.mkdtemp(); base = Path(tmp); self.addCleanup(shutil.rmtree, tmp, True)
         write_incoming(base, daily=old_rows, monthly=_monthly_by_calendar_month(old_rows))
         for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "test@example.com"],

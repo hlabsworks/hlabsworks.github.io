@@ -25,8 +25,7 @@ N
 url="\${@: -1}"
 case "\$url" in
   *api.github.com*) [ "\${STUB_FAIL_RUNS:-}" = "1" ] && exit 22; cat "${FIX}/runs.json" ;;
-  *meta.json*)      [ "\${STUB_FAIL_SITE:-}" = "1" ] && exit 22; cat "${FIX}/site_meta.json" ;;
-  *) exit 22 ;;
+  *) [ "\${STUB_FAIL_SITE:-}" = "1" ] && exit 22; cat "${FIX}/site_meta.json" ;;
 esac
 C
     chmod +x "${TMP}/curl"
@@ -37,7 +36,8 @@ teardown() { rm -rf "${TMP}"; }
 runs_json() { # $1=id $2=conclusion
     printf '{"workflow_runs":[{"id":%s,"event":"schedule","conclusion":"%s","html_url":"https://github.com/x/y/actions/runs/%s"}]}' "$1" "$2" "$1" > "${FIX}/runs.json"
 }
-site_meta() { printf '{"generated_at":"%s"}' "$1" > "${FIX}/site_meta.json"; }
+# ダッシュボードページの埋め込み JSON を模す（古い値と最新値が混在していても最新値を採ることを確認）
+site_meta() { printf '<html><script>var layers={"generated_at":"2026-01-01 00:00:00","x":1};var meta={"generated_at":"%s"}</script></html>' "$1" > "${FIX}/site_meta.json"; }
 local_meta() { printf '{"generated_at":"%s"}' "$1" > "${CLONE}/meta.json"; }
 run_check() { bash "${SCRIPT}" --state-dir "${STATE}" --log-file "${TMP}/health.log" --data-clone "${TMP}/clone" "$@" >/dev/null 2>&1; }
 notify_count() { /usr/bin/grep -c . "${NOTIFY_LOG}" || true; }

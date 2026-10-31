@@ -119,6 +119,7 @@ labs/tags/index.html
 labs/tags/お知らせ/index.html
 labs/tags/月次実績/index.html
 ads.txt
+app-ads.txt
 robots.txt
 sitemap.xml'
 while IFS= read -r rel; do
@@ -143,6 +144,11 @@ if [ ! -e "$DEST/tags" ]; then ok; else fail "旧URL構成の tags/ ディレク
 
 TAGS_INDEX=$(cat "$DEST/labs/tags/index.html" 2>/dev/null || true)
 if printf '%s' "$TAGS_INDEX" | /usr/bin/grep -qE '<h1[^>]*>タグ</h1>'; then ok; else fail "labs/tags/index.html の見出しが「タグ」になっていない(content/tags/_index.mdのtitle参照)"; fi
+
+# アプリ(AdMob)の販売者確認はストアに登録したデベロッパーサイトのドメイン直下の app-ads.txt を読む。
+# AdSense と AdMob は同じ発行者 ID なので、ads.txt と同じ行が入っていること。
+ADS_LINE=$(/usr/bin/grep -E '^google\.com, pub-[0-9]{16}, DIRECT, f08c47fec0942fa0$' "$DEST/ads.txt" 2>/dev/null || true)
+if [ -n "$ADS_LINE" ] && /usr/bin/grep -qxF "$ADS_LINE" "$DEST/app-ads.txt" 2>/dev/null; then ok; else fail "app-ads.txt に ads.txt と同じ発行者 ID の行が無い"; fi
 
 if /usr/bin/grep -q '^Sitemap:' "$DEST/robots.txt" 2>/dev/null; then ok; else fail "robots.txt に Sitemap 行が無い"; fi
 if /usr/bin/grep -qx 'Disallow: /' "$DEST/robots.txt" 2>/dev/null; then fail "robots.txt が Disallow: / になっている（本番ビルドなのに全面禁止）"; else ok; fi

@@ -73,7 +73,7 @@ Phase 1・Phase 2 をまとめて公開する際の手順を、実行順に1か�
 | `/labs/solar/metrics/methodology/` | このデータについて | 旧 `/metrics/methodology/`。`type: labs-page`（下記§7参照） |
 | `/labs/solar/solar-charge-controller/` | SolarChargeController とは | 旧 `/solar-charge-controller/`。`type: labs-page` |
 | `/labs/solar/monthly-report/<YYYY-MM>/` | 月次レポート（CI 生成、リポジトリ履歴には残らない） | 旧 `/posts/monthly-report/<YYYY-MM>/` |
-| `/ads.txt`, `/robots.txt`, `/sitemap.xml` | ルートのまま | |
+| `/ads.txt`, `/app-ads.txt`, `/robots.txt`, `/sitemap.xml` | ルートのまま | |
 
 ## 2. 旧 URL 対応表（サイト内リダイレクト、Hugo `aliases`）
 

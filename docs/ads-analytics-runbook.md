@@ -118,6 +118,17 @@ AdSense の審査は独自コンテンツの量・質を見る。2026-09-26 時�
 - `content/privacy-policy.md` の広告配信についての記述は、事業ページでの表示有無を断定しない
   表現にしてある（フラグの値によって内容が事実と食い違わないようにするため）
 
+### 3-4. アプリ広告（AdMob）の app-ads.txt
+
+H Labs Works のアプリ（Intervalian・EcoLoop 等）の AdMob 販売者確認用に `static/app-ads.txt` を置いている
+（2026-11-01 設置）。AdMob と AdSense は同じ発行者 ID なので、中身は `static/ads.txt` と同じ1行。
+
+- AdMob のクローラーは、**ストアのデベロッパー情報に登録したウェブサイトのドメイン直下**
+  （`https://<ドメイン>/app-ads.txt`）を読む。ストア側のウェブサイト欄は `https://hlabsworks.com/` にする
+  （`hlabsworks.github.io` は別ドメインへの 301 になるため、そこを登録すると確認できない可能性がある）
+- 発行者 ID を変えるときは `ads.txt` と `app-ads.txt` を同時に直す。
+  `scripts/tests/site-structure-test.sh` が両者の行の一致を検証する
+
 ## 4. ロールバック
 
 いずれのサービスも、対応する値を空文字に戻して main に push すれば、次のビルドから
